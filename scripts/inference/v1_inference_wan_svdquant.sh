@@ -5,6 +5,7 @@ export FASTVIDEO_ATTENTION_BACKEND=
 export MODEL_BASE=Wan-AI/Wan2.1-T2V-1.3B-Diffusers
 # Enable SVDQuant runtime and disable FSDP for testing
 export FASTVIDEO_SVDQ_ENABLE=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # export MODEL_BASE=hunyuanvideo-community/HunyuanVideo
 # You can either use --prompt or --prompt-txt, but not both.
 fastvideo generate \

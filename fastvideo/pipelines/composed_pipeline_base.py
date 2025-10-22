@@ -419,12 +419,21 @@ class ComposedPipelineBase(ABC):
                     else:
                         calib_prompts = ["A sample video of a person walking in a park."]
 
+                # Keep calibration effective batch size to 1 to match generator list handling
+                if len(calib_prompts) > 1:
+                    calib_prompts = calib_prompts[:1]
+
                 calib_steps = max(1, min(4, int(getattr(batch, "num_inference_steps", 50) or 50)))
+
+                # Use the incoming batch's negative prompt to mirror real inference
+                incoming_neg = batch.negative_prompt
+                need_cfg = float(getattr(batch, "guidance_scale", 1.0) or 1.0) > 1.0
+                calib_neg = incoming_neg if incoming_neg is not None else ([""] * len(calib_prompts) if need_cfg else None)
 
                 calib_batch = ForwardBatch(
                     data_type=batch.data_type,
                     prompt=calib_prompts,
-                    negative_prompt=None,
+                    negative_prompt=calib_neg,
                     output_path="/dev/null",
                     output_video_name=None,
                     batch_size=1,
@@ -438,9 +447,9 @@ class ComposedPipelineBase(ABC):
                     guidance_scale=float(getattr(batch, "guidance_scale", 1.0) or 1.0),
                     save_video=False,
                 )
-
+                logger.info("[SVDQuant] Registering hooks and running a short generation to collect inputs")
                 # Register hooks and run a short generation to collect inputs
-                handles, input_map = register_replicated_linear_input_hooks(transformer)
+                handles, input_map = register_replicated_linear_input_hooks(transformer, max_rows_per_layer=2048)
                 try:
                     for stage in self.stages:
                         calib_batch = stage(calib_batch, fastvideo_args)
@@ -449,7 +458,7 @@ class ComposedPipelineBase(ABC):
                         try:
                             h.remove()
                         except Exception:
-                            pass
+                            raise Exception("Failed to remove hook") from e
 
                 # Perform calibrated SVDQ replacement
                 replace_replicated_linear_with_svdq(
@@ -464,6 +473,7 @@ class ComposedPipelineBase(ABC):
                 logger.info("SVDQuant calibration complete; proceeding with quantized inference")
         except Exception as e:
             logger.error("SVDQuant calibration failed: %s", str(e))
+            raise e
 
         # Execute each stage
         logger.info("Running pipeline stages: %s",

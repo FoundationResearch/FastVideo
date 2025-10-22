@@ -108,6 +108,12 @@ def replace_replicated_linear_with_svdq(
     pre-activation inputs for computing smooth factors during calibration.
     """
 
+    # Global warning if no calibration inputs are provided
+    if input_map is None or len(input_map) == 0:
+        logger.warning(
+            "SVDQuant: No calibration inputs were provided; performing uncalibrated replacement (smooth=1) for all layers."
+        )
+
     # Collect replacements with their parents
     to_replace: list[tuple[nn.Module, str, nn.Module]] = []
     for name, module in model.named_modules():
@@ -141,6 +147,10 @@ def replace_replicated_linear_with_svdq(
                     act_unsigned=act_unsigned,
                 )
             else:
+                logger.warning(
+                    "SVDQuant: Layer %s has no calibration inputs; using uncalibrated replacement (smooth=1).",
+                    name,
+                )
                 adapter.load_from_replicated(module)
 
             # Verbose: report linear shape, chosen rank, and max(smooth)
@@ -192,10 +202,12 @@ def register_replicated_linear_input_hooks(
                         return
                     take = min(need, x.shape[0])
                     if take > 0:
+                        # Move slice to CPU to avoid GPU memory growth during calibration
                         buffers[qualified_name] = torch.cat(
-                            [old, x[:take].to(old.device)], dim=0)
+                            [old, x[:take].to(device="cpu", non_blocking=True)], dim=0)
                 else:
-                    buffers[qualified_name] = x[:max_rows_per_layer].to(x.device)
+                    # Store on CPU to minimize GPU memory usage
+                    buffers[qualified_name] = x[:max_rows_per_layer].to(device="cpu", non_blocking=True)
             except Exception:
                 # Be robust; skip on any odd-shaped input
                 return
