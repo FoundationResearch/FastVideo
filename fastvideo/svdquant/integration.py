@@ -4,8 +4,11 @@ import torch.nn as nn
 from typing import Tuple
 
 from fastvideo.layers.linear import ReplicatedLinear
+from fastvideo.logger import init_logger
 
 from .SVDQuantLinearManual import SVDQuantLinearManual
+
+logger = init_logger(__name__)
 
 
 class SVDQuantReplicatedLinear(nn.Module):
@@ -122,6 +125,14 @@ def replace_replicated_linear_with_svdq(
                 device=next(module.parameters()).device,
             )
             adapter.load_from_replicated(module)
+            # Verbose: report linear shape, chosen rank, and max(smooth)
+            n, k = module.weight.shape  # type: ignore[attr-defined]
+            r = int(adapter.svdq._manual_lora_down.shape[1])
+            smax = float(adapter.svdq._manual_smooth.max().item())
+            logger.info(
+                "SVDQuant: %s weight=(%d,%d) -> lora_rank=%d + int4(gs=%d), max(smooth)=%.4f",
+                name, n, k, r, adapter.svdq.group_size, smax,
+            )
             to_replace.append((parent, child_name, adapter))
 
     for parent, child_name, adapter in to_replace:
