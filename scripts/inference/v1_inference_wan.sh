@@ -16,7 +16,7 @@ fastvideo generate \
     --pin-cpu-memory False \
     --height 480 \
     --width 832 \
-    --num-frames 16 \
+    --num-frames 77 \
     --num-inference-steps 50 \
     --fps 16 \
     --guidance-scale 6.0 \

@@ -19,16 +19,16 @@ fastvideo generate \
     --pin-cpu-memory False \
     --height 480 \
     --width 832 \
-    --num-frames 16 \
+    --num-frames 77 \
     --num-inference-steps 50 \
     --fps 16 \
     --guidance-scale 6.0 \
     --flow-shift 8.0 \
     --prompt-txt assets/prompt.txt \
     --svdq-enable True \
-    --svdq-rank 32 \
+    --svdq-rank 128 \
     --svdq-w-percentile 0.999 \
     --svdq-act-unsigned False \
     --negative-prompt "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards" \
     --seed 1024 \
-    --output-path outputs_video_svdquant/
+    --output-path outputs_video_svdquant128/
