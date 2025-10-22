@@ -142,6 +142,12 @@ class FastVideoArgs:
 
     # V-MoBA parameters
     moba_config_path: str | None = None
+
+    # SVDQuant runtime options
+    svdq_enable: bool = False
+    svdq_rank: int = 32
+    svdq_w_percentile: float | None = 0.999
+    svdq_act_unsigned: bool = False
     moba_config: dict[str, Any] = field(default_factory=dict)
 
     # Master port for distributed training/inference
@@ -376,6 +382,31 @@ class FastVideoArgs:
             help=
             "Pin memory for CPU offload. Only added as a temp workaround if it throws \"CUDA error: invalid argument\". "
             "Should be enabled in almost all cases",
+        )
+        # SVDQuant
+        parser.add_argument(
+            "--svdq-enable",
+            action=StoreBoolean,
+            default=FastVideoArgs.svdq_enable,
+            help="Enable runtime SVDQuant W4A4 replacement for ReplicatedLinear",
+        )
+        parser.add_argument(
+            "--svdq-rank",
+            type=int,
+            default=FastVideoArgs.svdq_rank,
+            help="Low-rank rank for SVDQuant (aligned to multiples of 16)",
+        )
+        parser.add_argument(
+            "--svdq-w-percentile",
+            type=float,
+            default=FastVideoArgs.svdq_w_percentile,
+            help="Percentile for weight scaling computation (None or 0-1)",
+        )
+        parser.add_argument(
+            "--svdq-act-unsigned",
+            action=StoreBoolean,
+            default=FastVideoArgs.svdq_act_unsigned,
+            help="Use unsigned activation quantization for A4 (0..15)",
         )
         parser.add_argument(
             "--disable-autocast",

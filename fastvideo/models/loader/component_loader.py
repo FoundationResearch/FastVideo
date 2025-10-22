@@ -474,6 +474,10 @@ class TransformerLoader(ComponentLoader):
         logger.info("Loading model from %s, default_dtype: %s", cls_name,
                     default_dtype)
         assert fastvideo_args.hsdp_shard_dim is not None
+        # If SVDQuant is enabled at runtime, disable FSDP to allow in-place quantization
+        svdq_enable = bool(getattr(fastvideo_args, "svdq_enable", False)) or (os.environ.get("FASTVIDEO_SVDQ_ENABLE", "").lower() in ("1", "true", "yes"))
+        use_fsdp_inference = fastvideo_args.use_fsdp_inference and not svdq_enable
+
         model = maybe_load_fsdp_model(
             model_cls=model_cls,
             init_params={
@@ -486,7 +490,7 @@ class TransformerLoader(ComponentLoader):
             hsdp_shard_dim=fastvideo_args.hsdp_shard_dim,
             cpu_offload=fastvideo_args.dit_cpu_offload,
             pin_cpu_memory=fastvideo_args.pin_cpu_memory,
-            fsdp_inference=fastvideo_args.use_fsdp_inference,
+            fsdp_inference=use_fsdp_inference,
             # TODO(will): make these configurable
             default_dtype=default_dtype,
             param_dtype=torch.bfloat16,
@@ -503,6 +507,21 @@ class TransformerLoader(ComponentLoader):
         assert next(model.parameters()).dtype == default_dtype, "Model dtype does not match default dtype"
 
         model = model.eval()
+
+        # Apply SVDQuant replacement for ReplicatedLinear if enabled
+        if svdq_enable:
+            from fastvideo.svdquant.integration import replace_replicated_linear_with_svdq
+            rank = int(getattr(fastvideo_args, "svdq_rank", 32))
+            percentile = getattr(fastvideo_args, "svdq_w_percentile", 0.999)
+            act_unsigned = bool(getattr(fastvideo_args, "svdq_act_unsigned", False))
+            model = replace_replicated_linear_with_svdq(
+                model,
+                rank=rank,
+                w_percentile=percentile,
+                act_unsigned=act_unsigned,
+            )
+            logger.info("Applied SVDQuant W4A4 replacement (rank=%s, percentile=%s, act_unsigned=%s)", rank, percentile, act_unsigned)
+
         return model
 
 

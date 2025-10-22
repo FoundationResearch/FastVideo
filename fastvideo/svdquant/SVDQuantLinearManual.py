@@ -14,7 +14,7 @@ if REPO_ROOT not in sys.path:
 #     NunchakuWeightPacker,
 #     convert_to_nunchaku_w4x4y16_linear_weight,
 # )
-from svdlinear import svdlinear_forward_w4a4
+from .svdlinear import svdlinear_forward_w4a4
 
 
 @torch.no_grad()
@@ -99,7 +99,7 @@ class SVDQuantLinearManual(nn.Module):
     def from_linear_and_inputs(
         cls,
         linear: nn.Linear,
-        layer_inputs: torch.Tensor,
+        layer_inputs: torch.Tensor | None,
         *,
         rank: int = 32,
         w_percentile: float | None = 0.999,
@@ -114,7 +114,10 @@ class SVDQuantLinearManual(nn.Module):
         mod = cls(in_features, out_features, bias=(linear.bias is not None), dtype=dtype, act_unsigned=act_unsigned, rank=0).to(device)
 
         # Smooth factor and smoothed weights
-        s = cls._compute_smooth_from_layer_inputs(layer_inputs.to(device), linear.weight.data, alpha=0.5, clamp_exp=2.0).to(device=device, dtype=linear.weight.dtype)
+        if layer_inputs is None:
+            s = torch.ones(in_features, dtype=linear.weight.dtype, device=device)
+        else:
+            s = cls._compute_smooth_from_layer_inputs(layer_inputs.to(device), linear.weight.data, alpha=0.5, clamp_exp=2.0).to(device=device, dtype=linear.weight.dtype)
         W_hat = (linear.weight.data * s.view(1, in_features)).contiguous()
 
         # Low-rank via SVD, align to multiples of 16
