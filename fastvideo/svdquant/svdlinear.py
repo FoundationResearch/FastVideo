@@ -106,6 +106,7 @@ def svdlinear_forward_w4a4(
                 y.add_(prod_t * scale_t.to(torch.float32))
     else:
         # Float activations: accumulate per group as (x_g @ q_g^T) * wscale_g
+        raise NotImplementedError("Float activations oath should not be used")
         x_f = x.to(torch.float32)
         for gi in range(g):
             k0, k1 = gi * group_size, (gi + 1) * group_size
