@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 from fastvideo.layers.linear import ReplicatedLinear
 from fastvideo.logger import init_logger
@@ -100,8 +100,13 @@ def replace_replicated_linear_with_svdq(
     rank: int = 32,
     w_percentile: float | None = 0.999,
     act_unsigned: bool = False,
+    input_map: Dict[str, torch.Tensor] | None = None,
 ) -> nn.Module:
-    """Replace all ReplicatedLinear modules in-place with SVDQuantReplicatedLinear."""
+    """Replace all ReplicatedLinear modules in-place with SVDQuantReplicatedLinear.
+
+    If input_map is provided, it should map qualified module names to representative
+    pre-activation inputs for computing smooth factors during calibration.
+    """
 
     # Collect replacements with their parents
     to_replace: list[tuple[nn.Module, str, nn.Module]] = []
@@ -124,14 +129,27 @@ def replace_replicated_linear_with_svdq(
                 act_unsigned=act_unsigned,
                 device=next(module.parameters()).device,
             )
-            adapter.load_from_replicated(module)
+
+            # If calibration inputs available for this layer, compute calibrated SVDQ
+            layer_inputs = input_map.get(name) if input_map is not None else None
+            if layer_inputs is not None:
+                adapter.calibrate_and_load_from_replicated(
+                    module,
+                    layer_inputs=layer_inputs,
+                    rank=rank,
+                    w_percentile=w_percentile,
+                    act_unsigned=act_unsigned,
+                )
+            else:
+                adapter.load_from_replicated(module)
+
             # Verbose: report linear shape, chosen rank, and max(smooth)
             n, k = module.weight.shape  # type: ignore[attr-defined]
             r = int(adapter.svdq._manual_lora_down.shape[1])
             smax = float(adapter.svdq._manual_smooth.max().item())
             logger.info(
-                "SVDQuant: %s weight=(%d,%d) -> lora_rank=%d + int4(gs=%d), max(smooth)=%.4f",
-                name, n, k, r, adapter.svdq.group_size, smax,
+                "SVDQuant: %s weight=(%d,%d) -> lora_rank=%d + int4(gs=%d), max(smooth)=%.4f (calibrated=%s)",
+                name, n, k, r, adapter.svdq.group_size, smax, str(layer_inputs is not None),
             )
             to_replace.append((parent, child_name, adapter))
 
@@ -139,5 +157,122 @@ def replace_replicated_linear_with_svdq(
         setattr(parent, child_name, adapter)
 
     return model
+
+
+@torch.no_grad()
+def register_replicated_linear_input_hooks(
+    model: nn.Module,
+    *,
+    max_rows_per_layer: int = 8192,
+) -> tuple[List[torch.utils.hooks.RemovableHandle], Dict[str, torch.Tensor]]:
+    """Register pre-forward hooks on all ReplicatedLinear layers to collect inputs.
+
+    Returns hook handles and a dict mapping qualified module names to collected inputs.
+    """
+    buffers: Dict[str, torch.Tensor] = {}
+    handles: list = []
+
+    def make_hook(qualified_name: str):
+        def hook(mod, inp):
+            try:
+                x = inp[0]
+                if isinstance(x, tuple) or isinstance(x, list):
+                    x = x[0]
+                if x.ndim == 3:
+                    x = x.reshape(-1, x.shape[-1])
+                elif x.ndim == 2:
+                    pass
+                else:
+                    x = x.view(-1, x.shape[-1])
+                x = x.detach()
+                if qualified_name in buffers:
+                    old = buffers[qualified_name]
+                    need = max_rows_per_layer - old.shape[0]
+                    if need <= 0:
+                        return
+                    take = min(need, x.shape[0])
+                    if take > 0:
+                        buffers[qualified_name] = torch.cat(
+                            [old, x[:take].to(old.device)], dim=0)
+                else:
+                    buffers[qualified_name] = x[:max_rows_per_layer].to(x.device)
+            except Exception:
+                # Be robust; skip on any odd-shaped input
+                return
+        return hook
+
+    for name, module in model.named_modules():
+        if isinstance(module, ReplicatedLinear):  # type: ignore[arg-type]
+            handles.append(module.register_forward_pre_hook(make_hook(name)))
+
+    return handles, buffers
+
+
+@torch.no_grad()
+def _build_calibrated_svdq_from_replicated(
+    layer: "ReplicatedLinear",  # type: ignore[name-defined]
+    layer_inputs: torch.Tensor,
+    *,
+    rank: int,
+    w_percentile: float | None,
+    act_unsigned: bool,
+) -> SVDQuantLinearManual:
+    """Utility to create a calibrated SVDQuantLinearManual from a ReplicatedLinear layer."""
+    device = next(layer.parameters()).device
+    dtype = getattr(layer, "params_dtype", torch.bfloat16)
+    lin = nn.Linear(layer.input_size, layer.output_size, bias=(layer.bias is not None), device=device, dtype=dtype)
+    with torch.no_grad():
+        lin.weight.copy_(layer.weight.to(dtype))  # type: ignore[attr-defined]
+        if layer.bias is not None:
+            lin.bias.copy_(layer.bias.to(dtype))  # type: ignore[attr-defined]
+    return SVDQuantLinearManual.from_linear_and_inputs(
+        lin,
+        layer_inputs,
+        rank=rank,
+        w_percentile=w_percentile,
+        act_unsigned=act_unsigned,
+    )
+
+
+def _ensure_device_dtype(t: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    if t.device != ref.device or t.dtype != ref.dtype:
+        return t.to(device=ref.device, dtype=ref.dtype)
+    return t
+
+
+def _maybe_downsample_inputs(x: torch.Tensor, max_rows: int = 4096) -> torch.Tensor:
+    if x.shape[0] > max_rows:
+        return x[:: (x.shape[0] // max_rows + 1)]
+    return x
+
+
+# Extend SVDQuantReplicatedLinear with a calibration-aware loader
+def _svdqrl_calibrate_and_load_from_replicated(
+    self: SVDQuantReplicatedLinear,
+    layer: "ReplicatedLinear",  # type: ignore[name-defined]
+    *,
+    layer_inputs: torch.Tensor,
+    rank: int,
+    w_percentile: float | None,
+    act_unsigned: bool,
+) -> None:
+    x = _maybe_downsample_inputs(layer_inputs)
+    x = _ensure_device_dtype(x, next(layer.parameters()))
+    svdq_mod = _build_calibrated_svdq_from_replicated(
+        layer,
+        x,
+        rank=rank,
+        w_percentile=w_percentile,
+        act_unsigned=act_unsigned,
+    )
+    self.svdq = svdq_mod
+    # keep a copy of original weight for compatibility (dtype/shape checks)
+    self.weight.copy_(layer.weight.to(self.weight.dtype))  # type: ignore[attr-defined]
+    if layer.bias is not None:
+        self.svdq.bias.copy_(layer.bias.to(self.svdq.dtype))  # type: ignore[attr-defined]
+
+
+# bind method to class
+setattr(SVDQuantReplicatedLinear, "calibrate_and_load_from_replicated", _svdqrl_calibrate_and_load_from_replicated)
 
 

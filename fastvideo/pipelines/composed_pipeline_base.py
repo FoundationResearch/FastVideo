@@ -24,6 +24,10 @@ from fastvideo.pipelines.stages import PipelineStage
 import fastvideo.envs as envs
 from fastvideo.utils import (maybe_download_model,
                              verify_model_config_and_directory)
+from fastvideo.svdquant.integration import (
+    register_replicated_linear_input_hooks,
+    replace_replicated_linear_with_svdq,
+)
 
 logger = init_logger(__name__)
 
@@ -393,6 +397,73 @@ class ComposedPipelineBase(ABC):
         """
         if not self.post_init_called:
             self.post_init()
+
+        # If SVDQuant enabled with deferred calibration, run one-time calibration now
+        try:
+            transformer = self.modules.get("transformer")
+            svdq_cfg = getattr(transformer, "_svdq_config", None)
+            if isinstance(svdq_cfg, dict) and not svdq_cfg.get("calibrated", False):
+                # Build calibration batch from calib_prompts.txt and current dimensions
+                repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                calib_path = os.path.join(repo_root, "assets", "calib_prompts.txt")
+                calib_prompts: list[str] = []
+                if os.path.exists(calib_path):
+                    with open(calib_path, "r", encoding="utf-8") as f:
+                        calib_prompts = [ln.strip() for ln in f.readlines() if ln.strip()]
+                else:
+                    logger.warning("Calibration prompts file not found at %s; falling back to current prompt", calib_path)
+                    if isinstance(batch.prompt, list):
+                        calib_prompts = batch.prompt
+                    elif isinstance(batch.prompt, str):
+                        calib_prompts = [batch.prompt]
+                    else:
+                        calib_prompts = ["A sample video of a person walking in a park."]
+
+                calib_steps = max(1, min(4, int(getattr(batch, "num_inference_steps", 50) or 50)))
+
+                calib_batch = ForwardBatch(
+                    data_type=batch.data_type,
+                    prompt=calib_prompts,
+                    negative_prompt=None,
+                    output_path="/dev/null",
+                    output_video_name=None,
+                    batch_size=1,
+                    num_videos_per_prompt=1,
+                    seed=(batch.seed or 1024),
+                    height=batch.height,
+                    width=batch.width,
+                    fps=batch.fps,
+                    num_frames=batch.num_frames,
+                    num_inference_steps=calib_steps,
+                    guidance_scale=float(getattr(batch, "guidance_scale", 1.0) or 1.0),
+                    save_video=False,
+                )
+
+                # Register hooks and run a short generation to collect inputs
+                handles, input_map = register_replicated_linear_input_hooks(transformer)
+                try:
+                    for stage in self.stages:
+                        calib_batch = stage(calib_batch, fastvideo_args)
+                finally:
+                    for h in handles:
+                        try:
+                            h.remove()
+                        except Exception:
+                            pass
+
+                # Perform calibrated SVDQ replacement
+                replace_replicated_linear_with_svdq(
+                    transformer,
+                    rank=int(svdq_cfg.get("rank", 32)),
+                    w_percentile=svdq_cfg.get("w_percentile", 0.999),
+                    act_unsigned=bool(svdq_cfg.get("act_unsigned", False)),
+                    input_map=input_map,
+                )
+                svdq_cfg["calibrated"] = True
+                setattr(transformer, "_svdq_config", svdq_cfg)
+                logger.info("SVDQuant calibration complete; proceeding with quantized inference")
+        except Exception as e:
+            logger.error("SVDQuant calibration failed: %s", str(e))
 
         # Execute each stage
         logger.info("Running pipeline stages: %s",

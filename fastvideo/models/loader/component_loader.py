@@ -508,19 +508,21 @@ class TransformerLoader(ComponentLoader):
 
         model = model.eval()
 
-        # Apply SVDQuant replacement for ReplicatedLinear if enabled
+        # If SVDQuant is enabled at runtime, defer replacement to allow calibration
         if svdq_enable:
-            from fastvideo.svdquant.integration import replace_replicated_linear_with_svdq
             rank = int(getattr(fastvideo_args, "svdq_rank", 32))
             percentile = getattr(fastvideo_args, "svdq_w_percentile", 0.999)
             act_unsigned = bool(getattr(fastvideo_args, "svdq_act_unsigned", False))
-            model = replace_replicated_linear_with_svdq(
-                model,
-                rank=rank,
-                w_percentile=percentile,
-                act_unsigned=act_unsigned,
-            )
-            logger.info("Applied SVDQuant W4A4 replacement (rank=%s, percentile=%s, act_unsigned=%s)", rank, percentile, act_unsigned)
+            # Stash config on the model for the pipeline to perform calibration and then replace
+            setattr(model, "_svdq_config", {
+                "rank": rank,
+                "w_percentile": percentile,
+                "act_unsigned": act_unsigned,
+                "calibrated": False,
+            })
+            logger.info(
+                "SVDQuant enabled; deferring W4A4 replacement until after calibration (rank=%s, percentile=%s, act_unsigned=%s)",
+                rank, percentile, act_unsigned)
 
         return model
 
