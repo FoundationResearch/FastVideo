@@ -101,6 +101,7 @@ def replace_replicated_linear_with_svdq(
     w_percentile: float | None = 0.999,
     act_unsigned: bool = False,
     input_map: Dict[str, torch.Tensor] | None = None,
+    skip_norm_clamp: bool = True,
 ) -> nn.Module:
     """Replace all ReplicatedLinear modules in-place with SVDQuantReplicatedLinear.
 
@@ -145,6 +146,7 @@ def replace_replicated_linear_with_svdq(
                     rank=rank,
                     w_percentile=w_percentile,
                     act_unsigned=act_unsigned,
+                    skip_norm_clamp=skip_norm_clamp,
                 )
             else:
                 logger.warning(
@@ -228,6 +230,7 @@ def _build_calibrated_svdq_from_replicated(
     rank: int,
     w_percentile: float | None,
     act_unsigned: bool,
+    skip_norm_clamp: bool = True,
     ) -> SVDQuantLinearManual:
     """Utility to create a calibrated SVDQuantLinearManual from a ReplicatedLinear layer."""
     device = next(layer.parameters()).device
@@ -243,7 +246,7 @@ def _build_calibrated_svdq_from_replicated(
         rank=rank,
         w_percentile=w_percentile,
         act_unsigned=act_unsigned,
-        skip_norm_clamp=True,
+        skip_norm_clamp=skip_norm_clamp,
     )
 
 
@@ -268,6 +271,7 @@ def _svdqrl_calibrate_and_load_from_replicated(
     rank: int,
     w_percentile: float | None,
     act_unsigned: bool,
+    skip_norm_clamp: bool = True,
 ) -> None:
     x = _maybe_downsample_inputs(layer_inputs)
     x = _ensure_device_dtype(x, next(layer.parameters()))
@@ -277,6 +281,7 @@ def _svdqrl_calibrate_and_load_from_replicated(
         rank=rank,
         w_percentile=w_percentile,
         act_unsigned=act_unsigned,
+        skip_norm_clamp=skip_norm_clamp,
     )
     self.svdq = svdq_mod
     # keep a copy of original weight for compatibility (dtype/shape checks)

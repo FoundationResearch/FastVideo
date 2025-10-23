@@ -148,6 +148,7 @@ class FastVideoArgs:
     svdq_rank: int = 32
     svdq_w_percentile: float | None = 0.999
     svdq_act_unsigned: bool = False
+    svdq_skip_norm_clamp: bool = True
     moba_config: dict[str, Any] = field(default_factory=dict)
 
     # Master port for distributed training/inference
@@ -407,6 +408,12 @@ class FastVideoArgs:
             action=StoreBoolean,
             default=FastVideoArgs.svdq_act_unsigned,
             help="Use unsigned activation quantization for A4 (0..15)",
+        )
+        parser.add_argument(
+            "--svdq-skip-norm-clamp",
+            action=StoreBoolean,
+            default=FastVideoArgs.svdq_skip_norm_clamp,
+            help="Skip geometric-mean normalization and clamp in smooth computation (default: True)",
         )
         parser.add_argument(
             "--disable-autocast",

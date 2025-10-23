@@ -467,6 +467,7 @@ class ComposedPipelineBase(ABC):
                     w_percentile=svdq_cfg.get("w_percentile", 0.999),
                     act_unsigned=bool(svdq_cfg.get("act_unsigned", False)),
                     input_map=input_map,
+                    skip_norm_clamp=bool(getattr(self.fastvideo_args, "svdq_skip_norm_clamp", True)),
                 )
                 svdq_cfg["calibrated"] = True
                 setattr(transformer, "_svdq_config", svdq_cfg)
