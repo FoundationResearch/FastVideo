@@ -228,7 +228,7 @@ def _build_calibrated_svdq_from_replicated(
     rank: int,
     w_percentile: float | None,
     act_unsigned: bool,
-) -> SVDQuantLinearManual:
+    ) -> SVDQuantLinearManual:
     """Utility to create a calibrated SVDQuantLinearManual from a ReplicatedLinear layer."""
     device = next(layer.parameters()).device
     dtype = getattr(layer, "params_dtype", torch.bfloat16)
@@ -243,6 +243,7 @@ def _build_calibrated_svdq_from_replicated(
         rank=rank,
         w_percentile=w_percentile,
         act_unsigned=act_unsigned,
+        skip_norm_clamp=True,
     )
 
 

@@ -82,16 +82,24 @@ class SVDQuantLinearManual(nn.Module):
 
     @staticmethod
     @torch.no_grad()
-    def _compute_smooth_from_layer_inputs(x: torch.Tensor, weight: torch.Tensor, *, alpha: float = 0.5, clamp_exp: float = 2.0) -> torch.Tensor:
+    def _compute_smooth_from_layer_inputs(
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        *,
+        alpha: float = 0.5,
+        clamp_exp: float = 2.0,
+        skip_norm_clamp: bool = True,
+    ) -> torch.Tensor:
         if x.ndim == 3:
             x = x.reshape(-1, x.shape[-1])
         A = x.abs().amax(dim=0).to(torch.float32) + 1e-8
         W = weight.abs().amax(dim=0).to(torch.float32) + 1e-8
         s = (A / W).pow(alpha)
-        gm = torch.exp(torch.mean(torch.log(s)))
-        s = s / gm
-        lo, hi = 2.0 ** (-clamp_exp), 2.0 ** (clamp_exp)
-        s = s.clamp(min=lo, max=hi)
+        if not skip_norm_clamp:
+            gm = torch.exp(torch.mean(torch.log(s)))
+            s = s / gm
+            lo, hi = 2.0 ** (-clamp_exp), 2.0 ** (clamp_exp)
+            s = s.clamp(min=lo, max=hi)
         return s
 
     @classmethod
@@ -104,6 +112,7 @@ class SVDQuantLinearManual(nn.Module):
         rank: int = 32,
         w_percentile: float | None = 0.999,
         act_unsigned: bool = False,
+        skip_norm_clamp: bool = True,
     ) -> "SVDQuantLinearManual":
         in_features = linear.in_features
         out_features = linear.out_features
@@ -117,7 +126,13 @@ class SVDQuantLinearManual(nn.Module):
         if layer_inputs is None:
             s = torch.ones(in_features, dtype=linear.weight.dtype, device=device)
         else:
-            s = cls._compute_smooth_from_layer_inputs(layer_inputs.to(device), linear.weight.data, alpha=0.5, clamp_exp=2.0).to(device=device, dtype=linear.weight.dtype)
+            s = cls._compute_smooth_from_layer_inputs(
+                layer_inputs.to(device),
+                linear.weight.data,
+                alpha=0.5,
+                clamp_exp=2.0,
+                skip_norm_clamp=skip_norm_clamp,
+            ).to(device=device, dtype=linear.weight.dtype)
         W_hat = (linear.weight.data * s.view(1, in_features)).contiguous()
 
         # Low-rank via SVD, align to multiples of 16
@@ -221,6 +236,7 @@ class SVDQuantLinearManual(nn.Module):
         calib_inputs: torch.Tensor,
         alpha: float = 0.5,
         clamp_exp: float = 2.0,
+        skip_norm_clamp: bool = True,
     ) -> dict[str, torch.Tensor]:
         model_fp.eval()
         layer_inputs = SVDQuantLinearManual.collect_layer_inputs(model_fp, calib_inputs, calib_inputs.device)
@@ -230,7 +246,7 @@ class SVDQuantLinearManual(nn.Module):
                 x = layer_inputs.get(name)
                 if x is None:
                     continue
-                s = SVDQuantLinearManual._compute_smooth_from_layer_inputs(x, child.weight, alpha=alpha, clamp_exp=clamp_exp)
+                s = SVDQuantLinearManual._compute_smooth_from_layer_inputs(x, child.weight, alpha=alpha, clamp_exp=clamp_exp, skip_norm_clamp=skip_norm_clamp)
                 smooth[name] = s.to(calib_inputs.device)
             else:
                 for subname, subchild in child.named_children():
@@ -238,7 +254,7 @@ class SVDQuantLinearManual(nn.Module):
                         x = layer_inputs.get(subname)
                         if x is None:
                             continue
-                        s = SVDQuantLinearManual._compute_smooth_from_layer_inputs(x, subchild.weight, alpha=alpha, clamp_exp=clamp_exp)
+                        s = SVDQuantLinearManual._compute_smooth_from_layer_inputs(x, subchild.weight, alpha=alpha, clamp_exp=clamp_exp, skip_norm_clamp=skip_norm_clamp)
                         smooth[subname] = s.to(calib_inputs.device)
         return smooth
 
@@ -254,6 +270,7 @@ class SVDQuantLinearManual(nn.Module):
         device: str | torch.device | None = None,
         alpha: float = 0.5,
         clamp_exp: float = 2.0,
+        skip_norm_clamp: bool = True,
     ) -> nn.Module:
         device = device or next(model.parameters()).device
         model = model.to(device).eval()
@@ -270,7 +287,7 @@ class SVDQuantLinearManual(nn.Module):
             x_calib = torch.randn(calib_bs, in_features, dtype=torch.bfloat16, device=device)
         else:
             x_calib = x_calib.to(device)
-        smooth_map = SVDQuantLinearManual.compute_smooth_factors(model, x_calib, alpha=alpha, clamp_exp=clamp_exp)
+        smooth_map = SVDQuantLinearManual.compute_smooth_factors(model, x_calib, alpha=alpha, clamp_exp=clamp_exp, skip_norm_clamp=skip_norm_clamp)
 
         ranks = ranks or {}
         for name, child in list(model.named_children()):
@@ -281,11 +298,17 @@ class SVDQuantLinearManual(nn.Module):
                 s = smooth_map.get(full_name)
                 if s is None:
                     # Fallback: compute directly from a forward pass slice
-                    s = SVDQuantLinearManual._compute_smooth_from_layer_inputs(x_calib, child.weight, alpha=alpha, clamp_exp=clamp_exp).to(x_calib.device)
+                    s = SVDQuantLinearManual._compute_smooth_from_layer_inputs(
+                        x_calib,
+                        child.weight,
+                        alpha=alpha,
+                        clamp_exp=clamp_exp,
+                        skip_norm_clamp=skip_norm_clamp,
+                    ).to(x_calib.device)
                 # Build per-layer inputs by passing x_calib through parents up to this layer is complex; use captured pre-hook instead
                 # We already captured pre-activation inputs in compute_smooth_factors; reuse them if available
                 layer_inputs = SVDQuantLinearManual.collect_layer_inputs(model, x_calib, device).get(full_name, x_calib)
-                setattr(model, name, SVDQuantLinearManual.from_linear_and_inputs(child, layer_inputs, rank=r, w_percentile=w_percentile, act_unsigned=act_unsigned))
+                setattr(model, name, SVDQuantLinearManual.from_linear_and_inputs(child, layer_inputs, rank=r, w_percentile=w_percentile, act_unsigned=act_unsigned, skip_norm_clamp=skip_norm_clamp))
             else:
                 # recurse one level
                 for subname, subchild in list(child.named_children()):
@@ -293,7 +316,7 @@ class SVDQuantLinearManual(nn.Module):
                         r = ranks.get(subname, 32)
                         act_unsigned = False
                         layer_inputs = SVDQuantLinearManual.collect_layer_inputs(model, x_calib, device).get(subname, x_calib)
-                        setattr(child, subname, SVDQuantLinearManual.from_linear_and_inputs(subchild, layer_inputs, rank=r, w_percentile=w_percentile, act_unsigned=act_unsigned))
+                        setattr(child, subname, SVDQuantLinearManual.from_linear_and_inputs(subchild, layer_inputs, rank=r, w_percentile=w_percentile, act_unsigned=act_unsigned, skip_norm_clamp=skip_norm_clamp))
         return model
 
     @staticmethod

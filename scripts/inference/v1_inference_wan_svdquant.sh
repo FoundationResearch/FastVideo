@@ -32,4 +32,4 @@ fastvideo generate \
     --svdq-act-unsigned False \
     --negative-prompt "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards" \
     --seed 1024 \
-    --output-path outputs_video_svdquant128/
+    --output-path outputs_video_svdquant128_exactcalibration/
