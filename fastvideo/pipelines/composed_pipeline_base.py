@@ -403,6 +403,47 @@ class ComposedPipelineBase(ABC):
             transformer = self.modules.get("transformer")
             svdq_cfg = getattr(transformer, "_svdq_config", None)
             if isinstance(svdq_cfg, dict) and not svdq_cfg.get("calibrated", False):
+                # Try offline load shortcut if a quantized checkpoint is provided
+                try:
+                    qpath = getattr(self.fastvideo_args, "svdq_quantize_model_path", None)
+                    force_re = bool(getattr(self.fastvideo_args, "svdq_force_recalibrate", False))
+                    if qpath and os.path.exists(qpath) and not force_re:
+                        logger.info("[SVDQuant] Loading offline quantized transformer from %s", qpath)
+                        # Create SVDQ modules structure first (uncalibrated), then load state dict
+                        replace_replicated_linear_with_svdq(
+                            transformer,
+                            rank=int(svdq_cfg.get("rank", 32)),
+                            w_percentile=svdq_cfg.get("w_percentile", 0.999),
+                            act_unsigned=bool(svdq_cfg.get("act_unsigned", False)),
+                            input_map=None,
+                            skip_norm_clamp=bool(getattr(self.fastvideo_args, "svdq_skip_norm_clamp", True)),
+                        )
+                        # Load state dict (supports wrapper dict with key 'state_dict')
+                        try:
+                            state = torch.load(qpath, map_location="cpu")
+                            state_dict = state["state_dict"] if isinstance(state, dict) and "state_dict" in state else state
+                        except Exception as e_load:
+                            logger.warning("[SVDQuant] Failed to load offline state_dict from %s: %s", qpath, str(e_load))
+                            state_dict = None
+                        if state_dict is not None:
+                            missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
+                            if missing:
+                                logger.warning("[SVDQuant] Missing keys when loading offline SVDQ: %s", list(missing)[:10])
+                            if unexpected:
+                                logger.warning("[SVDQuant] Unexpected keys when loading offline SVDQ: %s", list(unexpected)[:10])
+                            svdq_cfg["calibrated"] = True
+                            setattr(transformer, "_svdq_config", svdq_cfg)
+                            logger.info("[SVDQuant] Offline SVDQuant loaded; skipping calibration")
+                            # Proceed directly to executing stages below
+                            pass
+                        else:
+                            logger.info("[SVDQuant] No valid state_dict loaded from %s; falling back to online calibration", qpath)
+                    if isinstance(svdq_cfg, dict) and svdq_cfg.get("calibrated", False):
+                        # Already loaded offline; skip the rest of calibration block
+                        raise StopIteration  # use exception to jump to stage execution
+                except StopIteration:
+                    pass
+
                 # Build calibration batch from calib_prompts.txt and current dimensions
                 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                 calib_path = os.path.join(repo_root, "assets", "calib_prompts.txt")
@@ -472,6 +513,18 @@ class ComposedPipelineBase(ABC):
                 svdq_cfg["calibrated"] = True
                 setattr(transformer, "_svdq_config", svdq_cfg)
                 logger.info("SVDQuant calibration complete; proceeding with quantized inference")
+
+                # Optionally save offline checkpoint for future runs
+                try:
+                    qpath = getattr(self.fastvideo_args, "svdq_quantize_model_path", None)
+                    if qpath:
+                        os.makedirs(os.path.dirname(qpath) or ".", exist_ok=True)
+                        # Save in a simple wrapper for clarity
+                        cpu_state = {k: v.cpu() for k, v in transformer.state_dict().items()}
+                        torch.save({"state_dict": cpu_state, "svdq_manual": True}, qpath)
+                        logger.info("[SVDQuant] Saved offline quantized transformer to %s", qpath)
+                except Exception as e_save:
+                    logger.warning("[SVDQuant] Failed to save offline SVDQuant to %s: %s", qpath, str(e_save))
         except Exception as e:
             logger.error("SVDQuant calibration failed: %s", str(e))
             raise e

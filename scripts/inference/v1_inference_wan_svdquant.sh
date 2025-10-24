@@ -31,6 +31,8 @@ fastvideo generate \
     --svdq-w-percentile 0.999 \
     --svdq-skip-norm-clamp True\
     --svdq-act-unsigned False \
+    --svdq-quantize-model-path outputs_video_svdquant128/transformer_svdq.pt \
+    --svdq-force-recalibrate False \
     --negative-prompt "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards" \
     --seed 1024 \
     --output-path outputs_video_svdquant128/50calibsteps-1batchwill/

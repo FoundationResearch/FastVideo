@@ -149,6 +149,9 @@ class FastVideoArgs:
     svdq_w_percentile: float | None = 0.999
     svdq_act_unsigned: bool = False
     svdq_skip_norm_clamp: bool = True
+    # Offline SVDQuant options
+    svdq_quantize_model_path: str | None = None
+    svdq_force_recalibrate: bool = False
     moba_config: dict[str, Any] = field(default_factory=dict)
 
     # Master port for distributed training/inference
@@ -414,6 +417,18 @@ class FastVideoArgs:
             action=StoreBoolean,
             default=FastVideoArgs.svdq_skip_norm_clamp,
             help="Skip geometric-mean normalization and clamp in smooth computation (default: True)",
+        )
+        parser.add_argument(
+            "--svdq-quantize-model-path",
+            type=str,
+            default=FastVideoArgs.svdq_quantize_model_path,
+            help="If set: load/save offline SVDQuant transformer state_dict at this path. If file exists and not forced, load it to skip calibration; otherwise after online quantization, save to this path.",
+        )
+        parser.add_argument(
+            "--svdq-force-recalibrate",
+            action=StoreBoolean,
+            default=FastVideoArgs.svdq_force_recalibrate,
+            help="If true and svdq-quantize-model-path exists, still run online calibration and overwrite the file.",
         )
         parser.add_argument(
             "--disable-autocast",
