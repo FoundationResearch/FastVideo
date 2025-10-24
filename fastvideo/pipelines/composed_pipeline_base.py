@@ -423,7 +423,7 @@ class ComposedPipelineBase(ABC):
                 if len(calib_prompts) > 1:
                     calib_prompts = calib_prompts[:1]
 
-                calib_steps = max(1, min(4, int(getattr(batch, "num_inference_steps", 50) or 50)))
+                calib_steps = 50
 
                 # Use the incoming batch's negative prompt to mirror real inference
                 incoming_neg = batch.negative_prompt
@@ -449,7 +449,7 @@ class ComposedPipelineBase(ABC):
                 )
                 logger.info("[SVDQuant] Registering hooks and running a short generation to collect inputs")
                 # Register hooks and run a short generation to collect inputs
-                handles, input_map = register_replicated_linear_input_hooks(transformer, max_rows_per_layer=2048)
+                handles, input_map = register_replicated_linear_input_hooks(transformer, max_rows_per_layer=20480)
                 try:
                     for stage in self.stages:
                         calib_batch = stage(calib_batch, fastvideo_args)
