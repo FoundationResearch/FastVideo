@@ -7,14 +7,20 @@ import json
 from contextlib import contextmanager
 from dataclasses import field
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastvideo.configs.configs import PreprocessConfig
 from fastvideo.configs.pipelines.base import PipelineConfig, STA_Mode
 from fastvideo.configs.utils import clean_cli_args
 from fastvideo.logger import init_logger
-from fastvideo.platforms import current_platform
 from fastvideo.utils import FlexibleArgumentParser, StoreBoolean
+
+if TYPE_CHECKING:
+    from ray.runtime_env import RuntimeEnv
+    from ray.util.placement_group import PlacementGroup
+else:
+    RuntimeEnv = Any
+    PlacementGroup = Any
 
 logger = init_logger(__name__)
 
@@ -90,6 +96,11 @@ class FastVideoArgs:
 
     # Distributed executor backend
     distributed_executor_backend: str = "mp"
+
+    # a few attributes for ray related
+    ray_placement_group: PlacementGroup | None = None
+
+    ray_runtime_env: RuntimeEnv | None = None
 
     inference_mode: bool = True  # if False == training mode
 
@@ -559,6 +570,8 @@ class FastVideoArgs:
 
     def check_fastvideo_args(self) -> None:
         """Validate inference arguments for consistency"""
+        from fastvideo.platforms import current_platform
+
         if current_platform.is_mps():
             self.use_fsdp_inference = False
 
@@ -715,6 +728,7 @@ class TrainingArgs(FastVideoArgs):
     validation_guidance_scale: str = ""
     validation_steps: float = 0.0
     log_validation: bool = False
+    trackers: list[str] = dataclasses.field(default_factory=list)
     tracker_project_name: str = ""
     wandb_run_name: str = ""
     seed: int | None = None
