@@ -84,6 +84,29 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
         self.last_step_only = getattr(training_args, 'last_step_only', False)
         self.context_noise = getattr(training_args, 'context_noise', 0)
 
+        # Propagate num_frame_per_block into causal Wan transformers and their configs (student / teacher / critics)
+        for module_name in [
+                "transformer",
+                "transformer_2",
+                "real_score_transformer",
+                "real_score_transformer_2",
+                "fake_score_transformer",
+                "fake_score_transformer_2",
+        ]:
+            module = getattr(self, module_name, None)
+            if module is None:
+                continue
+            # Update underlying config if available
+            cfg = getattr(module, "config", None)
+            arch_cfg = getattr(cfg, "arch_config",
+                               None) if cfg is not None else None
+            if arch_cfg is not None and hasattr(arch_cfg,
+                                                "num_frames_per_block"):
+                arch_cfg.num_frames_per_block = self.num_frame_per_block
+            # Also update runtime attribute used by CausalWanTransformer3DModel
+            if hasattr(module, "num_frame_per_block"):
+                module.num_frame_per_block = self.num_frame_per_block
+
         self.kv_cache1: list[dict[str, Any]] | None = None
         self.crossattn_cache: list[dict[str, Any]] | None = None
 
