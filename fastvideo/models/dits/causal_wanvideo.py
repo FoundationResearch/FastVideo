@@ -452,6 +452,12 @@ class CausalWanTransformer3DModel(BaseDiT):
         This function will be run for num_frame times.
         Process the latent frames one by one (1560 tokens each)
         """
+        if not hasattr(self, "_logged_num_frame_per_block"):
+            logger.info(
+                "CausalWanTransformer3DModel _forward_inference num_frame_per_block=%s",
+                getattr(self, "num_frame_per_block", None),
+            )
+            self._logged_num_frame_per_block = True
         from fastvideo.platforms import current_platform
 
         orig_dtype = hidden_states.dtype
@@ -563,6 +569,12 @@ class CausalWanTransformer3DModel(BaseDiT):
             encoder_hidden_states_image = None
 
         batch_size, num_channels, num_frames, height, width = hidden_states.shape
+        if not hasattr(self, "_logged_num_frame_per_block"):
+            logger.info(
+                "CausalWanTransformer3DModel _forward_train num_frame_per_block=%s",
+                getattr(self, "num_frame_per_block", None),
+            )
+            self._logged_num_frame_per_block = True
         p_t, p_h, p_w = self.patch_size
         post_patch_num_frames = num_frames // p_t
         post_patch_height = height // p_h

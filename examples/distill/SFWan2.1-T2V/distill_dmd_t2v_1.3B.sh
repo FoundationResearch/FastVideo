@@ -18,27 +18,28 @@ export TORCH_NCCL_ENABLE_MONITORING=0
 export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_PROCID}
 export MASTER_PORT=29503
 export TOKENIZERS_PARALLELISM=false
-export WANDB_API_KEY=your_wandb_api_key
+export WANDB_API_KEY="2f25ad37933894dbf0966c838c0b8494987f9f2f"
 export WANDB_BASE_URL="https://api.wandb.ai"
 export WANDB_MODE=online
 export FASTVIDEO_ATTENTION_BACKEND=FLASH_ATTN
 
 # Configs
-NUM_GPUS=1
+NUM_GPUS=2
 
 # Model paths for Self-Forcing DMD distillation:
 GENERATOR_MODEL_PATH="wlsaidhi/SFWan2.1-T2V-1.3B-Diffusers"
 REAL_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-14B-Diffusers"  # Teacher model
 FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic model
 
-DATA_DIR=your_data_dir
-VALIDATION_DATASET_FILE=your_validation_data_dir
+DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
+VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=5,6
 # IP=[MASTER NODE IP]
 
 training_args=(
   --tracker_project_name SFwan_t2v_distill_self_forcing_dmd  
-  --output_dir your_output_dir
+  --output_dir "~/alex/datas/VSA_SF/outputs"
   --max_train_steps 4000
   --train_batch_size 1
   --train_sp_batch_size 1
@@ -103,7 +104,7 @@ miscellaneous_args=(
   --use_ema True
   --ema_decay 0.99
   --ema_start_step 100
-  --init_weights_from_safetensors your_ode_init_weights_path
+  # --init_weights_from_safetensors your_ode_init_weights_path
 )
 
 dmd_args=(

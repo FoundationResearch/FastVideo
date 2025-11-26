@@ -4,7 +4,7 @@ export WANDB_API_KEY=
 export TRITON_CACHE_DIR=/tmp/triton_cache
 DATA_DIR=mini_i2v_dataset/crush-smol_preprocessed/combined_parquet_dataset/
 VALIDATION_DIR=mini_i2v_dataset/crush-smol_raw/validation.json
-NUM_GPUS=8
+NUM_GPUS=4
 export FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN
 export TOKENIZERS_PARALLELISM=false
 
@@ -15,6 +15,7 @@ torchrun --nnodes 1 --nproc_per_node $NUM_GPUS \
     --model_path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
     --real_score_model_path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
     --fake_score_model_path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
+    --override_transformer_cls_name "CausalWanTransformer3DModel" \
     --inference_mode False\
     --pretrained_model_name_or_path Wan-AI/Wan2.1-T2V-1.3B-Diffusers \
     --cache_dir "/home/ray/.cache" \
