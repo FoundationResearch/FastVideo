@@ -185,11 +185,27 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
         num_training_frames = getattr(self.training_args, 'num_latent_t', 21)
 
         # During training, the number of generated frames should be uniformly sampled from
-        # [21, self.num_training_frames], but still being a multiple of self.num_frame_per_block
-        min_num_frames = 20 if self.independent_first_frame else 21
-        max_num_frames = num_training_frames - 1 if self.independent_first_frame else num_training_frames
-        assert max_num_frames % self.num_frame_per_block == 0
-        assert min_num_frames % self.num_frame_per_block == 0
+        # [base_min, base_max], but we snap both ends to multiples of num_frame_per_block.
+        # - independent_first_frame=True: 1 image frame + [20, num_training_frames-1] video frames
+        # - independent_first_frame=False: [21, num_training_frames] video frames
+        if self.independent_first_frame:
+            base_min_num_frames = 20
+            base_max_num_frames = num_training_frames - 1
+        else:
+            base_min_num_frames = 21
+            base_max_num_frames = num_training_frames
+
+        # Align the range to multiples of num_frame_per_block
+        block = self.num_frame_per_block
+        min_num_frames = ((base_min_num_frames + block - 1) // block) * block  # round up
+        max_num_frames = (base_max_num_frames // block) * block                # round down
+
+        assert min_num_frames <= max_num_frames, (
+            f"Invalid combination: num_latent_t={num_training_frames}, "
+            f"num_frame_per_block={block}, independent_first_frame={self.independent_first_frame}"
+        )
+        assert max_num_frames % block == 0
+        assert min_num_frames % block == 0
         max_num_blocks = max_num_frames // self.num_frame_per_block
         min_num_blocks = min_num_frames // self.num_frame_per_block
 
