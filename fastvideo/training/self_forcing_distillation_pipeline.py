@@ -32,7 +32,6 @@ logger = init_logger(__name__)
 
 vsa_available = is_vsa_available()
 
-
 class SelfForcingDistillationPipeline(DistillationPipeline):
     """
     A self-forcing distillation pipeline that alternates between training

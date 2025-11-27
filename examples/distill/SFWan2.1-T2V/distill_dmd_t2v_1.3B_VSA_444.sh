@@ -16,12 +16,12 @@ export NCCL_P2P_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 # different cache dir for different processes
 export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_PROCID}
-export MASTER_PORT=29503
+export MASTER_PORT=29504
 export TOKENIZERS_PARALLELISM=false
 export WANDB_API_KEY="2f25ad37933894dbf0966c838c0b8494987f9f2f"
 export WANDB_BASE_URL="https://api.wandb.ai"
 export WANDB_MODE=online
-export FASTVIDEO_ATTENTION_BACKEND=FLASH_ATTN
+export FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN
 
 # Configs
 NUM_GPUS=2
@@ -34,24 +34,24 @@ FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic model
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
-export CUDA_VISIBLE_DEVICES=5,6
+export CUDA_VISIBLE_DEVICES=0,7
 # IP=[MASTER NODE IP]
 
 training_args=(
   --tracker_project_name SFwan_t2v_distill_self_forcing_dmd  
-  --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_FA"
+  --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_VSA_backend"
   --max_train_steps 4000
   --train_batch_size 1
   --train_sp_batch_size 1
   --gradient_accumulation_steps 1
-  --num_latent_t 21
+  --num_latent_t 24
   --num_height 480
   --num_width 832
   --enable_gradient_checkpointing_type "full"
   --log_visualization
   --simulate_generator_forward
   --num_frames 81
-  --num_frame_per_block 3  # Frame generation block size for self-forcing
+  --num_frame_per_block 4  # Frame generation block size for self-forcing (VSA 4-4-4)
   --enable_gradient_masking
   --gradient_mask_last_n_frames 21
 )
@@ -125,6 +125,12 @@ self_forcing_args=(
   --context_noise 0  # Amount of noise to add during context caching (0 = no noise)
 )
 
+vsa_args=(
+  --VSA_sparsity 0.8
+  --VSA_decay_rate 0.01
+  --VSA_decay_interval_steps 1
+)
+
 torchrun \
 --nnodes 1 \
 --master_port $MASTER_PORT \
@@ -138,4 +144,5 @@ torchrun \
     "${validation_args[@]}" \
     "${miscellaneous_args[@]}" \
     "${dmd_args[@]}" \
-    "${self_forcing_args[@]}"
+    "${self_forcing_args[@]}" \
+    "${vsa_args[@]}"
