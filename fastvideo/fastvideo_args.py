@@ -759,6 +759,12 @@ class TrainingArgs(FastVideoArgs):
     last_step_only: bool = False  # Only use the last timestep for training
     context_noise: int = 0  # Context noise level for cache updates
 
+    # Attention backend overrides (optional, module-wise)
+    # If empty, fall back to FASTVIDEO_ATTENTION_BACKEND / auto selection.
+    student_attention_backend: str = ""
+    teacher_attention_backend: str = ""
+    critic_attention_backend: str = ""
+
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace) -> "TrainingArgs":
         provided_args = clean_cli_args(args)
@@ -1180,6 +1186,36 @@ class TrainingArgs(FastVideoArgs):
                             type=int,
                             default=TrainingArgs.context_noise,
                             help="Context noise level for cache updates")
+
+        # Attention backend overrides
+        parser.add_argument(
+            "--student-attention-backend",
+            type=str,
+            default=TrainingArgs.student_attention_backend,
+            help=(
+                "Attention backend for the student/generator model "
+                "(e.g. 'VIDEO_SPARSE_ATTN', 'FLASH_ATTN'). "
+                "If empty, uses FASTVIDEO_ATTENTION_BACKEND / auto selection."
+            ),
+        )
+        parser.add_argument(
+            "--teacher-attention-backend",
+            type=str,
+            default=TrainingArgs.teacher_attention_backend,
+            help=(
+                "Attention backend for the teacher/real-score model "
+                "(e.g. 'FLASH_ATTN'). If empty, uses FASTVIDEO_ATTENTION_BACKEND / auto."
+            ),
+        )
+        parser.add_argument(
+            "--critic-attention-backend",
+            type=str,
+            default=TrainingArgs.critic_attention_backend,
+            help=(
+                "Attention backend for the critic/fake-score model "
+                "(e.g. 'FLASH_ATTN'). If empty, uses FASTVIDEO_ATTENTION_BACKEND / auto."
+            ),
+        )
 
         return parser
 

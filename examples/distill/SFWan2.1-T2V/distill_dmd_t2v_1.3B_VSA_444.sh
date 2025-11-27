@@ -29,7 +29,7 @@ NUM_GPUS=2
 # Model paths for Self-Forcing DMD distillation:
 GENERATOR_MODEL_PATH="wlsaidhi/SFWan2.1-T2V-1.3B-Diffusers"
 REAL_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-14B-Diffusers"  # Teacher model
-FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic model
+FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
 
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
@@ -117,6 +117,10 @@ dmd_args=(
   --fake_score_learning_rate 8e-6
   --fake_score_betas '0.0,0.999'
   --warp_denoising_step
+  # Attention backend overrides: student=VSA, teacher/critic=Flash
+  --student_attention_backend VIDEO_SPARSE_ATTN
+  --teacher_attention_backend FLASH_ATTN
+  --critic_attention_backend FLASH_ATTN
 )
 
 self_forcing_args=(

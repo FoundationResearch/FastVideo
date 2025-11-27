@@ -57,8 +57,28 @@ class WanSelfForcingDistillationPipeline(SelfForcingDistillationPipeline):
 def main(args) -> None:
     logger.info("Starting Wan self-forcing distillation pipeline...")
 
-    pipeline = WanSelfForcingDistillationPipeline.from_pretrained(
-        args.pretrained_model_name_or_path, args=args)
+    # Optionally force a specific attention backend for the student model
+    student_backend = getattr(args, "student_attention_backend", "") or ""
+    if student_backend:
+        from fastvideo.attention.selector import (
+            global_force_attn_backend_context_manager,
+        )
+        from fastvideo.platforms import AttentionBackendEnum
+
+        try:
+            backend_enum = AttentionBackendEnum[student_backend]
+        except KeyError as e:
+            raise ValueError(
+                f"Invalid student_attention_backend='{student_backend}'. "
+                f"Expected one of: {[m.name for m in AttentionBackendEnum]}"
+            ) from e
+
+        with global_force_attn_backend_context_manager(backend_enum):
+            pipeline = WanSelfForcingDistillationPipeline.from_pretrained(
+                args.pretrained_model_name_or_path, args=args)
+    else:
+        pipeline = WanSelfForcingDistillationPipeline.from_pretrained(
+            args.pretrained_model_name_or_path, args=args)
 
     args = pipeline.training_args
     pipeline.train()

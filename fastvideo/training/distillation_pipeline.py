@@ -42,6 +42,10 @@ from fastvideo.training.training_utils import (
     shift_timestep)
 from fastvideo.utils import (is_vsa_available, maybe_download_model,
                              set_random_seed, verify_model_config_and_directory)
+from fastvideo.attention.selector import (
+    global_force_attn_backend_context_manager,
+)
+from fastvideo.platforms import AttentionBackendEnum
 
 vsa_available = is_vsa_available()
 
@@ -95,19 +99,52 @@ class DistillationPipeline(TrainingPipeline):
             logger.info("Loading real score transformer from: %s",
                         training_args.real_score_model_path)
             training_args.override_transformer_cls_name = "WanTransformer3DModel"
-            self.real_score_transformer = self.load_module_from_path(
-                training_args.real_score_model_path, "transformer",
-                training_args)
+
+            backend_name = getattr(training_args,
+                                   "teacher_attention_backend", "") or ""
+            if backend_name:
+                try:
+                    backend_enum = AttentionBackendEnum[backend_name]
+                except KeyError as e:
+                    raise ValueError(
+                        f"Invalid teacher_attention_backend='{backend_name}'. "
+                        f"Expected one of: {[m.name for m in AttentionBackendEnum]}"
+                    ) from e
+                ctx = global_force_attn_backend_context_manager(backend_enum)
+            else:
+                ctx = None
+
             try:
-                self.real_score_transformer_2 = self.load_module_from_path(
-                    training_args.real_score_model_path, "transformer_2",
-                    training_args)
-                logger.info("Loaded real score transformer_2 for MoE support")
-            except Exception:
-                logger.info(
-                    "real score transformer_2 not found, using single transformer"
-                )
-                self.real_score_transformer_2 = None
+                if ctx is not None:
+                    with ctx:
+                        self.real_score_transformer = self.load_module_from_path(
+                            training_args.real_score_model_path, "transformer",
+                            training_args)
+                else:
+                    self.real_score_transformer = self.load_module_from_path(
+                        training_args.real_score_model_path, "transformer",
+                        training_args)
+
+                try:
+                    if ctx is not None:
+                        with ctx:
+                            self.real_score_transformer_2 = self.load_module_from_path(
+                                training_args.real_score_model_path,
+                                "transformer_2", training_args)
+                    else:
+                        self.real_score_transformer_2 = self.load_module_from_path(
+                            training_args.real_score_model_path, "transformer_2",
+                            training_args)
+                    logger.info(
+                        "Loaded real score transformer_2 for MoE support")
+                except Exception:
+                    logger.info(
+                        "real score transformer_2 not found, using single transformer"
+                    )
+                    self.real_score_transformer_2 = None
+            finally:
+                # context manager cleans up itself on exit
+                pass
         else:
             self.real_score_transformer = self.get_module(
                 "real_score_transformer")
@@ -118,19 +155,52 @@ class DistillationPipeline(TrainingPipeline):
             logger.info("Loading fake score transformer from: %s",
                         training_args.fake_score_model_path)
             training_args.override_transformer_cls_name = "WanTransformer3DModel"
-            self.fake_score_transformer = self.load_module_from_path(
-                training_args.fake_score_model_path, "transformer",
-                training_args)
+
+            backend_name = getattr(training_args,
+                                   "critic_attention_backend", "") or ""
+            if backend_name:
+                try:
+                    backend_enum = AttentionBackendEnum[backend_name]
+                except KeyError as e:
+                    raise ValueError(
+                        f"Invalid critic_attention_backend='{backend_name}'. "
+                        f"Expected one of: {[m.name for m in AttentionBackendEnum]}"
+                    ) from e
+                ctx = global_force_attn_backend_context_manager(backend_enum)
+            else:
+                ctx = None
+
             try:
-                self.fake_score_transformer_2 = self.load_module_from_path(
-                    training_args.fake_score_model_path, "transformer_2",
-                    training_args)
-                logger.info("Loaded fake score transformer_2 for MoE support")
-            except Exception:
-                logger.info(
-                    "fake score transformer_2 not found, using single transformer"
-                )
-                self.fake_score_transformer_2 = None
+                if ctx is not None:
+                    with ctx:
+                        self.fake_score_transformer = self.load_module_from_path(
+                            training_args.fake_score_model_path, "transformer",
+                            training_args)
+                else:
+                    self.fake_score_transformer = self.load_module_from_path(
+                        training_args.fake_score_model_path, "transformer",
+                        training_args)
+
+                try:
+                    if ctx is not None:
+                        with ctx:
+                            self.fake_score_transformer_2 = self.load_module_from_path(
+                                training_args.fake_score_model_path,
+                                "transformer_2", training_args)
+                    else:
+                        self.fake_score_transformer_2 = self.load_module_from_path(
+                            training_args.fake_score_model_path, "transformer_2",
+                            training_args)
+                    logger.info(
+                        "Loaded fake score transformer_2 for MoE support")
+                except Exception:
+                    logger.info(
+                        "fake score transformer_2 not found, using single transformer"
+                    )
+                    self.fake_score_transformer_2 = None
+            finally:
+                # context manager cleans up itself on exit
+                pass
         else:
             self.fake_score_transformer = self.get_module(
                 "fake_score_transformer")
