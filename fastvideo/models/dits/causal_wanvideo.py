@@ -18,7 +18,7 @@ import torch.distributed as dist
 
 import fastvideo.envs as envs
 from fastvideo.attention import (DistributedAttention,
-                                 LocalAttention)
+                                 DistributedAttention_VSA, LocalAttention)
 from fastvideo.configs.models.dits import WanVideoConfig
 from fastvideo.distributed.parallel_state import get_sp_world_size
 from fastvideo.forward_context import get_forward_context
@@ -161,6 +161,69 @@ class CausalWanSelfAttention(nn.Module):
             kv_cache["local_end_index"].fill_(local_end_index)
 
         return x
+
+
+class CausalWanSelfAttention_VSA(nn.Module):
+    """
+    Skeleton for a causal self-attention module backed by VSA.
+
+    设计目标（见 `csrc/attn/video_sparse_attn/vsa/understand_kvcache.md`）：
+    - K/V cache 直接存已经 tile+pad 后的一维 K/V（按 VSA tile 轴拼接）。
+    - 每个 4‑frame block 的 K/V 先在物理顺序上算出，再用 VSA 的 `tile` 映射到 tile 轴，然后 append。
+    - Q 侧只对当前 block 做 tile/untile，使用当前 block 的 tile partition indices / non_pad_index。
+    - 真正的 VSA kernel 通过 DistributedAttention_VSA + VideoSparseAttentionImpl 调用。
+
+    目前只是占位符，接口与 `CausalWanSelfAttention` 对齐，后续按上面的设计逐步填充实现。
+    """
+
+    def __init__(self,
+                 dim: int,
+                 num_heads: int,
+                 local_attn_size: int = -1,
+                 sink_size: int = 0,
+                 qk_norm=True,
+                 eps=1e-6,
+                 parallel_attention: bool = False) -> None:
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.local_attn_size = local_attn_size
+        self.sink_size = sink_size
+        self.qk_norm = qk_norm
+        self.eps = eps
+        self.parallel_attention = parallel_attention
+
+        # 将在后续实现中用到：VSA 的 distributed attention 实现
+        self.attn_vsa = DistributedAttention_VSA(
+            num_heads=num_heads,
+            head_size=self.head_dim,
+            causal=False,
+            supported_attention_backends=(AttentionBackendEnum.VIDEO_SPARSE_ATTN,),
+            prefix="causal_vsa.attn1",
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        freqs_cis: tuple[torch.Tensor, torch.Tensor],
+        block_mask: BlockMask | None,
+        kv_cache: dict | None = None,
+        current_start: int = 0,
+        cache_start: int | None = None,
+    ) -> torch.Tensor:
+        """
+        预期接口与 `CausalWanSelfAttention.forward` 一致，方便在
+        `CausalWanTransformerBlock` 中做替换。
+
+        目前仅作为占位符，避免在尚未完全实现 KV+VSA 逻辑前误用。
+        """
+        raise NotImplementedError(
+            "CausalWanSelfAttention_VSA is a design skeleton only. "
+            "See `understand_kvcache.md` for the planned KV+VSA behavior."
+        )
 
 class CausalWanTransformerBlock(nn.Module):
 
