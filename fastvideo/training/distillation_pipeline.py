@@ -220,6 +220,52 @@ class DistillationPipeline(TrainingPipeline):
             self.fake_score_transformer_2.requires_grad_(True)
             self.fake_score_transformer_2.train()
 
+        # Log which models/backends are being used for student / teacher / critic
+        def _inspect_backend(model: torch.nn.Module | None) -> str:
+            if model is None:
+                return "None"
+            backend_name = "unknown"
+            try:
+                # Common pattern: Wan* models with blocks[0].attn1 / attn
+                blocks = getattr(model, "blocks", None)
+                if blocks is not None and len(blocks) > 0:
+                    block0 = blocks[0]
+                    attn_mod = None
+                    if hasattr(block0, "attn1"):
+                        attn_mod = getattr(block0, "attn1")
+                    elif hasattr(block0, "attn"):
+                        attn_mod = getattr(block0, "attn")
+                    if attn_mod is not None:
+                        # Direct backend attr (DistributedAttention, DistributedAttention_VSA, LocalAttention)
+                        if hasattr(attn_mod, "backend"):
+                            backend = getattr(attn_mod, "backend")
+                            backend_name = getattr(backend, "name", str(backend))
+                        # Nested LocalAttention inside CausalWanSelfAttention
+                        elif hasattr(attn_mod, "attn") and hasattr(
+                                attn_mod.attn, "backend"):
+                            backend = getattr(attn_mod.attn, "backend")
+                            backend_name = getattr(backend, "name", str(backend))
+            except Exception as e:  # pragma: no cover - best effort logging
+                logger.warning("Failed to inspect attention backend for %s: %s",
+                               model.__class__.__name__, str(e))
+            return backend_name
+
+        logger.info(
+            "[inspect] Student (generator) model: %s, attention backend: %s",
+            self.transformer.__class__.__name__,
+            _inspect_backend(self.transformer),
+        )
+        logger.info(
+            "[inspect] Teacher (real_score) model: %s, attention backend: %s",
+            self.real_score_transformer.__class__.__name__,
+            _inspect_backend(self.real_score_transformer),
+        )
+        logger.info(
+            "[inspect] Critic (fake_score) model: %s, attention backend: %s",
+            self.fake_score_transformer.__class__.__name__,
+            _inspect_backend(self.fake_score_transformer),
+        )
+
         if training_args.enable_gradient_checkpointing_type is not None:
             self.fake_score_transformer = apply_activation_checkpointing(
                 self.fake_score_transformer,
