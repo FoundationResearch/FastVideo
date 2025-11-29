@@ -7,8 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from torch.nn.attention.flex_attention import create_block_mask, flex_attention
-from torch.nn.attention.flex_attention import BlockMask
+from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
 # wan 1.3B model has a weird channel / head configurations and require max-autotune to work with flexattention
 # see https://github.com/pytorch/pytorch/issues/133254
 # change to default for other models
@@ -19,6 +18,14 @@ import torch.distributed as dist
 import fastvideo.envs as envs
 from fastvideo.attention import (DistributedAttention,
                                  DistributedAttention_VSA, LocalAttention)
+from fastvideo.attention.backends.video_sparse_attn import (
+    VSA_TILE_SIZE,
+    construct_variable_block_sizes,
+    get_non_pad_index,
+    get_reverse_tile_partition_indices,
+    get_tile_partition_indices,
+    video_sparse_attn,
+)
 from fastvideo.configs.models.dits import WanVideoConfig
 from fastvideo.distributed.parallel_state import get_sp_world_size
 from fastvideo.forward_context import get_forward_context
@@ -33,7 +40,7 @@ from fastvideo.layers.visual_embedding import (PatchEmbed)
 from fastvideo.logger import init_logger
 from fastvideo.models.dits.base import BaseDiT
 from fastvideo.models.dits.wanvideo import WanT2VCrossAttention, WanTimeTextImageEmbedding
-from fastvideo.platforms import AttentionBackendEnum
+from fastvideo.platforms import AttentionBackendEnum, current_platform
 
 logger = init_logger(__name__)
 class CausalWanSelfAttention(nn.Module):
@@ -165,26 +172,26 @@ class CausalWanSelfAttention(nn.Module):
 
 class CausalWanSelfAttention_VSA(nn.Module):
     """
-    Skeleton for a causal self-attention module backed by VSA.
+    Causal self-attention backed by Video Sparse Attention (VSA) with KV cache.
 
-    设计目标（见 `csrc/attn/video_sparse_attn/vsa/understand_kvcache.md`）：
-    - K/V cache 直接存已经 tile+pad 后的一维 K/V（按 VSA tile 轴拼接）。
-    - 每个 4‑frame block 的 K/V 先在物理顺序上算出，再用 VSA 的 `tile` 映射到 tile 轴，然后 append。
-    - Q 侧只对当前 block 做 tile/untile，使用当前 block 的 tile partition indices / non_pad_index。
-    - 真正的 VSA kernel 通过 DistributedAttention_VSA + VideoSparseAttentionImpl 调用。
-
-    目前只是占位符，接口与 `CausalWanSelfAttention` 对齐，后续按上面的设计逐步填充实现。
+    This module assumes:
+    - Inference-time only (must be called with a KV cache).
+    - KV cache stores *tiled* K/V in a 1D layout plus lightweight metadata,
+      following `csrc/attn/video_sparse_attn/vsa/understand_kvcache.md`.
     """
 
-    def __init__(self,
-                 dim: int,
-                 num_heads: int,
-                 local_attn_size: int = -1,
-                 sink_size: int = 0,
-                 qk_norm=True,
-                 eps=1e-6,
-                 parallel_attention: bool = False) -> None:
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        local_attn_size: int = -1,
+        sink_size: int = 0,
+        qk_norm: bool = True,
+        eps: float = 1e-6,
+        parallel_attention: bool = False,
+    ) -> None:
         super().__init__()
+        assert dim % num_heads == 0
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -194,13 +201,64 @@ class CausalWanSelfAttention_VSA(nn.Module):
         self.eps = eps
         self.parallel_attention = parallel_attention
 
-        # 将在后续实现中用到：VSA 的 distributed attention 实现
-        self.attn_vsa = DistributedAttention_VSA(
-            num_heads=num_heads,
-            head_size=self.head_dim,
-            causal=False,
-            supported_attention_backends=(AttentionBackendEnum.VIDEO_SPARSE_ATTN,),
-            prefix="causal_vsa.attn1",
+    @staticmethod
+    def _ensure_kv_cache_keys(kv_cache: dict) -> None:
+        required_keys = {"k", "v", "dit_seq_shape_block"}
+        missing = [k for k in required_keys if k not in kv_cache]
+        if missing:
+            raise ValueError(
+                f"CausalWanSelfAttention_VSA expects KV cache to contain keys "
+                f"{required_keys}, but missing {missing}. "
+                "Please ensure KV cache is initialized following "
+                "`understand_kvcache.md`."
+            )
+
+    def _build_block_tiling_metadata(
+        self,
+        kv_cache: dict,
+        device: torch.device,
+    ) -> tuple[tuple[int, int, int], tuple[int, int, int],
+               torch.LongTensor, torch.LongTensor, torch.LongTensor]:
+        """
+        Build per-block tiling metadata from `dit_seq_shape_block`.
+
+        Returns:
+            dit_seq_shape_block: (T_block', H', W')
+            num_tiles_block    : (n_t, n_h, n_w)
+            tile_partition_indices_block
+            reverse_tile_partition_indices_block
+            non_pad_index_block
+        """
+        dit_seq_shape_block: tuple[int, int,
+                                   int] = tuple(kv_cache["dit_seq_shape_block"])  # type: ignore[arg-type]
+        T_block_p, H_prime, W_prime = dit_seq_shape_block
+        num_tiles_block = (
+            math.ceil(T_block_p / VSA_TILE_SIZE[0]),
+            math.ceil(H_prime / VSA_TILE_SIZE[1]),
+            math.ceil(W_prime / VSA_TILE_SIZE[2]),
+        )
+
+        variable_block_sizes_block = construct_variable_block_sizes(
+            dit_seq_shape_block, num_tiles_block, device
+        )
+        tile_partition_indices_block = get_tile_partition_indices(
+            dit_seq_shape_block, VSA_TILE_SIZE, device
+        )
+        reverse_tile_partition_indices_block = get_reverse_tile_partition_indices(
+            dit_seq_shape_block, VSA_TILE_SIZE, device
+        )
+        non_pad_index_block = get_non_pad_index(
+            variable_block_sizes_block, math.prod(VSA_TILE_SIZE)
+        )
+        kv_cache.setdefault("variable_block_sizes", torch.empty(0,
+                                                                device=device,
+                                                                dtype=torch.long))
+        return (
+            dit_seq_shape_block,
+            num_tiles_block,
+            tile_partition_indices_block,
+            reverse_tile_partition_indices_block,
+            non_pad_index_block,
         )
 
     def forward(
@@ -208,6 +266,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        gate: torch.Tensor,
         freqs_cis: tuple[torch.Tensor, torch.Tensor],
         block_mask: BlockMask | None,
         kv_cache: dict | None = None,
@@ -215,15 +274,147 @@ class CausalWanSelfAttention_VSA(nn.Module):
         cache_start: int | None = None,
     ) -> torch.Tensor:
         """
-        预期接口与 `CausalWanSelfAttention.forward` 一致，方便在
-        `CausalWanTransformerBlock` 中做替换。
+        Args:
+            q, k, v, gate: [B, L_block, num_heads, head_dim] tensors for the current 4‑frame block.
+            freqs_cis    : Rotary embeddings (cos, sin).
+            block_mask   : Unused for VSA path (causality is enforced by KV cache prefix).
+            kv_cache     : Dict with tiled K/V cache and metadata.
 
-        目前仅作为占位符，避免在尚未完全实现 KV+VSA 逻辑前误用。
+        Returns:
+            Tensor of shape [B, L_block, num_heads, head_dim] for the current block.
         """
-        raise NotImplementedError(
-            "CausalWanSelfAttention_VSA is a design skeleton only. "
-            "See `understand_kvcache.md` for the planned KV+VSA behavior."
+        del block_mask, current_start, cache_start  # Unused in VSA path
+
+        if kv_cache is None:
+            raise NotImplementedError(
+                "CausalWanSelfAttention_VSA currently supports inference with KV cache only. "
+                "Please provide a KV cache dictionary."
+            )
+
+        self._ensure_kv_cache_keys(kv_cache)
+        device = q.device
+
+        # Apply RoPE on the current block only
+        cos, sin = freqs_cis
+        roped_query = _apply_rotary_emb(
+            q, cos, sin, is_neox_style=False
+        ).type_as(v)
+        roped_key = _apply_rotary_emb(
+            k, cos, sin, is_neox_style=False
+        ).type_as(v)
+
+        (
+            dit_seq_shape_block,
+            num_tiles_block,
+            tile_partition_indices_block,
+            reverse_tile_partition_indices_block,
+            non_pad_index_block,
+        ) = self._build_block_tiling_metadata(kv_cache, device)
+
+        T_block_p, H_prime, W_prime = dit_seq_shape_block
+
+        # Tile current block's K/V/gate into padded 1D layout
+        # Shapes: [B, L_tiled_block, num_heads, head_dim]
+        from fastvideo.attention.backends.video_sparse_attn import VideoSparseAttentionImpl
+
+        vsa_impl = VideoSparseAttentionImpl(
+            num_heads=self.num_heads,
+            head_size=self.head_dim,
+            causal=False,
+            softmax_scale=self.head_dim**-0.5,
+            num_kv_heads=self.num_heads,
+            prefix="causal_vsa.impl",
         )
+
+        k_tiled_block = vsa_impl.tile(
+            roped_key, num_tiles_block, tile_partition_indices_block,
+            non_pad_index_block)
+        v_tiled_block = vsa_impl.tile(
+            v, num_tiles_block, tile_partition_indices_block,
+            non_pad_index_block)
+        gate_tiled_block = vsa_impl.tile(
+            gate, num_tiles_block, tile_partition_indices_block,
+            non_pad_index_block)
+
+        B, L_tiled_block, num_heads, head_dim = k_tiled_block.shape
+        assert num_heads == self.num_heads and head_dim == self.head_dim
+
+        # Update KV cache: append tiled K/V and variable_block_sizes along the 1D tile axis
+        k_cache: torch.Tensor = kv_cache["k"]
+        v_cache: torch.Tensor = kv_cache["v"]
+        cache_capacity = k_cache.shape[1]
+
+        num_cached_blocks: int = int(kv_cache.get("num_cached_blocks", 0))
+        start_idx = num_cached_blocks * L_tiled_block
+        end_idx = start_idx + L_tiled_block
+        if end_idx > cache_capacity:
+            raise RuntimeError(
+                f"VSA KV cache capacity exceeded: needed {end_idx}, "
+                f"but cache has length {cache_capacity}. "
+                "Please increase max_num_frames or adjust KV cache sizing."
+            )
+
+        k_cache[:, start_idx:end_idx] = k_tiled_block
+        v_cache[:, start_idx:end_idx] = v_tiled_block
+
+        kv_cache["k"] = k_cache
+        kv_cache["v"] = v_cache
+        kv_cache["num_cached_blocks"] = num_cached_blocks + 1
+
+        variable_block_sizes_block = construct_variable_block_sizes(
+            dit_seq_shape_block, num_tiles_block, device
+        )
+        if kv_cache["variable_block_sizes"].numel() == 0:
+            variable_block_sizes_all = variable_block_sizes_block
+        else:
+            variable_block_sizes_all = torch.cat(
+                [kv_cache["variable_block_sizes"], variable_block_sizes_block],
+                dim=0)
+        kv_cache["variable_block_sizes"] = variable_block_sizes_all
+
+        # Build prefix-wide sparsity/topk information using the forward context
+        forward_ctx = get_forward_context()
+        ctx_attn_metadata = forward_ctx.attn_metadata
+        VSA_sparsity = float(getattr(ctx_attn_metadata, "VSA_sparsity", 0.0))
+
+        total_seq_length_prefix = (num_cached_blocks + 1) * T_block_p * H_prime * W_prime
+        cur_topk = math.ceil(
+            (1.0 - VSA_sparsity) *
+            (total_seq_length_prefix / math.prod(VSA_TILE_SIZE)))
+
+        # Prepare Q/gate for VSA kernel: only current block is tiled,
+        # while K/V come from the full prefix cache.
+        q_tiled_block = vsa_impl.tile(
+            roped_query, num_tiles_block, tile_partition_indices_block,
+            non_pad_index_block)
+
+        # K/V prefix: we use all cached tiled tokens up to `end_idx`
+        k_prefix = k_cache[:, :end_idx]
+        v_prefix = v_cache[:, :end_idx]
+
+        # Call the low-level VSA kernel directly (len(q) != len(k) is allowed)
+        q_in = q_tiled_block.transpose(1, 2).contiguous()
+        k_in = k_prefix.transpose(1, 2).contiguous()
+        v_in = v_prefix.transpose(1, 2).contiguous()
+        gate_in = gate_tiled_block.transpose(1, 2).contiguous()
+
+        hidden_tiled_out = video_sparse_attn(
+            q_in,
+            k_in,
+            v_in,
+            variable_block_sizes=variable_block_sizes_all,
+            topk=cur_topk,
+            block_size=VSA_TILE_SIZE,
+            compress_attn_weight=gate_in,
+        ).transpose(1, 2)
+
+        # Untile back to the current block's original order
+        hidden_block = vsa_impl.untile(
+            hidden_tiled_out,
+            reverse_tile_partition_indices_block,
+            non_pad_index_block,
+        )
+        return hidden_block
 
 class CausalWanTransformerBlock(nn.Module):
 
@@ -364,6 +555,176 @@ class CausalWanTransformerBlock(nn.Module):
 
         return hidden_states
 
+
+class CausalWanTransformerBlock_VSA(nn.Module):
+    """
+    Causal Wan transformer block that uses VSA-backed self-attention for the student model.
+
+    Self-attention:
+      - Uses `CausalWanSelfAttention_VSA` with a KV cache that stores tiled K/V.
+      - Adds a learnable `to_gate_compress` projection, similar to non-causal VSA blocks.
+
+    Cross-attention and MLP parts mirror `CausalWanTransformerBlock`.
+    """
+
+    def __init__(self,
+                 dim: int,
+                 ffn_dim: int,
+                 num_heads: int,
+                 local_attn_size: int = -1,
+                 sink_size: int = 0,
+                 qk_norm: str = "rms_norm_across_heads",
+                 cross_attn_norm: bool = False,
+                 eps: float = 1e-6,
+                 added_kv_proj_dim: int | None = None,
+                 supported_attention_backends:
+                 tuple[AttentionBackendEnum, ...] | None = None,
+                 prefix: str = ""):
+        super().__init__()
+
+        # 1. Self-attention (VSA)
+        self.norm1 = nn.LayerNorm(dim, eps, elementwise_affine=False)
+        self.to_q = ReplicatedLinear(dim, dim, bias=True)
+        self.to_k = ReplicatedLinear(dim, dim, bias=True)
+        self.to_v = ReplicatedLinear(dim, dim, bias=True)
+        self.to_gate_compress = ReplicatedLinear(dim, dim, bias=True)
+
+        self.to_out = ReplicatedLinear(dim, dim, bias=True)
+        self.attn1 = CausalWanSelfAttention_VSA(
+            dim,
+            num_heads,
+            local_attn_size=local_attn_size,
+            sink_size=sink_size,
+            qk_norm=qk_norm,
+            eps=eps,
+        )
+        self.hidden_dim = dim
+        self.num_attention_heads = num_heads
+        self.local_attn_size = local_attn_size
+        dim_head = dim // num_heads
+        if qk_norm == "rms_norm":
+            self.norm_q = RMSNorm(dim_head, eps=eps)
+            self.norm_k = RMSNorm(dim_head, eps=eps)
+        elif qk_norm == "rms_norm_across_heads":
+            # LTX applies qk norm across all heads
+            self.norm_q = RMSNorm(dim, eps=eps)
+            self.norm_k = RMSNorm(dim, eps=eps)
+        else:
+            print("QK Norm type not supported")
+            raise Exception
+        assert cross_attn_norm is True
+        self.self_attn_residual_norm = ScaleResidualLayerNormScaleShift(
+            dim,
+            norm_type="layer",
+            eps=eps,
+            elementwise_affine=True,
+            dtype=torch.float32,
+        )
+
+        # 2. Cross-attention (same as causal block, T2V only)
+        self.attn2 = WanT2VCrossAttention(dim,
+                                          num_heads,
+                                          qk_norm=qk_norm,
+                                          eps=eps)
+        self.cross_attn_residual_norm = ScaleResidualLayerNormScaleShift(
+            dim,
+            norm_type="layer",
+            eps=eps,
+            elementwise_affine=False,
+            dtype=torch.float32,
+        )
+
+        # 3. Feed-forward
+        self.ffn = MLP(dim, ffn_dim, act_type="gelu_pytorch_tanh")
+        self.mlp_residual = ScaleResidual()
+
+        self.scale_shift_table = nn.Parameter(
+            torch.randn(1, 6, dim) / dim**0.5)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        freqs_cis: tuple[torch.Tensor, torch.Tensor],
+        block_mask: BlockMask,
+        kv_cache: dict | None = None,
+        crossattn_cache: dict | None = None,
+        current_start: int = 0,
+        cache_start: int | None = None,
+    ) -> torch.Tensor:
+        # hidden_states.shape: [batch_size, seq_length, inner_dim]
+        # temb.shape: [batch_size, num_frames, 6, inner_dim]
+        if hidden_states.dim() == 4:
+            hidden_states = hidden_states.squeeze(1)
+        num_frames = temb.shape[1]
+        frame_seqlen = hidden_states.shape[1] // num_frames
+        bs, seq_length, _ = hidden_states.shape
+        orig_dtype = hidden_states.dtype
+
+        e = self.scale_shift_table + temb
+        # e.shape: [batch_size, num_frames, 6, inner_dim]
+        assert e.shape == (bs, num_frames, 6, self.hidden_dim)
+        shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = e.chunk(
+            6, dim=2)
+
+        # 1. Self-attention (VSA)
+        norm_hidden_states = (self.norm1(hidden_states).unflatten(
+            dim=1, sizes=(num_frames, frame_seqlen)) *
+                               (1 + scale_msa) + shift_msa).flatten(1, 2)
+        query, _ = self.to_q(norm_hidden_states)
+        key, _ = self.to_k(norm_hidden_states)
+        value, _ = self.to_v(norm_hidden_states)
+        gate_compress, _ = self.to_gate_compress(norm_hidden_states)
+
+        if self.norm_q is not None:
+            query = self.norm_q.forward_native(query)
+        if self.norm_k is not None:
+            key = self.norm_k.forward_native(key)
+
+        query = query.squeeze(1).unflatten(2,
+                                           (self.num_attention_heads, -1))
+        key = key.squeeze(1).unflatten(2, (self.num_attention_heads, -1))
+        value = value.squeeze(1).unflatten(2,
+                                           (self.num_attention_heads, -1))
+        gate_compress = gate_compress.squeeze(1).unflatten(
+            2, (self.num_attention_heads, -1))
+
+        attn_output = self.attn1(
+            query,
+            key,
+            value,
+            gate_compress,
+            freqs_cis,
+            block_mask,
+            kv_cache,
+            current_start,
+            cache_start,
+        )
+        attn_output = attn_output.flatten(2)
+        attn_output, _ = self.to_out(attn_output)
+        attn_output = attn_output.squeeze(1)
+
+        null_shift = null_scale = torch.tensor([0],
+                                               device=hidden_states.device)
+        norm_hidden_states, hidden_states = self.self_attn_residual_norm(
+            hidden_states, attn_output, gate_msa, null_shift, null_scale)
+
+        # 2. Cross-attention
+        attn_output = self.attn2(norm_hidden_states,
+                                 context=encoder_hidden_states,
+                                 context_lens=None,
+                                 crossattn_cache=crossattn_cache)
+        norm_hidden_states, hidden_states = self.cross_attn_residual_norm(
+            hidden_states, attn_output, 1, c_shift_msa, c_scale_msa)
+
+        # 3. Feed-forward
+        ff_output = self.ffn(norm_hidden_states)
+        hidden_states = self.mlp_residual(hidden_states, ff_output,
+                                          c_gate_msa)
+
+        return hidden_states
+
 class CausalWanTransformer3DModel(BaseDiT):
     _fsdp_shard_conditions = WanVideoConfig()._fsdp_shard_conditions
     _compile_conditions = WanVideoConfig()._compile_conditions
@@ -403,18 +764,23 @@ class CausalWanTransformer3DModel(BaseDiT):
         )
 
         # 3. Transformer blocks
+        attn_backend = envs.FASTVIDEO_ATTENTION_BACKEND
+        transformer_block_cls = (
+            CausalWanTransformerBlock_VSA
+            if attn_backend == "VIDEO_SPARSE_ATTN" else CausalWanTransformerBlock
+        )
         self.blocks = nn.ModuleList([
-            CausalWanTransformerBlock(inner_dim,
-                              config.ffn_dim,
-                              config.num_attention_heads,
-                              config.local_attn_size,
-                              config.sink_size,
-                              config.qk_norm,
-                              config.cross_attn_norm,
-                              config.eps,
-                              config.added_kv_proj_dim,
-                              self._supported_attention_backends,
-                              prefix=f"{config.prefix}.blocks.{i}")
+            transformer_block_cls(inner_dim,
+                                  config.ffn_dim,
+                                  config.num_attention_heads,
+                                  config.local_attn_size,
+                                  config.sink_size,
+                                  config.qk_norm,
+                                  config.cross_attn_norm,
+                                  config.eps,
+                                  config.added_kv_proj_dim,
+                                  self._supported_attention_backends,
+                                  prefix=f"{config.prefix}.blocks.{i}")
             for i in range(config.num_layers)
         ])
 
