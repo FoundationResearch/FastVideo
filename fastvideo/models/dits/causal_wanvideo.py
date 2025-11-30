@@ -26,6 +26,7 @@ from fastvideo.attention.backends.video_sparse_attn import (
     get_tile_partition_indices,
     video_sparse_attn,
 )
+from fastvideo.attention.backends.video_sparse_attn import VideoSparseAttentionImpl
 from fastvideo.configs.models.dits import WanVideoConfig
 from fastvideo.distributed.parallel_state import get_sp_world_size
 from fastvideo.forward_context import get_forward_context
@@ -173,6 +174,7 @@ class CausalWanSelfAttention(nn.Module):
 class CausalWanSelfAttention_VSA(nn.Module):
     """
     Causal self-attention backed by Video Sparse Attention (VSA) with KV cache.
+    The KV cache is limited to a fixed size. Should change to dynamic kv cache size in the future if needed.
 
     This module assumes:
     - Inference-time only (must be called with a KV cache).
@@ -200,6 +202,8 @@ class CausalWanSelfAttention_VSA(nn.Module):
         self.qk_norm = qk_norm
         self.eps = eps
         self.parallel_attention = parallel_attention
+        # For code consistency.
+        self.backend = AttentionBackendEnum.VIDEO_SPARSE_ATTN
 
     @staticmethod
     def _ensure_kv_cache_keys(kv_cache: dict) -> None:
@@ -275,7 +279,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            q, k, v, gate: [B, L_block, num_heads, head_dim] tensors for the current 4‑frame block.
+            q, k, v, gate: [B, L_block, num_heads, head_dim] tensors for the current 4-frame block.
             freqs_cis    : Rotary embeddings (cos, sin).
             block_mask   : Unused for VSA path (causality is enforced by KV cache prefix).
             kv_cache     : Dict with tiled K/V cache and metadata.
@@ -315,7 +319,6 @@ class CausalWanSelfAttention_VSA(nn.Module):
 
         # Tile current block's K/V/gate into padded 1D layout
         # Shapes: [B, L_tiled_block, num_heads, head_dim]
-        from fastvideo.attention.backends.video_sparse_attn import VideoSparseAttentionImpl
 
         vsa_impl = VideoSparseAttentionImpl(
             num_heads=self.num_heads,
@@ -347,13 +350,14 @@ class CausalWanSelfAttention_VSA(nn.Module):
         num_cached_blocks: int = int(kv_cache.get("num_cached_blocks", 0))
         start_idx = num_cached_blocks * L_tiled_block
         end_idx = start_idx + L_tiled_block
+        
+        # TODO: limited kv cache size. Should change to dynamic kv cache size in the future if needed.
         if end_idx > cache_capacity:
             raise RuntimeError(
                 f"VSA KV cache capacity exceeded: needed {end_idx}, "
                 f"but cache has length {cache_capacity}. "
                 "Please increase max_num_frames or adjust KV cache sizing."
             )
-
         k_cache[:, start_idx:end_idx] = k_tiled_block
         v_cache[:, start_idx:end_idx] = v_tiled_block
 
