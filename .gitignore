@@ -31,6 +31,7 @@ env
 **.pyc
 **.txt
 .cache/
+*.log
 
 # Distribution / packaging
 build/
