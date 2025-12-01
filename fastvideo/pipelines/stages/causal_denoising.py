@@ -66,8 +66,8 @@ class CausalDMDDenosingStage(DenoisingStage):
                             ) and not fastvideo_args.disable_autocast
 
         latent_seq_length = batch.latents.shape[-1] * batch.latents.shape[-2]
-        patch_ratio = self.transformer.config.arch_config.patch_size[
-            -1] * self.transformer.config.arch_config.patch_size[-2]
+        p_t, p_h, p_w = self.transformer.config.arch_config.patch_size
+        patch_ratio = p_h * p_w
         self.frame_seq_length = latent_seq_length // patch_ratio
         # TODO(will): make this a parameter once we add i2v support
         independent_first_frame = self.transformer.independent_first_frame if hasattr(
@@ -113,6 +113,13 @@ class CausalDMDDenosingStage(DenoisingStage):
         assert torch.isnan(prompt_embeds[0]).sum() == 0
 
         # Initialize or reset caches
+        # Compute per-block patch-space 3D shape for VSA-aware KV cache.
+        # Each causal block has `self.num_frames_per_block` frames.
+        T_block_p = self.num_frames_per_block // p_t
+        H_prime = h // p_h
+        W_prime = w // p_w
+        self.dit_seq_shape_block = (T_block_p, H_prime, W_prime)
+
         kv_cache1 = self._initialize_kv_cache(batch_size=latents.shape[0],
                                               dtype=target_dtype,
                                               device=latents.device)
@@ -439,6 +446,9 @@ class CausalDMDDenosingStage(DenoisingStage):
                 torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index":
                 torch.tensor([0], dtype=torch.long, device=device),
+                # Geometry for a single causal block in patch space; required for VSA.
+                "dit_seq_shape_block":
+                self.dit_seq_shape_block,
             })
 
         return kv_cache1

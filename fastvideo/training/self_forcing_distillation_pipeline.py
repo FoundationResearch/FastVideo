@@ -586,12 +586,31 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
         latent_shape = self.video_latent_shape_sp
         _, num_frames, _, height, width = latent_shape
 
-        _, p_h, p_w = self.transformer.patch_size
+        # Compute per-frame patch grid and per-block 3D patch shape for VSA.
+        p_t, p_h, p_w = self.transformer.patch_size
+        post_patch_num_frames = num_frames // p_t
         post_patch_height = height // p_h
         post_patch_width = width // p_w
 
         frame_seq_length = post_patch_height * post_patch_width
         self.frame_seq_length = frame_seq_length
+
+        # For causal VSA, each block always consists of num_frame_per_block frames.
+        # Convert it to patch space (T'_block, H', W') so that attention can
+        # reconstruct per-block tiling without knowing the original video shape.
+        num_frame_per_block = getattr(self.transformer, "num_frame_per_block",
+                                      None)
+        if num_frame_per_block is None:
+            raise ValueError(
+                "Transformer is expected to have `num_frame_per_block` for causal VSA."
+            )
+        if num_frame_per_block % p_t != 0:
+            raise ValueError(
+                f"num_frame_per_block={num_frame_per_block} must be divisible by patch temporal size p_t={p_t}."
+            )
+        T_block_p = num_frame_per_block // p_t
+        self.dit_seq_shape_block = (T_block_p, post_patch_height,
+                                    post_patch_width)
 
         # Get model configuration parameters - handle FSDP wrapping
         num_attention_heads = getattr(self.transformer, 'num_attention_heads',
@@ -622,10 +641,14 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                 ],
                             dtype=dtype,
                             device=device),
+                # Legacy indices used by non-VSA causal paths; harmless for VSA.
                 "global_end_index":
                 torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index":
-                torch.tensor([0], dtype=torch.long, device=device)
+                torch.tensor([0], dtype=torch.long, device=device),
+                # Geometry for a single 4-frame (or num_frame_per_block) block in patch space.
+                "dit_seq_shape_block":
+                self.dit_seq_shape_block,
             })
 
         # Initialize cross-attention cache

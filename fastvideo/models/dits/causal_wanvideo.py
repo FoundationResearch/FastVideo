@@ -191,6 +191,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         qk_norm: bool = True,
         eps: float = 1e-6,
         parallel_attention: bool = False,
+        kv_cache_policy: str = "error",  # "error" | "extend"
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0
@@ -202,6 +203,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         self.qk_norm = qk_norm
         self.eps = eps
         self.parallel_attention = parallel_attention
+        self.kv_cache_policy = kv_cache_policy
         # For code consistency.
         self.backend = AttentionBackendEnum.VIDEO_SPARSE_ATTN
 
@@ -350,14 +352,38 @@ class CausalWanSelfAttention_VSA(nn.Module):
         num_cached_blocks: int = int(kv_cache.get("num_cached_blocks", 0))
         start_idx = num_cached_blocks * L_tiled_block
         end_idx = start_idx + L_tiled_block
-        
-        # TODO: limited kv cache size. Should change to dynamic kv cache size in the future if needed.
+
+        # Handle limited KV cache capacity according to policy:
+        # - "error"  : raise if capacity is exceeded (strict, recommended for training).
+        # - "extend" : dynamically grow KV cache tensors to accommodate new blocks.
         if end_idx > cache_capacity:
-            raise RuntimeError(
-                f"VSA KV cache capacity exceeded: needed {end_idx}, "
-                f"but cache has length {cache_capacity}. "
-                "Please increase max_num_frames or adjust KV cache sizing."
-            )
+            if self.kv_cache_policy == "error":
+                raise RuntimeError(
+                    f"VSA KV cache capacity exceeded: needed {end_idx}, "
+                    f"but cache has length {cache_capacity}. "
+                    "Please increase max_num_frames or adjust KV cache sizing, "
+                    "or switch KV cache policy to 'extend'."
+                )
+            elif self.kv_cache_policy == "extend":
+                new_capacity = max(end_idx, cache_capacity * 2)
+                if new_capacity <= cache_capacity:
+                    new_capacity = end_idx
+                new_k = k_cache.new_zeros(
+                    (k_cache.shape[0], new_capacity, k_cache.shape[2],
+                     k_cache.shape[3]))
+                new_v = v_cache.new_zeros(
+                    (v_cache.shape[0], new_capacity, v_cache.shape[2],
+                     v_cache.shape[3]))
+                new_k[:, :cache_capacity] = k_cache
+                new_v[:, :cache_capacity] = v_cache
+                k_cache = new_k
+                v_cache = new_v
+                kv_cache["k"] = k_cache
+                kv_cache["v"] = v_cache
+                cache_capacity = new_capacity
+            else:
+                raise ValueError(
+                    f"Unsupported KV cache policy: {self.kv_cache_policy}")
         k_cache[:, start_idx:end_idx] = k_tiled_block
         v_cache[:, start_idx:end_idx] = v_tiled_block
 
