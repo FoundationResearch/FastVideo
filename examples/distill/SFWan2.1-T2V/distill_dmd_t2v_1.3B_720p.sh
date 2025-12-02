@@ -16,12 +16,12 @@ export NCCL_P2P_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 # different cache dir for different processes
 export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_PROCID}
-export MASTER_PORT=29504
+export MASTER_PORT=29503
 export TOKENIZERS_PARALLELISM=false
 export WANDB_API_KEY="50632ebd88ffd970521cec9ab4a1a2d7e85bfc45"
 export WANDB_BASE_URL="https://api.wandb.ai"
 export WANDB_MODE=online
-export FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN
+export FASTVIDEO_ATTENTION_BACKEND=FLASH_ATTN
 
 # Configs
 NUM_GPUS=2
@@ -29,30 +29,29 @@ NUM_GPUS=2
 # Model paths for Self-Forcing DMD distillation:
 GENERATOR_MODEL_PATH="wlsaidhi/SFWan2.1-T2V-1.3B-Diffusers"
 REAL_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-14B-Diffusers"  # Teacher model
-FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
+FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic model
 
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=5,6
 # IP=[MASTER NODE IP]
 
 training_args=(
   --tracker_project_name SFwan_t2v_distill_self_forcing_dmd  
-  --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_VSA_backend_720p"
-  # --override_transformer_cls_name "CausalWanTransformer3DModel"
+  --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_FA2_720p"
   --max_train_steps 4000
   --train_batch_size 1
   --train_sp_batch_size 1
   --gradient_accumulation_steps 1
-  --num_latent_t 24
+  --num_latent_t 21
   --num_height 720
   --num_width 1280
   --enable_gradient_checkpointing_type "full"
   --log_visualization
   --simulate_generator_forward
   --num_frames 81
-  --num_frame_per_block 4  # Frame generation block size for self-forcing (VSA 4-4-4)
+  --num_frame_per_block 3  # Frame generation block size for self-forcing
   --enable_gradient_masking
   --gradient_mask_last_n_frames 21
 )
@@ -117,10 +116,6 @@ dmd_args=(
   --fake_score_learning_rate 8e-6
   --fake_score_betas '0.0,0.999'
   --warp_denoising_step
-  # Attention backend overrides: student=VSA, teacher/critic=Flash
-  --student_attention_backend VIDEO_SPARSE_ATTN
-  --teacher_attention_backend FLASH_ATTN
-  --critic_attention_backend FLASH_ATTN
 )
 
 self_forcing_args=(
@@ -128,12 +123,6 @@ self_forcing_args=(
   --same_step_across_blocks True  # Whether to use same denoising step across all blocks
   --last_step_only False  # Whether to only use the last denoising step
   --context_noise 0  # Amount of noise to add during context caching (0 = no noise)
-)
-
-vsa_args=(
-  --VSA_sparsity 0.8
-  --VSA_decay_rate 0.01
-  --VSA_decay_interval_steps 1
 )
 
 torchrun \
@@ -149,5 +138,4 @@ torchrun \
     "${validation_args[@]}" \
     "${miscellaneous_args[@]}" \
     "${dmd_args[@]}" \
-    "${self_forcing_args[@]}" \
-    "${vsa_args[@]}"
+    "${self_forcing_args[@]}"

@@ -34,7 +34,7 @@ FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
-export CUDA_VISIBLE_DEVICES=0,7
+export CUDA_VISIBLE_DEVICES=1,2
 # IP=[MASTER NODE IP]
 
 training_args=(
