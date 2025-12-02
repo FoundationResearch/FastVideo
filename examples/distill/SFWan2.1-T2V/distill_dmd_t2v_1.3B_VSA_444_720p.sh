@@ -105,7 +105,7 @@ miscellaneous_args=(
   --use_ema True
   --ema_decay 0.99
   --ema_start_step 100
-  # --init_weights_from_safetensors your_ode_init_weights_path
+  --init_weights_from_safetensors /home/hao_lab/alex/datas/ODE_INIT/conversion/model.safetensors
 )
 
 dmd_args=(

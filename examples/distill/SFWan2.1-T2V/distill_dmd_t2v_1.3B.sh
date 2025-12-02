@@ -39,7 +39,7 @@ export CUDA_VISIBLE_DEVICES=5,6
 
 training_args=(
   --tracker_project_name SFwan_t2v_distill_self_forcing_dmd  
-  --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_FA"
+  --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_FA2"
   --max_train_steps 4000
   --train_batch_size 1
   --train_sp_batch_size 1
@@ -104,7 +104,7 @@ miscellaneous_args=(
   --use_ema True
   --ema_decay 0.99
   --ema_start_step 100
-  # --init_weights_from_safetensors your_ode_init_weights_path
+  --init_weights_from_safetensors /home/hao_lab/alex/datas/ODE_INIT/conversion/model.safetensors
 )
 
 dmd_args=(
