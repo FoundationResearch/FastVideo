@@ -10,6 +10,7 @@ import torch.nn as nn
 import fastvideo.envs as envs
 from fastvideo.attention import (DistributedAttention, DistributedAttention_VSA,
                                  LocalAttention)
+from fastvideo.attention.selector import get_global_forced_attn_backend
 from fastvideo.configs.models.dits import WanVideoConfig
 from fastvideo.configs.sample.wan import WanTeaCacheParams
 from fastvideo.distributed.parallel_state import get_sp_world_size
@@ -578,8 +579,16 @@ class WanTransformer3DModel(CachableDiT):
         )
 
         # 3. Transformer blocks
-        attn_backend = envs.FASTVIDEO_ATTENTION_BACKEND
-        transformer_block = WanTransformerBlock_VSA if attn_backend == "VIDEO_SPARSE_ATTN" else WanTransformerBlock
+        # Select block implementation based on the *effective* attention backend.
+        # Fix: consider global forced backend here, since it has highest precedence
+        forced_backend = get_global_forced_attn_backend()
+        if forced_backend is not None:
+            attn_backend_name = forced_backend.name
+        else:
+            attn_backend_name = envs.FASTVIDEO_ATTENTION_BACKEND
+
+        use_vsa_blocks = attn_backend_name == "VIDEO_SPARSE_ATTN"
+        transformer_block = WanTransformerBlock_VSA if use_vsa_blocks else WanTransformerBlock
         self.blocks = nn.ModuleList([
             transformer_block(inner_dim,
                               config.ffn_dim,
