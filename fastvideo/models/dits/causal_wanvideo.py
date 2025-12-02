@@ -344,9 +344,13 @@ class CausalWanSelfAttention_VSA(nn.Module):
         B, L_tiled_block, num_heads, head_dim = k_tiled_block.shape
         assert num_heads == self.num_heads and head_dim == self.head_dim
 
-        # Update KV cache: append tiled K/V and variable_block_sizes along the 1D tile axis
-        k_cache: torch.Tensor = kv_cache["k"]
-        v_cache: torch.Tensor = kv_cache["v"]
+        # Update KV cache: append tiled K/V and variable_block_sizes along the 1D tile axis.
+        # Detach cache tensors from any existing computation graph so that in-place
+        # updates are safe even when this module is used under autograd / checkpointing.
+        k_cache: torch.Tensor = kv_cache["k"].detach()
+        v_cache: torch.Tensor = kv_cache["v"].detach()
+        kv_cache["k"] = k_cache
+        kv_cache["v"] = v_cache
         cache_capacity = k_cache.shape[1]
 
         num_cached_blocks: int = int(kv_cache.get("num_cached_blocks", 0))
