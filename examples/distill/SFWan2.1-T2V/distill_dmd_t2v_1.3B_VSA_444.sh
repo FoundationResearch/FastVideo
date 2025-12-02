@@ -38,7 +38,7 @@ export CUDA_VISIBLE_DEVICES=1,2
 # IP=[MASTER NODE IP]
 
 training_args=(
-  --tracker_project_name SFwan_t2v_distill_self_forcing_dmd  
+  --tracker_project_name alex_VSA_SFwan_t2v_distill_self_forcing_dmd  
   --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_VSA_backend"
   # --override_transformer_cls_name "CausalWanTransformer3DModel"
   --max_train_steps 4000
@@ -131,7 +131,7 @@ self_forcing_args=(
 )
 
 vsa_args=(
-  --VSA_sparsity 0.8
+  --VSA_sparsity 0.05
   --VSA_decay_rate 0.01
   --VSA_decay_interval_steps 1
 )

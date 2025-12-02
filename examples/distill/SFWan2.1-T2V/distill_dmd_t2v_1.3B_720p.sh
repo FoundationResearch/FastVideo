@@ -38,7 +38,7 @@ export CUDA_VISIBLE_DEVICES=5,6
 # IP=[MASTER NODE IP]
 
 training_args=(
-  --tracker_project_name SFwan_t2v_distill_self_forcing_dmd  
+  --tracker_project_name alex_SFwan_t2v_distill_self_forcing_dmd  
   --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_FA2_720p"
   --max_train_steps 4000
   --train_batch_size 1
