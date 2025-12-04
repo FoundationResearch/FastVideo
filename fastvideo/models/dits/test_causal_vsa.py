@@ -7,6 +7,10 @@ from fastvideo.attention.backends.video_sparse_attn import (
     VSA_TILE_SIZE,
     construct_variable_block_sizes,
 )
+from fastvideo.distributed.parallel_state import (
+    maybe_init_distributed_environment_and_model_parallel,
+    model_parallel_is_initialized,
+)
 from fastvideo.forward_context import set_forward_context
 from fastvideo.layers.rotary_embedding import get_nd_rotary_pos_embed
 from fastvideo.models.dits.causal_wanvideo import CausalWanSelfAttention_VSA
@@ -44,13 +48,14 @@ def _build_freqs_cis(
 
 def run_causal_vsa_kvcache_sanity_check(
     *,
-    batch_size: int = 2,
+    batch_size: int = 1,
     num_heads: int = 8,
     head_dim: int = 64,
     dit_seq_shape_block: tuple[int, int, int] = (6, 10, 13),
     num_blocks: int = 3,
     VSA_sparsity: float = 0.5,
     device: torch.device | None = None,
+    dtype: torch.dtype = torch.bfloat16,
 ) -> None:
     """
     Sanity check for causal VSA implementation:
@@ -101,7 +106,7 @@ def run_causal_vsa_kvcache_sanity_check(
             kv_capacity,
             num_heads,
             head_dim,
-            dtype=torch.float32,
+            dtype=dtype,
             device=device,
         ),
         "v":
@@ -110,7 +115,7 @@ def run_causal_vsa_kvcache_sanity_check(
             kv_capacity,
             num_heads,
             head_dim,
-            dtype=torch.float32,
+            dtype=dtype,
             device=device,
         ),
         # per‑block 3D shape (after patching)
@@ -156,7 +161,7 @@ def run_causal_vsa_kvcache_sanity_check(
                             num_heads,
                             head_dim,
                             device=device,
-                            dtype=torch.float32)
+                            dtype=dtype)
             k = torch.randn_like(q)
             v = torch.randn_like(q)
             gate = torch.randn_like(q)
@@ -249,6 +254,12 @@ def run_causal_vsa_kvcache_sanity_check(
 
 
 def main() -> None:
+    # Ensure distributed + model parallel environment is initialized so that
+    # VideoSparseAttentionImpl can query the SP group.
+    if not model_parallel_is_initialized():
+        # Single-process, single-GPU setup: tp_size=1, sp_size=1.
+        maybe_init_distributed_environment_and_model_parallel(
+            tp_size=1, sp_size=1)
     run_causal_vsa_kvcache_sanity_check()
 
 

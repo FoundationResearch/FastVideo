@@ -250,19 +250,37 @@ class DistillationPipeline(TrainingPipeline):
                                model.__class__.__name__, str(e))
             return backend_name
 
+        def _inspect_block_type(model: torch.nn.Module | None) -> str:
+            if model is None:
+                return "None"
+            try:
+                blocks = getattr(model, "blocks", None)
+                if blocks is None:
+                    return "no_blocks_attr"
+                if hasattr(blocks, "__len__") and len(blocks) > 0:
+                    return blocks[0].__class__.__name__
+                return "empty_blocks"
+            except Exception as e:  # pragma: no cover - best effort logging
+                logger.warning("Failed to inspect block type for %s: %s",
+                               model.__class__.__name__, str(e))
+                return "inspect_error"
+
         logger.info(
-            "[inspect] Student (generator) model: %s, attention backend: %s",
+            "[inspect] Student (generator) model: %s, block: %s, attention backend: %s",
             self.transformer.__class__.__name__,
+            _inspect_block_type(self.transformer),
             _inspect_backend(self.transformer),
         )
         logger.info(
-            "[inspect] Teacher (real_score) model: %s, attention backend: %s",
+            "[inspect] Teacher (real_score) model: %s, block: %s, attention backend: %s",
             self.real_score_transformer.__class__.__name__,
+            _inspect_block_type(self.real_score_transformer),
             _inspect_backend(self.real_score_transformer),
         )
         logger.info(
-            "[inspect] Critic (fake_score) model: %s, attention backend: %s",
+            "[inspect] Critic (fake_score) model: %s, block: %s, attention backend: %s",
             self.fake_score_transformer.__class__.__name__,
+            _inspect_block_type(self.fake_score_transformer),
             _inspect_backend(self.fake_score_transformer),
         )
 
