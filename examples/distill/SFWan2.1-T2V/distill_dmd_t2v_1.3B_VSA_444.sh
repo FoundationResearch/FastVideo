@@ -40,7 +40,7 @@ export CUDA_VISIBLE_DEVICES=1,2
 training_args=(
   --tracker_project_name alex_VSA_SFwan_t2v_distill_self_forcing_dmd  
   --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_VSA_backend"
-  --override_transformer_cls_name "CausalWanTransformer3DModel"
+  # --override_transformer_cls_name "CausalWanTransformer3DModel"
   --max_train_steps 4000
   --train_batch_size 1
   --train_sp_batch_size 1
