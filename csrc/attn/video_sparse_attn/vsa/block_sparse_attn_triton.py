@@ -247,11 +247,12 @@ def _attn_bwd_dq(dq, q, K, V,  #
 
     kv_blocks = tl.load(q2k_num  + meta_base)                 # int32
     kv_ptr    = q2k_index + meta_base * max_kv_blks           # ptr to list
-    block_size = tl.load(variable_block_sizes + q_blk)
     
     
     for blk_idx in range(kv_blocks*2):
-        block_sparse_offset = (tl.load(kv_ptr + blk_idx//2).to(tl.int32)*2 + blk_idx%2) *step_n * stride_tok
+        kv_idx = tl.load(kv_ptr + blk_idx//2).to(tl.int32)
+        block_size = tl.load(variable_block_sizes + kv_idx) -  (blk_idx % 2) * step_n
+        block_sparse_offset = (kv_idx*2 + blk_idx%2) * step_n * stride_tok
         kT = tl.load(kT_ptrs + block_sparse_offset)
         vT = tl.load(vT_ptrs + block_sparse_offset)
         qk = tl.dot(q, kT)
@@ -445,5 +446,4 @@ def triton_block_sparse_attn_backward(do, q, k, v, o, M, q2k_index, q2k_num, k2q
     )
 
     return dq, dk, dv
-
 
