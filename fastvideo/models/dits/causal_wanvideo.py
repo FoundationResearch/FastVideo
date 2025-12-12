@@ -181,7 +181,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
     - KV cache stores *tiled* K/V in a 1D layout plus lightweight metadata,
       following `csrc/attn/video_sparse_attn/vsa/understand_kvcache.md`.
     """
-
+    # TODO: 在这一切之前，我们应该去check一下，vsa的qkdiff到底有没有正确实现
     def __init__(
         self,
         dim: int,
@@ -315,7 +315,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
             tile_partition_indices_block,
             reverse_tile_partition_indices_block,
             non_pad_index_block,
-        ) = self._build_block_tiling_metadata(kv_cache, device)
+        ) = self._build_block_tiling_metadata(kv_cache, device) # TODO:为什么这里要重算？我看了里面的计算过程根本不需要重新计算，记下来就行的事情
 
         T_block_p, H_prime, W_prime = dit_seq_shape_block
 
@@ -330,7 +330,9 @@ class CausalWanSelfAttention_VSA(nn.Module):
             num_kv_heads=self.num_heads,
             prefix="causal_vsa.impl",
         )
+        # TODO:我不需要给vsa impl传入metadata吗？
 
+        # 这里都是处理当前这个new block的tile，这个没啥问题
         k_tiled_block = vsa_impl.tile(
             roped_key, num_tiles_block, tile_partition_indices_block,
             non_pad_index_block)
@@ -347,14 +349,14 @@ class CausalWanSelfAttention_VSA(nn.Module):
         # Update KV cache: append tiled K/V and variable_block_sizes along the 1D tile axis.
         # Detach cache tensors from any existing computation graph so that in-place
         # updates are safe even when this module is used under autograd / checkpointing.
-        k_cache: torch.Tensor = kv_cache["k"].detach()
+        k_cache: torch.Tensor = kv_cache["k"].detach() #TODO: 这里的detach是不是self-forcing自带的？我记得nips去看self-forcing同期工作的时候提到了这一步detach，他的作用是什么？
         v_cache: torch.Tensor = kv_cache["v"].detach()
         kv_cache["k"] = k_cache
         kv_cache["v"] = v_cache
         cache_capacity = k_cache.shape[1]
 
         num_cached_blocks: int = int(kv_cache.get("num_cached_blocks", 0))
-        start_idx = num_cached_blocks * L_tiled_block
+        start_idx = num_cached_blocks * L_tiled_block # TODO: 这里assume了每次进来相同数量的kV
         end_idx = start_idx + L_tiled_block
 
         # Handle limited KV cache capacity according to policy:
@@ -369,8 +371,8 @@ class CausalWanSelfAttention_VSA(nn.Module):
                     "or switch KV cache policy to 'extend'."
                 )
             elif self.kv_cache_policy == "extend":
-                new_capacity = max(end_idx, cache_capacity * 2)
-                if new_capacity <= cache_capacity:
+                new_capacity = max(end_idx, cache_capacity * 2) # TODO: 这里意味着可能不是2的倍数
+                if new_capacity <= cache_capacity: # TODO: 这个是不是不可能发生啊？就算发生，那也蕴含着new_capacity等于end_idx了，下面的这个赋值没有意义了吧？
                     new_capacity = end_idx
                 new_k = k_cache.new_zeros(
                     (k_cache.shape[0], new_capacity, k_cache.shape[2],
@@ -397,19 +399,19 @@ class CausalWanSelfAttention_VSA(nn.Module):
 
         variable_block_sizes_block = construct_variable_block_sizes(
             dit_seq_shape_block, num_tiles_block, device
-        )
+        ) # TODO: 这个也完全不用重算吧？不对，这里有很重大的逻辑错误，应该根据当前kv的位置计算padding，然后计算block size。去看vsa是怎么写的，逻辑完全错了。
         if kv_cache["variable_block_sizes"].numel() == 0:
             variable_block_sizes_all = variable_block_sizes_block
         else:
             variable_block_sizes_all = torch.cat(
                 [kv_cache["variable_block_sizes"], variable_block_sizes_block],
                 dim=0)
-        kv_cache["variable_block_sizes"] = variable_block_sizes_all
+        kv_cache["variable_block_sizes"] = variable_block_sizes_all # 这里的concat倒是应该没错，后续再思考思考，跟peiyuan交流一下最好是
 
         # Build prefix-wide sparsity/topk information using the forward context
         forward_ctx = get_forward_context()
-        ctx_attn_metadata = forward_ctx.attn_metadata
-        VSA_sparsity = float(getattr(ctx_attn_metadata, "VSA_sparsity", 0.0))
+        ctx_attn_metadata = forward_ctx.attn_metadata # TODO：这个是啥？
+        VSA_sparsity = float(getattr(ctx_attn_metadata, "VSA_sparsity", 0.0)) # TODO:别用getarr
 
         total_seq_length_prefix = (num_cached_blocks + 1) * T_block_p * H_prime * W_prime
         cur_topk = math.ceil(
@@ -420,7 +422,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         # while K/V come from the full prefix cache.
         q_tiled_block = vsa_impl.tile(
             roped_query, num_tiles_block, tile_partition_indices_block,
-            non_pad_index_block)
+            non_pad_index_block) # 这里才计算的qtile，TODO: 全代码查，是不是调用这个函数进行tile
 
         # K/V prefix: we use all cached tiled tokens up to `end_idx`
         k_prefix = k_cache[:, :end_idx]
