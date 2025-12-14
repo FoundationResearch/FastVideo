@@ -181,7 +181,6 @@ class CausalWanSelfAttention_VSA(nn.Module):
     - KV cache stores *tiled* K/V in a 1D layout plus lightweight metadata,
       following `csrc/attn/video_sparse_attn/vsa/understand_kvcache.md`.
     """
-    # TODO: 在这一切之前，我们应该去check一下，vsa的qkdiff到底有没有正确实现
     def __init__(
         self,
         dim: int,
