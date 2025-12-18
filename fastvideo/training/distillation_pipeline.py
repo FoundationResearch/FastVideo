@@ -7,7 +7,7 @@ import time
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import imageio
 import numpy as np
@@ -62,6 +62,10 @@ class DistillationPipeline(TrainingPipeline):
         "transformer",
         "vae",
     ]
+    # used by lora training
+    trainable_transformer_names: list[str] = [
+        "transformer", "fake_score_transformer"
+    ]
     validation_pipeline: ComposedPipelineBase
     train_dataloader: StatefulDataLoader
     train_loader_iter: Iterator[dict[str, Any]]
@@ -75,6 +79,65 @@ class DistillationPipeline(TrainingPipeline):
     def create_pipeline_stages(self, fastvideo_args: FastVideoArgs):
         raise RuntimeError(
             "create_pipeline_stages should not be called for training pipeline")
+
+    def load_modules(self,
+                     fastvideo_args: FastVideoArgs,
+                     loaded_modules: dict[str, torch.nn.Module] | None = None):
+        modules = super().load_modules(fastvideo_args, loaded_modules)
+        training_args = cast(TrainingArgs, fastvideo_args)
+
+        if training_args.real_score_model_path:
+            logger.info("Loading real score transformer from: %s",
+                        training_args.real_score_model_path)
+            training_args.override_transformer_cls_name = "WanTransformer3DModel"
+            # TODO(will): can use deepcopy instead if the model is the same
+            self.real_score_transformer = self.load_module_from_path(
+                training_args.real_score_model_path, "transformer",
+                training_args)
+            modules["real_score_transformer"] = self.real_score_transformer
+            try:
+                self.real_score_transformer_2 = self.load_module_from_path(
+                    training_args.real_score_model_path, "transformer_2",
+                    training_args)
+                logger.info("Loaded real score transformer_2 for MoE support")
+                modules[
+                    "real_score_transformer_2"] = self.real_score_transformer_2
+            except Exception:
+                logger.info(
+                    "real score transformer_2 not found, using single transformer"
+                )
+                self.real_score_transformer_2 = None
+        else:
+            raise ValueError(
+                "real_score_model_path is required for DMD distillation pipeline"
+            )
+
+        if training_args.fake_score_model_path:
+            logger.info("Loading fake score transformer from: %s",
+                        training_args.fake_score_model_path)
+            training_args.override_transformer_cls_name = "WanTransformer3DModel"
+            self.fake_score_transformer = self.load_module_from_path(
+                training_args.fake_score_model_path, "transformer",
+                training_args)
+            modules["fake_score_transformer"] = self.fake_score_transformer
+            try:
+                self.fake_score_transformer_2 = self.load_module_from_path(
+                    training_args.fake_score_model_path, "transformer_2",
+                    training_args)
+                logger.info("Loaded fake score transformer_2 for MoE support")
+                modules[
+                    "fake_score_transformer_2"] = self.fake_score_transformer_2
+            except Exception:
+                logger.info(
+                    "fake score transformer_2 not found, using single transformer"
+                )
+                self.fake_score_transformer_2 = None
+        else:
+            raise ValueError(
+                "fake_score_model_path is required for DMD distillation pipeline"
+            )
+
+        return modules
 
     def initialize_training_pipeline(self, training_args: TrainingArgs):
         """Initialize the distillation training pipeline with multiple models."""
@@ -95,194 +158,12 @@ class DistillationPipeline(TrainingPipeline):
         else:
             self.boundary_timestep = None
 
-        if training_args.real_score_model_path:
-            logger.info("Loading real score transformer from: %s",
-                        training_args.real_score_model_path)
-            training_args.override_transformer_cls_name = "WanTransformer3DModel"
-
-            backend_name = getattr(training_args,
-                                   "teacher_attention_backend", "") or ""
-            if backend_name:
-                try:
-                    backend_enum = AttentionBackendEnum[backend_name]
-                except KeyError as e:
-                    raise ValueError(
-                        f"Invalid teacher_attention_backend='{backend_name}'. "
-                        f"Expected one of: {[m.name for m in AttentionBackendEnum]}"
-                    ) from e
-                ctx = global_force_attn_backend_context_manager(backend_enum)
-            else:
-                ctx = None
-
-            try:
-                if ctx is not None:
-                    with ctx:
-                        self.real_score_transformer = self.load_module_from_path(
-                            training_args.real_score_model_path, "transformer",
-                            training_args)
-                else:
-                    self.real_score_transformer = self.load_module_from_path(
-                        training_args.real_score_model_path, "transformer",
-                        training_args)
-
-                try:
-                    if ctx is not None:
-                        with ctx:
-                            self.real_score_transformer_2 = self.load_module_from_path(
-                                training_args.real_score_model_path,
-                                "transformer_2", training_args)
-                    else:
-                        self.real_score_transformer_2 = self.load_module_from_path(
-                            training_args.real_score_model_path, "transformer_2",
-                            training_args)
-                    logger.info(
-                        "Loaded real score transformer_2 for MoE support")
-                except Exception:
-                    logger.info(
-                        "real score transformer_2 not found, using single transformer"
-                    )
-                    self.real_score_transformer_2 = None
-            finally:
-                # context manager cleans up itself on exit
-                pass
-        else:
-            self.real_score_transformer = self.get_module(
-                "real_score_transformer")
-            self.real_score_transformer_2 = self.get_module(
-                "real_score_transformer_2")
-
-        if training_args.fake_score_model_path:
-            logger.info("Loading fake score transformer from: %s",
-                        training_args.fake_score_model_path)
-            training_args.override_transformer_cls_name = "WanTransformer3DModel"
-
-            backend_name = getattr(training_args,
-                                   "critic_attention_backend", "") or ""
-            if backend_name:
-                try:
-                    backend_enum = AttentionBackendEnum[backend_name]
-                except KeyError as e:
-                    raise ValueError(
-                        f"Invalid critic_attention_backend='{backend_name}'. "
-                        f"Expected one of: {[m.name for m in AttentionBackendEnum]}"
-                    ) from e
-                ctx = global_force_attn_backend_context_manager(backend_enum)
-            else:
-                ctx = None
-
-            try:
-                if ctx is not None:
-                    with ctx:
-                        self.fake_score_transformer = self.load_module_from_path(
-                            training_args.fake_score_model_path, "transformer",
-                            training_args)
-                else:
-                    self.fake_score_transformer = self.load_module_from_path(
-                        training_args.fake_score_model_path, "transformer",
-                        training_args)
-
-                try:
-                    if ctx is not None:
-                        with ctx:
-                            self.fake_score_transformer_2 = self.load_module_from_path(
-                                training_args.fake_score_model_path,
-                                "transformer_2", training_args)
-                    else:
-                        self.fake_score_transformer_2 = self.load_module_from_path(
-                            training_args.fake_score_model_path, "transformer_2",
-                            training_args)
-                    logger.info(
-                        "Loaded fake score transformer_2 for MoE support")
-                except Exception:
-                    logger.info(
-                        "fake score transformer_2 not found, using single transformer"
-                    )
-                    self.fake_score_transformer_2 = None
-            finally:
-                # context manager cleans up itself on exit
-                pass
-        else:
-            self.fake_score_transformer = self.get_module(
-                "fake_score_transformer")
-            self.fake_score_transformer_2 = self.get_module(
-                "fake_score_transformer_2")
-
+        # make sure the real score transformer is not trainable
         self.real_score_transformer.requires_grad_(False)
         self.real_score_transformer.eval()
         if self.real_score_transformer_2 is not None:
             self.real_score_transformer_2.requires_grad_(False)
             self.real_score_transformer_2.eval()
-
-        # Set training modes for fake score transformers (trainable)
-        self.fake_score_transformer.requires_grad_(True)
-        self.fake_score_transformer.train()
-        if self.fake_score_transformer_2 is not None:
-            self.fake_score_transformer_2.requires_grad_(True)
-            self.fake_score_transformer_2.train()
-
-        # Log which models/backends are being used for student / teacher / critic
-        def _inspect_backend(model: torch.nn.Module | None) -> str:
-            if model is None:
-                return "None"
-            backend_name = "unknown"
-            try:
-                # Common pattern: Wan* models with blocks[0].attn1 / attn
-                blocks = getattr(model, "blocks", None)
-                if blocks is not None and len(blocks) > 0:
-                    block0 = blocks[0]
-                    attn_mod = None
-                    if hasattr(block0, "attn1"):
-                        attn_mod = getattr(block0, "attn1")
-                    elif hasattr(block0, "attn"):
-                        attn_mod = getattr(block0, "attn")
-                    if attn_mod is not None:
-                        # Direct backend attr (DistributedAttention, DistributedAttention_VSA, LocalAttention)
-                        if hasattr(attn_mod, "backend"):
-                            backend = getattr(attn_mod, "backend")
-                            backend_name = getattr(backend, "name", str(backend))
-                        # Nested LocalAttention inside CausalWanSelfAttention
-                        elif hasattr(attn_mod, "attn") and hasattr(
-                                attn_mod.attn, "backend"):
-                            backend = getattr(attn_mod.attn, "backend")
-                            backend_name = getattr(backend, "name", str(backend))
-            except Exception as e:  # pragma: no cover - best effort logging
-                logger.warning("Failed to inspect attention backend for %s: %s",
-                               model.__class__.__name__, str(e))
-            return backend_name
-
-        def _inspect_block_type(model: torch.nn.Module | None) -> str:
-            if model is None:
-                return "None"
-            try:
-                blocks = getattr(model, "blocks", None)
-                if blocks is None:
-                    return "no_blocks_attr"
-                if hasattr(blocks, "__len__") and len(blocks) > 0:
-                    return blocks[0].__class__.__name__
-                return "empty_blocks"
-            except Exception as e:  # pragma: no cover - best effort logging
-                logger.warning("Failed to inspect block type for %s: %s",
-                               model.__class__.__name__, str(e))
-                return "inspect_error"
-
-        logger.info(
-            "[inspect] Student (generator) model: %s, block: %s, attention backend: %s",
-            self.transformer.__class__.__name__,
-            _inspect_block_type(self.transformer),
-            _inspect_backend(self.transformer),
-        )
-        logger.info(
-            "[inspect] Teacher (real_score) model: %s, block: %s, attention backend: %s",
-            self.real_score_transformer.__class__.__name__,
-            _inspect_block_type(self.real_score_transformer),
-            _inspect_backend(self.real_score_transformer),
-        )
-        logger.info(
-            "[inspect] Critic (fake_score) model: %s, block: %s, attention backend: %s",
-            self.fake_score_transformer.__class__.__name__,
-            _inspect_block_type(self.fake_score_transformer),
-            _inspect_backend(self.fake_score_transformer),
-        )
 
         if training_args.enable_gradient_checkpointing_type is not None:
             self.fake_score_transformer = apply_activation_checkpointing(
@@ -482,22 +363,6 @@ class DistillationPipeline(TrainingPipeline):
         """Initialize validation pipeline - must be implemented by subclasses."""
         raise NotImplementedError(
             "Distillation pipelines must implement this method")
-
-    def _prepare_distillation(self,
-                              training_batch: TrainingBatch) -> TrainingBatch:
-        """Prepare training environment for distillation."""
-        self.transformer.requires_grad_(True)
-        self.transformer.train()
-        if self.transformer_2 is not None:
-            self.transformer_2.requires_grad_(True)
-            self.transformer_2.train()
-        self.fake_score_transformer.requires_grad_(True)
-        self.fake_score_transformer.train()
-        if self.fake_score_transformer_2 is not None:
-            self.fake_score_transformer_2.requires_grad_(True)
-            self.fake_score_transformer_2.train()
-
-        return training_batch
 
     def apply_ema_to_model(self, model):
         """Apply EMA weights to the model for validation or inference."""
@@ -1082,8 +947,7 @@ class DistillationPipeline(TrainingPipeline):
         batches = []
         # Collect N batches for gradient accumulation
         for _ in range(gradient_accumulation_steps):
-            batch = self._prepare_distillation(training_batch)
-            batch = self._get_next_batch(batch)
+            batch = self._get_next_batch(training_batch)
             batch = self._normalize_dit_input(batch)
             batch = self._prepare_dit_inputs(batch)
             batch = self._build_attention_metadata(batch)
@@ -1124,9 +988,6 @@ class DistillationPipeline(TrainingPipeline):
 
             # Only clip gradients for the model that is currently training
             self._clip_model_grad_norm_(batch_gen, self.transformer)
-            for param in self.transformer.parameters():
-                # check if the gradient is not None and not zero
-                assert param.grad is not None and param.grad.abs().sum() > 0
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -1164,17 +1025,6 @@ class DistillationPipeline(TrainingPipeline):
                                         self.fake_score_transformer_2)
         else:
             self._clip_model_grad_norm_(batch_fake, self.fake_score_transformer)
-
-        # Check gradients for fake score transformer
-        for param in self.fake_score_transformer.parameters():
-            if param.requires_grad:
-                assert param.grad is not None and param.grad.abs().sum() > 0
-
-        # Check gradients for fake score transformer_2 if available
-        if self.train_fake_score_transformer_2 and self.fake_score_transformer_2 is not None:
-            for param in self.fake_score_transformer_2.parameters():
-                if param.requires_grad:
-                    assert param.grad is not None and param.grad.abs().sum() > 0
 
         if self.train_fake_score_transformer_2 and self.fake_score_transformer_2 is not None:
             self.fake_score_optimizer_2.step()
