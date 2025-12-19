@@ -1,8 +1,15 @@
 import math
+import os
+import sys
+
 import pytest
 import torch
 
-from tests.utils import (
+# Match `tests/test_vsa.py` so this file can be run directly via:
+#   python tests/test_video_sparse_attn_vs_pytorch.py -sv
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tests.utils import (  # noqa: E402
     create_full_mask_from_block_mask,
     generate_block_sparse_mask_for_function,
 )
