@@ -6,6 +6,7 @@ import torch
 
 from fastvideo.forward_context import set_forward_context
 from fastvideo.models.dits.causal_wanvideo import CausalWanSelfAttention_VSA
+from fastvideo.layers.rotary_embedding import _apply_rotary_emb, get_nd_rotary_pos_embed
 from fastvideo.attention.backends.video_sparse_attn import (
     VSA_TILE_SIZE,
     VideoSparseAttentionImpl,
@@ -29,6 +30,12 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
       - Q from block1
       - K/V from prefix = block0 ++ block1
     (i.e. the last 4 frames from an 8-frame prefix computation).
+
+    This test includes RoPE with correct absolute time offsets:
+      - block0 uses start_frame=0
+      - block1 uses start_frame=T_block_p (4)
+    so that the incremental KV cache stores keys at the same positions as the
+    one-shot prefix reference.
     """
 
     # Patch SP group dependency to a trivial world (sp=1) so the unit test can run
@@ -87,11 +94,38 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
     v1 = torch.randn_like(q1)
     g1 = torch.randn_like(q1)
 
-    # Make RoPE a no-op to keep the test focused on KV-cache / tiling equivalence.
-    # _apply_rotary_emb supports broadcasting: cos/sin [L_block, head_dim//2] is enough.
-    cos = torch.ones(L_block, head_dim // 2, device=device, dtype=torch.float32)
-    sin = torch.zeros(L_block, head_dim // 2, device=device, dtype=torch.float32)
-    freqs_cis = (cos, sin)
+    # Build real RoPE (cos, sin) for each block with correct absolute time offsets.
+    # We call `get_nd_rotary_pos_embed` directly with sp_world_size=1 so the unit test
+    # does not depend on distributed SP group initialization.
+    # Match WanVideo's rope_dim_list recipe:
+    #   rope_dim_list = [d - 4*(d//6), 2*(d//6), 2*(d//6)] where d=head_dim.
+    d = head_dim
+    rope_dim_list = [d - 4 * (d // 6), 2 * (d // 6), 2 * (d // 6)]
+    assert sum(rope_dim_list) == head_dim
+    freqs_cis0 = get_nd_rotary_pos_embed(
+        rope_dim_list,
+        dit_seq_shape_block,
+        theta=10000.0,
+        theta_rescale_factor=1.0,
+        interpolation_factor=1.0,
+        shard_dim=0,
+        sp_rank=0,
+        sp_world_size=1,
+        dtype=torch.float64,
+        start_frame=0,
+    )
+    freqs_cis1 = get_nd_rotary_pos_embed(
+        rope_dim_list,
+        dit_seq_shape_block,
+        theta=10000.0,
+        theta_rescale_factor=1.0,
+        interpolation_factor=1.0,
+        shard_dim=0,
+        sp_rank=0,
+        sp_world_size=1,
+        dtype=torch.float64,
+        start_frame=T_block_p,
+    )
 
     # Incremental path: two calls with a KV cache that grows.
     attn = CausalWanSelfAttention_VSA(
@@ -114,7 +148,7 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
             k=k0,
             v=v0,
             gate=g0,
-            freqs_cis=freqs_cis,
+            freqs_cis=freqs_cis0,
             block_mask=None,
             kv_cache=kv_cache,
         )
@@ -123,7 +157,7 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
             k=k1,
             v=v1,
             gate=g1,
-            freqs_cis=freqs_cis,
+            freqs_cis=freqs_cis1,
             block_mask=None,
             kv_cache=kv_cache,
         )
@@ -139,13 +173,23 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
         prefix="test.impl",
     )
 
+    # Apply RoPE exactly like the model does:
+    #   roped_query = _apply_rotary_emb(q, cos, sin).type_as(v)
+    #   roped_key   = _apply_rotary_emb(k, cos, sin).type_as(v)
+    cos0, sin0 = freqs_cis0
+    cos1, sin1 = freqs_cis1
+    roped_k0 = _apply_rotary_emb(k0, cos0, sin0, is_neox_style=False).type_as(v0)
+    roped_k1 = _apply_rotary_emb(k1, cos1, sin1, is_neox_style=False).type_as(v1)
+    roped_q1 = _apply_rotary_emb(q1, cos1, sin1, is_neox_style=False).type_as(v1)
+
     # Tile each block and concatenate along the 1D tiled axis.
-    k0_tiled = vsa_impl.tile(k0, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
+    # Note: V is NOT RoPE'd; only Q/K are.
+    k0_tiled = vsa_impl.tile(roped_k0, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
     v0_tiled = vsa_impl.tile(v0, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
-    k1_tiled = vsa_impl.tile(k1, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
+    k1_tiled = vsa_impl.tile(roped_k1, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
     v1_tiled = vsa_impl.tile(v1, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
     g1_tiled = vsa_impl.tile(g1, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
-    q1_tiled = vsa_impl.tile(q1, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
+    q1_tiled = vsa_impl.tile(roped_q1, num_tiles_block, tile_partition_indices_block, non_pad_index_block)
 
     k_prefix = torch.cat([k0_tiled, k1_tiled], dim=1)
     v_prefix = torch.cat([v0_tiled, v1_tiled], dim=1)
@@ -180,8 +224,9 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
     v0_only = v0_tiled
     vbs0_only = variable_block_sizes_block
     topk0 = math.ceil((T_block_p * H_prime * W_prime) / math.prod(VSA_TILE_SIZE))
+    roped_q0 = _apply_rotary_emb(q0, cos0, sin0, is_neox_style=False).type_as(v0)
     ref0_tiled = video_sparse_attn(
-        vsa_impl.tile(q0, num_tiles_block, tile_partition_indices_block, non_pad_index_block).transpose(1, 2).contiguous(),
+        vsa_impl.tile(roped_q0, num_tiles_block, tile_partition_indices_block, non_pad_index_block).transpose(1, 2).contiguous(),
         k0_only.transpose(1, 2).contiguous(),
         v0_only.transpose(1, 2).contiguous(),
         variable_block_sizes=vbs0_only,
