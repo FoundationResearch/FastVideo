@@ -114,6 +114,7 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
         dtype=torch.float64,
         start_frame=0,
     )
+    freqs_cis0 = (freqs_cis0[0].to(device), freqs_cis0[1].to(device))
     freqs_cis1 = get_nd_rotary_pos_embed(
         rope_dim_list,
         dit_seq_shape_block,
@@ -126,6 +127,7 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
         dtype=torch.float64,
         start_frame=T_block_p,
     )
+    freqs_cis1 = (freqs_cis1[0].to(device), freqs_cis1[1].to(device))
 
     # Incremental path: two calls with a KV cache that grows.
     attn = CausalWanSelfAttention_VSA(
