@@ -15,6 +15,15 @@ from tests.utils import (  # noqa: E402
 )
 
 
+def _torch_attention_like_vsa(q, k, v):
+    """Match `vsa/__init__.py:torch_attention` semantics (no mask, causal=False)."""
+    qk = torch.matmul(q, k.transpose(-2, -1))
+    qk /= (q.size(-1) ** 0.5)
+    qk = torch.nn.functional.softmax(qk, dim=-1)
+    out = torch.matmul(qk, v)
+    return out, qk
+
+
 def _pytorch_masked_attention(q, k, v, full_mask):
     """
     q: [B, H, S_q, D]
@@ -84,13 +93,6 @@ def test_video_sparse_attn_matches_pytorch_qkdiff():
     S_q = int(q_variable_block_sizes.sum().item())
     S_kv = int(kv_variable_block_sizes.sum().item())
 
-    # Build block-level sparse mask and expand to token-level mask for PyTorch ref.
-    k_top = min(2, num_kv_blocks)  # sparse connectivity
-    block_mask = generate_block_sparse_mask_for_function(H, num_q_blocks, num_kv_blocks, k_top, device=device)
-    full_mask = create_full_mask_from_block_mask(
-        block_mask, q_variable_block_sizes, kv_variable_block_sizes, device=device
-    )
-
     # Unpadded packed sequences.
     q = torch.randn(B, H, S_q, D, device=device, dtype=dtype)
     k = torch.randn(B, H, S_kv, D, device=device, dtype=dtype)
@@ -106,6 +108,46 @@ def test_video_sparse_attn_matches_pytorch_qkdiff():
     # compress_attn_weight is defined on q_padded tokens; use all-ones for coverage.
     compress_attn_weight = torch.ones_like(q_padded)
 
+    # IMPORTANT: `video_sparse_attn` does NOT take an external block mask.
+    # It computes `block_attn_score` from compress attention and then uses topk to build a block mask.
+    # Therefore, for a correct PyTorch reference we must:
+    #   1) reproduce the same topk block mask,
+    #   2) compute the sparse/select output with that mask,
+    #   3) compute the compress output and add them.
+    k_top = min(2, num_kv_blocks)
+    BLOCK_ELEMS = BLOCK
+
+    # Reproduce compress branch inputs exactly like `vsa.video_sparse_attn`.
+    q_compress = (
+        q_padded.view(B, H, num_q_blocks, BLOCK_ELEMS, D).float().sum(dim=3)
+        / q_variable_block_sizes.view(1, 1, -1, 1)
+    ).to(dtype)
+    k_compress = (
+        k_padded.view(B, H, num_kv_blocks, BLOCK_ELEMS, D).float().sum(dim=3)
+        / kv_variable_block_sizes.view(1, 1, -1, 1)
+    ).to(dtype)
+    v_compress = (
+        v_padded.view(B, H, num_kv_blocks, BLOCK_ELEMS, D).float().sum(dim=3)
+        / kv_variable_block_sizes.view(1, 1, -1, 1)
+    ).to(dtype)
+
+    out_compress_tiles, block_attn_score = _torch_attention_like_vsa(q_compress, k_compress, v_compress)
+    out_compress_padded = (
+        out_compress_tiles.view(B, H, num_q_blocks, 1, D)
+        .repeat(1, 1, 1, BLOCK_ELEMS, 1)
+        .view(B, H, num_q_blocks * BLOCK_ELEMS, D)
+    )
+    out_compress = out_compress_padded[:, :, q_non_pad_index, :] * compress_attn_weight[:, :, q_non_pad_index, :]
+
+    # Derive the SAME topk block mask as `video_sparse_attn`.
+    topk_indices = torch.topk(block_attn_score, k_top, dim=-1).indices  # [B,H,q_blocks,k_top]
+    block_mask = torch.zeros_like(block_attn_score, dtype=torch.bool).scatter_(-1, topk_indices, True)  # [B,H,q_blocks,kv_blocks]
+
+    # Token-level full mask for PyTorch sparse/select reference (packed sequences).
+    full_mask = create_full_mask_from_block_mask(
+        block_mask[0], q_variable_block_sizes, kv_variable_block_sizes, device=device
+    )
+
     # video_sparse_attn expects a batch dimension in block mask; it uses torch.topk internally.
     out_vsa_padded = video_sparse_attn(
         q_padded,
@@ -119,8 +161,9 @@ def test_video_sparse_attn_matches_pytorch_qkdiff():
     )
     out_vsa = out_vsa_padded[:, :, q_non_pad_index, :]
 
-    # PyTorch reference on packed sequences.
-    out_ref = _pytorch_masked_attention(q, k, v, full_mask)
+    # PyTorch reference on packed sequences (select branch) + compress branch.
+    out_select = _pytorch_masked_attention(q, k, v, full_mask)
+    out_ref = out_select + out_compress
 
     # Tolerance: VSA uses bf16 kernels; allow some numerical drift.
     torch.testing.assert_close(out_vsa, out_ref, rtol=5e-2, atol=5e-2)
