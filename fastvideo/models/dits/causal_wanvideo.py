@@ -456,7 +456,8 @@ class CausalWanSelfAttention_VSA(nn.Module):
         k_prefix = k_cache[:, :end_idx]
         v_prefix = v_cache[:, :end_idx]
 
-        # Call the low-level VSA kernel directly (len(q) != len(k) is allowed)
+        # Call the low-level VSA kernel (q/k can have different lengths, but q_variable_block_sizes
+        # must be provided to compute q_compress correctly when tile counts differ).
         q_in = q_tiled_block.transpose(1, 2).contiguous()
         k_in = k_prefix.transpose(1, 2).contiguous()
         v_in = v_prefix.transpose(1, 2).contiguous()
@@ -467,6 +468,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
             k_in,
             v_in,
             variable_block_sizes=variable_block_sizes_all,
+            q_variable_block_sizes=variable_block_sizes_block,
             topk=cur_topk,
             block_size=VSA_TILE_SIZE,
             compress_attn_weight=gate_in,
