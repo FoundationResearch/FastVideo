@@ -49,8 +49,9 @@ def video_sparse_attn(
     select_attn_weight: [batch_size, num_heads, seq_len, head_dim]
     q_variable_block_sizes: Optional[Tensor] of shape [num_q_tiles], giving the number of
         valid (non-padded) tokens in each Q tile. If None, we assume Q uses the same
-        variable_block_sizes as KV (backwards compatible). If q and kv have different
-        numbers of tiles and q_variable_block_sizes is None, we assume Q tiles are full.
+        variable_block_sizes as KV (backwards compatible) **only when** q and kv have the
+        same number of tiles. If q and kv have different numbers of tiles, you must pass
+        q_variable_block_sizes explicitly.
 
     NOTE: We assume q, k, v is zero padded!!
     V1 of sparse attention. Include compress attn and sparse attn branch, use average pooling to compress. 
@@ -90,11 +91,9 @@ def video_sparse_attn(
         if num_q_tiles == variable_block_sizes.numel():
             q_variable_block_sizes = variable_block_sizes
         else:
-            q_variable_block_sizes = torch.full(
-                (num_q_tiles,),
-                block_elements,
-                device=q.device,
-                dtype=variable_block_sizes.dtype,
+            raise ValueError(
+                "q_variable_block_sizes must be provided when q and kv have different "
+                f"numbers of tiles (num_q_tiles={num_q_tiles}, num_kv_tiles={num_kv_tiles})."
             )
     else:
         assert q_variable_block_sizes.numel() == num_q_tiles, (
