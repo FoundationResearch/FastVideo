@@ -28,16 +28,30 @@ def torch_attention(q, k, v) -> Tuple[torch.Tensor, torch.Tensor]:
     return output, QK
 
 
-def video_sparse_attn(q, k, v, variable_block_sizes, topk, block_size, compress_attn_weight=None):
+def video_sparse_attn(
+    q,
+    k,
+    v,
+    variable_block_sizes,
+    topk,
+    block_size,
+    compress_attn_weight=None,
+    q_variable_block_sizes=None,
+):
     """
-    q: [batch_size, num_heads, seq_len, head_dim]
-    k: [batch_size, num_heads, seq_len, head_dim]
-    v: [batch_size, num_heads, seq_len, head_dim]
+    q: [batch_size, num_heads, seq_len_q, head_dim]
+    k: [batch_size, num_heads, seq_len_kv, head_dim]
+    v: [batch_size, num_heads, seq_len_kv, head_dim]
     topk: int
     block_size: int or tuple of 3 ints
     video_shape: tuple of (T, H, W)
     compress_attn_weight: [batch_size, num_heads, seq_len, head_dim]
     select_attn_weight: [batch_size, num_heads, seq_len, head_dim]
+    q_variable_block_sizes: Optional[Tensor] of shape [num_q_tiles], giving the number of
+        valid (non-padded) tokens in each Q tile. If None, we assume Q uses the same
+        variable_block_sizes as KV (backwards compatible). If q and kv have different
+        numbers of tiles and q_variable_block_sizes is None, we assume Q tiles are full.
+
     NOTE: We assume q, k, v is zero padded!!
     V1 of sparse attention. Include compress attn and sparse attn branch, use average pooling to compress. 
     Assume q, k, v is flattened in this way: [batch_size, num_heads, T//block_size[0], H//block_size[1], W//block_size[2], block_size[0], block_size[1], block_size[2]]
@@ -49,24 +63,73 @@ def video_sparse_attn(q, k, v, variable_block_sizes, topk, block_size, compress_
     block_elements = block_size[0] * block_size[1] * block_size[2]
     assert block_elements == 64
     assert q.shape[2] % block_elements == 0
-    batch_size, num_heads, seq_len, head_dim = q.shape
+    assert k.shape[2] % block_elements == 0
+    assert v.shape[2] % block_elements == 0
+    assert k.shape == v.shape, "k and v must have the same shape"
+
+    batch_size, num_heads, seq_len_q, head_dim = q.shape
+    seq_len_kv = k.shape[2]
+    # variable_block_sizes semantics: KV-side per-tile (per 64-token block) valid token counts.
+    # Length must match the number of KV tiles.
+    assert variable_block_sizes.numel() == (seq_len_kv // block_elements), (
+        f"variable_block_sizes must have length seq_len_kv//{block_elements}, "
+        f"but got {variable_block_sizes.numel()} vs {seq_len_kv // block_elements}"
+    )
+    if compress_attn_weight is not None:
+        assert compress_attn_weight.shape == q.shape, (
+            f"compress_attn_weight must match q shape {tuple(q.shape)}, "
+            f"but got {tuple(compress_attn_weight.shape)}"
+        )
+
     # compress attn
-    q_compress = (q.view(batch_size, num_heads, seq_len // block_elements,
-                        block_elements, head_dim).float().sum(dim=3) / variable_block_sizes.view(1, 1, -1, 1)).to(q.dtype)
-    k_compress = (k.view(batch_size, num_heads, seq_len // block_elements,
-                        block_elements, head_dim).float().sum(dim=3) / variable_block_sizes.view(1, 1, -1, 1)).to(k.dtype)
-    v_compress = (v.view(batch_size, num_heads, seq_len // block_elements,
-                        block_elements, head_dim).float().sum(dim=3) / variable_block_sizes.view(1, 1, -1, 1)).to(v.dtype)
+    # Q and KV can have different tile counts. For correctness, Q needs its own
+    # per-tile valid token counts if it is also padded.
+    num_q_tiles = seq_len_q // block_elements
+    num_kv_tiles = seq_len_kv // block_elements
+    if q_variable_block_sizes is None:
+        if num_q_tiles == variable_block_sizes.numel():
+            q_variable_block_sizes = variable_block_sizes
+        else:
+            q_variable_block_sizes = torch.full(
+                (num_q_tiles,),
+                block_elements,
+                device=q.device,
+                dtype=variable_block_sizes.dtype,
+            )
+    else:
+        assert q_variable_block_sizes.numel() == num_q_tiles, (
+            f"q_variable_block_sizes must have length seq_len_q//{block_elements}, "
+            f"but got {q_variable_block_sizes.numel()} vs {num_q_tiles}"
+        )
+
+    q_compress = (
+        q.view(batch_size, num_heads, num_q_tiles, block_elements, head_dim)
+        .float()
+        .sum(dim=3)
+        / q_variable_block_sizes.view(1, 1, -1, 1)
+    ).to(q.dtype)
+    k_compress = (
+        k.view(batch_size, num_heads, num_kv_tiles, block_elements, head_dim)
+        .float()
+        .sum(dim=3)
+        / variable_block_sizes.view(1, 1, -1, 1)
+    ).to(k.dtype)
+    v_compress = (
+        v.view(batch_size, num_heads, num_kv_tiles, block_elements, head_dim)
+        .float()
+        .sum(dim=3)
+        / variable_block_sizes.view(1, 1, -1, 1)
+    ).to(v.dtype)
 
     output_compress, block_attn_score = torch_attention(q_compress, k_compress,
                                                         v_compress)
 
     output_compress = output_compress.view(batch_size, num_heads,
-                                           seq_len // block_elements, 1,
+                                           seq_len_q // block_elements, 1,
                                            head_dim)
     output_compress = output_compress.repeat(1, 1, 1, block_elements,
                                              1).view(batch_size, num_heads,
-                                                     seq_len, head_dim)
+                                                     seq_len_q, head_dim)
 
     topK_indices = torch.topk(block_attn_score, topk, dim=-1).indices
     block_mask = torch.zeros_like(block_attn_score, dtype=torch.bool).scatter_(-1, topK_indices, True)
