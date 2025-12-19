@@ -317,6 +317,30 @@ class CausalWanSelfAttention_VSA(nn.Module):
         ) = self._build_block_tiling_metadata(kv_cache, device) # TODO:为什么这里要重算？我看了里面的计算过程根本不需要重新计算，记下来就行的事情
 
         T_block_p, H_prime, W_prime = dit_seq_shape_block
+        # Causal KV-cache correctness requirement:
+        # This implementation appends per-block tiled K/V to form the prefix.
+        # That is only equivalent to tiling the whole prefix if the block's
+        # patch-time length aligns with VSA's time tile size (4).
+        assert (
+            T_block_p == VSA_TILE_SIZE[0]
+        ), (
+            "Causal VSA KV cache assumes each generated block spans exactly "
+            f"{VSA_TILE_SIZE[0]} patch-time frames, but got T_block_p={T_block_p}. "
+            "If you want variable-length blocks, KV cache tiling must be redesigned "
+            "to avoid time-dimension padding per block."
+        )
+
+        expected_L_block = T_block_p * H_prime * W_prime
+        assert q.shape[1] == expected_L_block, (
+            f"VSA causal block token length mismatch: q.shape[1]={q.shape[1]} "
+            f"but dit_seq_shape_block implies {expected_L_block} "
+            f"(T'={T_block_p}, H'={H_prime}, W'={W_prime})."
+        )
+        assert k.shape[1] == expected_L_block and v.shape[1] == expected_L_block and gate.shape[1] == expected_L_block, (
+            "VSA causal block token length mismatch among q/k/v/gate: "
+            f"q={q.shape[1]}, k={k.shape[1]}, v={v.shape[1]}, gate={gate.shape[1]} "
+            f"(expected {expected_L_block})."
+        )
 
         # Tile current block's K/V/gate into padded 1D layout
         # Shapes: [B, L_tiled_block, num_heads, head_dim]
@@ -410,7 +434,12 @@ class CausalWanSelfAttention_VSA(nn.Module):
         # Build prefix-wide sparsity/topk information using the forward context
         forward_ctx = get_forward_context()
         ctx_attn_metadata = forward_ctx.attn_metadata # TODO：这个是啥？
-        VSA_sparsity = float(getattr(ctx_attn_metadata, "VSA_sparsity", 0.0)) # TODO:别用getarr
+        # Prefer explicit attribute access so missing metadata doesn't get silently ignored.
+        # Keep backward compatibility for call sites that set attn_metadata=None.
+        if ctx_attn_metadata is None:
+            VSA_sparsity = 0.0
+        else:
+            VSA_sparsity = float(ctx_attn_metadata.VSA_sparsity)
 
         total_seq_length_prefix = (num_cached_blocks + 1) * T_block_p * H_prime * W_prime
         cur_topk = math.ceil(
