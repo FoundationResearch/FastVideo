@@ -1,5 +1,11 @@
-import torch
+import os
+import time
+import math
+from pathlib import Path
+from hashlib import md5
 from typing import Tuple
+
+import torch
 block_sparse_attn=None
 import torch
 major, minor = torch.cuda.get_device_capability(0)
@@ -138,5 +144,195 @@ def video_sparse_attn(
         final_output = output_compress * compress_attn_weight + output_select
     else:
         final_output = output_compress + output_select
+
+    # -----------------------------
+    # Optional debug visualization
+    # -----------------------------
+    # Enable via:
+    #   FASTVIDEO_VSA_DEBUG_SAVE=1
+    # Optionally set:
+    #   FASTVIDEO_VSA_DEBUG_DIR=/path/to/save
+    #   FASTVIDEO_VSA_DEBUG_PREFIX=some_tag (e.g., validation_step_50_prompt_hash)
+    #   FASTVIDEO_VSA_DEBUG_MAX_SAVES=200
+    if os.environ.get("FASTVIDEO_VSA_DEBUG_SAVE", "0") == "1":
+        # Throttle saves to avoid blowing up disk.
+        max_saves = int(os.environ.get("FASTVIDEO_VSA_DEBUG_MAX_SAVES", "200"))
+        once_per_block = os.environ.get("FASTVIDEO_VSA_DEBUG_ONCE_PER_BLOCK",
+                                        "1") == "1"
+
+        # Global process-local counter.
+        if not hasattr(video_sparse_attn, "_dbg_save_count"):
+            video_sparse_attn._dbg_save_count = 0  # type: ignore[attr-defined]
+        if not hasattr(video_sparse_attn, "_dbg_seen_prefix_block"):
+            video_sparse_attn._dbg_seen_prefix_block = set()  # type: ignore[attr-defined]
+
+        base_dir = Path(os.environ.get("FASTVIDEO_VSA_DEBUG_DIR", "vsa_debug"))
+        prefix = os.environ.get("FASTVIDEO_VSA_DEBUG_PREFIX", "default")
+
+        # Infer "tiles per causal block" from Q tiles (causal path uses one Q-block).
+        tiles_per_block = int(num_q_tiles)
+        if tiles_per_block <= 0:
+            raise RuntimeError(
+                "FASTVIDEO_VSA_DEBUG_SAVE=1 but inferred tiles_per_block<=0. "
+                f"num_q_tiles={num_q_tiles} (seq_len_q={seq_len_q})"
+            )
+
+        if (num_kv_tiles % tiles_per_block) == 0:
+            kv_blocks = num_kv_tiles // tiles_per_block
+        else:
+            kv_blocks = 1
+
+        # Determine which block index to use for dedup / filenames.
+        # By default, we infer it from (kv_tiles / q_tiles) assuming "one Q block" causal calls.
+        # For causal VSA with sliding-window KV cache, this inferred value can stay small even
+        # as the *absolute* causal block index grows. In that case, the caller can provide:
+        #   FASTVIDEO_VSA_DEBUG_BLOCK_IDX=<absolute_block_idx>
+        # and we will use that for naming/dedup.
+        env_block_idx = os.environ.get("FASTVIDEO_VSA_DEBUG_BLOCK_IDX", None)
+        if env_block_idx is not None:
+            try:
+                kv_block_idx = int(env_block_idx)
+            except Exception as e:
+                raise RuntimeError(
+                    "FASTVIDEO_VSA_DEBUG_SAVE=1 but FASTVIDEO_VSA_DEBUG_BLOCK_IDX "
+                    f"is not a valid int: {env_block_idx!r}"
+                ) from e
+        else:
+            # For causal generation, the current KV block index is the last block in the prefix (window).
+            kv_block_idx = max(0, kv_blocks - 1)
+
+        # Dedup early (do NOT consume the save budget for repeats).
+        if once_per_block:
+            seen_key = (prefix, kv_block_idx)
+            if seen_key in video_sparse_attn._dbg_seen_prefix_block:  # type: ignore[attr-defined]
+                return final_output
+
+        # Throttle based on the number of *actual PNG writes* (not number of calls).
+        if video_sparse_attn._dbg_save_count >= max_saves:  # type: ignore[attr-defined]
+            return final_output
+        video_sparse_attn._dbg_save_count += 1  # type: ignore[attr-defined]
+
+        # Mark as seen only when we will actually write an image.
+        if once_per_block:
+            video_sparse_attn._dbg_seen_prefix_block.add(seen_key)  # type: ignore[attr-defined]
+
+        base_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = base_dir / prefix
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Attention distribution over KV tiles from compress attention scores.
+        # block_attn_score: [B, H, q_tiles, kv_tiles]
+        attn_over_kv = block_attn_score.float().mean(dim=(0, 1, 2))  # [kv_tiles]
+        # Selected distribution over KV tiles from topk indices.
+        sel_idx = topK_indices.reshape(-1).to(torch.long)  # [B*H*q_tiles*topk]
+        sel_counts = torch.bincount(sel_idx, minlength=num_kv_tiles).float()
+
+        # Aggregate by KV block id
+        def _agg_by_block(vec: torch.Tensor) -> torch.Tensor:
+            if kv_blocks == 1:
+                return vec.sum().view(1)
+            vec = vec.view(kv_blocks, tiles_per_block).sum(dim=1)
+            return vec
+
+        attn_by_block = _agg_by_block(attn_over_kv)
+        sel_by_block = _agg_by_block(sel_counts)
+        attn_by_block = attn_by_block / (attn_by_block.sum() + 1e-9)
+        sel_by_block = sel_by_block / (sel_by_block.sum() + 1e-9)
+
+        # Build a simple heatmap: q_tile x kv_block (compress attention mass)
+        heat = block_attn_score.float().mean(dim=(0, 1))  # [q_tiles, kv_tiles]
+        if kv_blocks > 1:
+            heat = heat.view(num_q_tiles, kv_blocks,
+                             tiles_per_block).sum(dim=2)  # [q_tiles, kv_blocks]
+        else:
+            heat = heat.sum(dim=1, keepdim=True)  # [q_tiles, 1]
+        # Normalize for visualization (row-wise)
+        heat = heat / (heat.sum(dim=1, keepdim=True) + 1e-9)
+
+        # Save as PNG (PIL-based). Do not silently skip failures.
+        import numpy as np
+        from PIL import Image, ImageDraw
+
+        def _bar_plot(values: np.ndarray, width: int = 480,
+                      height: int = 120) -> Image.Image:
+            values = np.clip(values, 0.0, 1.0)
+            n = max(1, values.shape[0])
+            img = Image.new("RGB", (width, height), (255, 255, 255))
+            draw = ImageDraw.Draw(img)
+            pad = 6
+            bw = max(1, (width - 2 * pad) // n)
+            for i, v_ in enumerate(values):
+                x0 = pad + i * bw
+                x1 = x0 + bw - 1
+                y1 = height - pad
+                y0 = int(y1 - v_ * (height - 2 * pad))
+                draw.rectangle([x0, y0, x1, y1], fill=(60, 120, 220))
+            return img
+
+        def _heatmap(mat: np.ndarray, scale: int = 6) -> Image.Image:
+            """
+            Render q_tile x kv_block heatmap.
+
+            By default we output a *square* heatmap (Q axis squashed) for readability, since
+            q_tiles can be large (e.g. 104) while kv_blocks is small (e.g. 6).
+            Control via:
+              - FASTVIDEO_VSA_DEBUG_HEATMAP_SQUARE=1/0
+              - FASTVIDEO_VSA_DEBUG_HEATMAP_SIDE=360  (only used when square=1)
+            """
+            mat = np.clip(mat, 0.0, 1.0)
+            h, w = mat.shape
+            arr = (mat * 255).astype(np.uint8)
+            img = Image.fromarray(arr, mode="L")
+
+            square = os.environ.get("FASTVIDEO_VSA_DEBUG_HEATMAP_SQUARE",
+                                    "1") == "1"
+            if square:
+                try:
+                    side = int(os.environ.get("FASTVIDEO_VSA_DEBUG_HEATMAP_SIDE",
+                                              "360"))
+                except Exception as e:
+                    raise RuntimeError(
+                        "FASTVIDEO_VSA_DEBUG_HEATMAP_SIDE must be an int") from e
+                side = max(32, side)
+                img = img.resize((side, side), resample=Image.NEAREST)
+            else:
+                img = img.resize((w * scale, h * scale),
+                                 resample=Image.NEAREST)
+            return img.convert("RGB")
+
+        attn_img = _bar_plot(attn_by_block.cpu().numpy())
+        sel_img = _bar_plot(sel_by_block.cpu().numpy())
+        heat_img = _heatmap(heat.cpu().numpy())
+
+        # Stack: heatmap on top, then 2 bars
+        W = max(heat_img.width, attn_img.width, sel_img.width)
+        H = heat_img.height + attn_img.height + sel_img.height + 40
+        canvas = Image.new("RGB", (W, H), (255, 255, 255))
+        draw = ImageDraw.Draw(canvas)
+
+        # Title
+        title = (
+            f"VSA debug: q_tiles={num_q_tiles} kv_tiles={num_kv_tiles} "
+            f"kv_blocks(window)={kv_blocks} kv_block_idx={kv_block_idx} topk={topk}"
+        )
+        draw.text((10, 5), title, fill=(0, 0, 0))
+
+        y = 30
+        canvas.paste(heat_img, (10, y))
+        y += heat_img.height + 10
+        draw.text((10, y), "compress attn mass per KV block", fill=(0, 0, 0))
+        y += 16
+        canvas.paste(attn_img, (10, y))
+        y += attn_img.height + 10
+        draw.text((10, y), "topk selected tile mass per KV block", fill=(0, 0, 0))
+        y += 16
+        canvas.paste(sel_img, (10, y))
+
+        ts = int(time.time() * 1000)
+        tag = md5(
+            f"{ts}-{video_sparse_attn._dbg_save_count}".encode()  # type: ignore[attr-defined]
+        ).hexdigest()[:8]
+        out_path = out_dir / f"vsa_b{kv_block_idx:03d}_{video_sparse_attn._dbg_save_count:05d}_{tag}.png"  # type: ignore[attr-defined]
+        canvas.save(out_path)
     return final_output
 

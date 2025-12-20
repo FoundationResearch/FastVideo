@@ -31,7 +31,7 @@ VSA_SPARSITY="0.00"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
 # export WANDB_NAME="test251220-2"
-TEST_MODE=false
+TEST_MODE=true
 
 if [ "$TEST_MODE" = "true" ]; then
     echo "⚠️  TEST MODE ACTIVATED: WandB is DISABLED, debug output is shown."
@@ -76,7 +76,7 @@ training_args=(
   --num_frames 81
   --num_frame_per_block 4  # Frame generation block size for self-forcing (VSA 4-4-4)
   --enable_gradient_masking
-  --gradient_mask_last_n_frames 21
+  --gradient_mask_last_n_frames 24
 )
 
 parallel_args=(

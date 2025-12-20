@@ -498,6 +498,13 @@ class CausalWanSelfAttention_VSA(nn.Module):
         v_in = v_prefix.transpose(1, 2).contiguous()
         gate_in = gate_tiled_block.transpose(1, 2).contiguous()
 
+        # If VSA debug PNG saving is enabled, pass the absolute causal block index
+        # (derived from start_frame) to the `vsa.video_sparse_attn` debug code via env.
+        # This avoids ambiguous inference when KV cache uses a sliding window (kv_blocks
+        # may stay small even as the absolute block index grows).
+        if os.environ.get("FASTVIDEO_VSA_DEBUG_SAVE", "0") == "1":
+            os.environ["FASTVIDEO_VSA_DEBUG_BLOCK_IDX"] = str(cur_block_idx)
+
         # Debug: optionally log q/k tiled lengths during causal generation.
         # Enable via: FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN=1
         if os.environ.get("FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN", "0") == "1":

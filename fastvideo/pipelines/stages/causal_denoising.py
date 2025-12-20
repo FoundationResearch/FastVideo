@@ -444,6 +444,8 @@ class CausalDMDDenosingStage(DenoisingStage):
             # We store whole blocks; any remainder is rounded up.
             max_blocks = math.ceil(self.sliding_window_num_frames /
                                    self.num_frames_per_block)
+            # print(f"max blocks: {max_blocks}, sliding window num: {self.sliding_window_num_frames}, num frame per block: {self.num_frames_per_block}")
+            # input("Press key")
             kv_cache_size = L_tiled_block * max_blocks
             vbs_buf_len = num_tiles_flat * max_blocks
         else:

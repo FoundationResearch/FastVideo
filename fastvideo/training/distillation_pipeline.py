@@ -3,6 +3,7 @@ import copy
 import gc
 import json
 import os
+import hashlib
 import time
 from abc import abstractmethod
 from collections import deque
@@ -1224,7 +1225,7 @@ class DistillationPipeline(TrainingPipeline):
                     steps: int) -> tuple[list[np.ndarray], list[str]]:
                 videos: list[np.ndarray] = []
                 captions: list[str] = []
-                for validation_batch in validation_dataloader:
+                for validation_batch_idx, validation_batch in enumerate(validation_dataloader):
                     batch = self._prepare_validation_batch(
                         sampling_param, training_args, validation_batch, steps)
 
@@ -1253,8 +1254,81 @@ class DistillationPipeline(TrainingPipeline):
 
                     # Run validation inference
                     with torch.no_grad():
-                        output_batch = self.validation_pipeline.forward(
-                            batch, training_args)
+                        # Optional: enable VSA debug PNG dumps keyed by (global_step, steps, prompt hash).
+                        # Enable via:
+                        #   FASTVIDEO_VSA_DEBUG_SAVE=1
+                        # Optional:
+                        #   FASTVIDEO_VSA_DEBUG_DIR=/path/to/save
+                        #   FASTVIDEO_SAMPLE_PAUSE=1  (pause after each saved mp4 on rank0)
+                        # By default, only let global rank0 write debug PNGs to avoid
+                        # multi-process folder spam / empty folders on non-shared filesystems.
+                        # Override via: FASTVIDEO_VSA_DEBUG_RANK0_ONLY=0
+                        restore_debug_save_env: str | None = None
+                        debug_rank0_only = os.environ.get(
+                            "FASTVIDEO_VSA_DEBUG_RANK0_ONLY", "1") == "1"
+                        is_debug_rank = (self.global_rank == 0
+                                         and self.rank_in_sp_group == 0)
+                        if (os.environ.get("FASTVIDEO_VSA_DEBUG_SAVE", "0") == "1"
+                                and debug_rank0_only and not is_debug_rank):
+                            restore_debug_save_env = os.environ.get(
+                                "FASTVIDEO_VSA_DEBUG_SAVE", "0")
+                            os.environ["FASTVIDEO_VSA_DEBUG_SAVE"] = "0"
+
+                        if (os.environ.get("FASTVIDEO_VSA_DEBUG_SAVE", "0") == "1"
+                                and is_debug_rank):
+                            # Use a *stable per-prompt folder* so one prompt corresponds to one directory,
+                            # even when validation runs multiple num_inference_steps values.
+                            # (Users often interpret "a sample" as "one prompt rollout", not "one step config".)
+                            prompt_hash = hashlib.md5(
+                                batch.prompt.encode("utf-8")).hexdigest()[:8]
+                            os.environ["FASTVIDEO_VSA_DEBUG_PREFIX"] = (
+                                f"val_step_{global_step}_prompt_{prompt_hash}"
+                            )
+                            # Ensure the target directory exists even if the VSA
+                            # backend fails to write PNGs (we will assert later).
+                            debug_dir = os.environ.get(
+                                "FASTVIDEO_VSA_DEBUG_DIR", "vsa_debug")
+                            debug_prefix = os.environ.get(
+                                "FASTVIDEO_VSA_DEBUG_PREFIX", "default")
+                            os.makedirs(os.path.join(debug_dir, debug_prefix),
+                                        exist_ok=True)
+
+                            # Track PNG count so we can assert this *rollout* wrote new files,
+                            # even if the folder already contains PNGs from previous runs.
+                            import glob
+                            prev_png_count = len(
+                                glob.glob(
+                                    os.path.join(debug_dir, debug_prefix,
+                                                 "*.png")))
+
+                            # Reset VSA debug dedup state so we still dump one PNG per 4-frame block
+                            # for each rollout (e.g., for each num_inference_steps run), even when
+                            # writing into the same per-prompt folder.
+                            try:
+                                import vsa  # type: ignore
+                            except Exception as e:
+                                raise RuntimeError(
+                                    "FASTVIDEO_VSA_DEBUG_SAVE=1 but failed to import `vsa`. "
+                                    "Your environment may not have VSA installed, or PYTHONPATH is wrong."
+                                ) from e
+                            vsa_vsa = getattr(vsa, "video_sparse_attn", None)
+                            if vsa_vsa is None:
+                                raise RuntimeError(
+                                    "FASTVIDEO_VSA_DEBUG_SAVE=1 but `vsa.video_sparse_attn` is missing. "
+                                    f"Runtime vsa.__file__={getattr(vsa, '__file__', None)}"
+                                )
+                            if hasattr(vsa_vsa, "_dbg_seen_prefix_block"):
+                                vsa_vsa._dbg_seen_prefix_block = set()  # type: ignore[attr-defined]
+                            if hasattr(vsa_vsa, "_dbg_save_count"):
+                                vsa_vsa._dbg_save_count = 0  # type: ignore[attr-defined]
+                        try:
+                            output_batch = self.validation_pipeline.forward(
+                                batch, training_args)
+                        finally:
+                            # Restore debug env for non-rank0 processes if we temporarily disabled it.
+                            if restore_debug_save_env is not None:
+                                os.environ[
+                                    "FASTVIDEO_VSA_DEBUG_SAVE"] = restore_debug_save_env
                     samples = output_batch.output
                     if self.rank_in_sp_group != 0:
                         continue
@@ -1267,6 +1341,45 @@ class DistillationPipeline(TrainingPipeline):
                         x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
                         frames.append((x * 255).numpy().astype(np.uint8))
                     videos.append(frames)
+
+                    # Optional: pause after each *sample* is generated so you can inspect
+                    # the PNGs written by `video_sparse_attn` for this prompt.
+                    # Enable via: FASTVIDEO_SAMPLE_PAUSE=1
+                    if os.environ.get("FASTVIDEO_SAMPLE_PAUSE", "0") == "1":
+                        if self.global_rank == 0 and self.rank_in_sp_group == 0:
+                            debug_dir = os.environ.get(
+                                "FASTVIDEO_VSA_DEBUG_DIR", "vsa_debug")
+                            debug_prefix = os.environ.get(
+                                "FASTVIDEO_VSA_DEBUG_PREFIX", "default")
+                            # If VSA debug save is enabled, require at least one PNG.
+                            if os.environ.get("FASTVIDEO_VSA_DEBUG_SAVE",
+                                              "0") == "1":
+                                import glob
+                                pngs = glob.glob(
+                                    os.path.join(debug_dir, debug_prefix,
+                                                 "*.png"))
+                                # If the folder already had PNGs (e.g., multiple inference-step runs per prompt),
+                                # require that this rollout adds new files.
+                                prev_png_count_local = locals().get(
+                                    "prev_png_count", 0)
+                                if len(pngs) <= int(prev_png_count_local):
+                                    try:
+                                        import vsa  # type: ignore
+                                        vsa_file = getattr(vsa, "__file__", None)
+                                    except Exception as e:
+                                        vsa_file = f"<failed to import vsa: {e}>"
+                                    raise RuntimeError(
+                                        "FASTVIDEO_VSA_DEBUG_SAVE=1 but no PNGs were written for this sample. "
+                                        f"Expected new *.png files under {debug_dir}/{debug_prefix} "
+                                        f"(prev_png_count={prev_png_count_local}, now={len(pngs)}). "
+                                        f"Runtime vsa.__file__={vsa_file}. "
+                                        "This usually means your job is importing a different `vsa` module "
+                                        "than the one you edited, or the debug save code is not being executed."
+                                    )
+                            input(
+                                f"[rank0] Finished validation sample {validation_batch_idx}. "
+                                f"VSA PNG dir: {debug_dir}/{debug_prefix}. Press Enter to continue..."
+                            )
 
                 return videos, captions
 
@@ -1317,6 +1430,12 @@ class DistillationPipeline(TrainingPipeline):
                         )
                         imageio.mimsave(filename, video, fps=sampling_param.fps)
                         video_filenames.append(filename)
+                        # Optional: pause after each video is written (interactive debugging).
+                        # Enable via: FASTVIDEO_SAMPLE_PAUSE=1
+                        if os.environ.get("FASTVIDEO_SAMPLE_PAUSE", "0") == "1":
+                            input(
+                                f"[rank0] Saved {filename}. Press Enter to continue..."
+                            )
 
                     artifacts = []
                     for filename, caption in zip(video_filenames,
