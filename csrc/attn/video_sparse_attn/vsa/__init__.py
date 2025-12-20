@@ -220,12 +220,15 @@ def video_sparse_attn(
         out_dir = base_dir / prefix
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Attention distribution over KV tiles from compress attention scores.
-        # block_attn_score: [B, H, q_tiles, kv_tiles]
+        # Compress attention distribution over KV tiles from softmax scores.
+        # block_attn_score: [B, H, q_tiles, kv_tiles]  (softmax over kv_tiles)
         attn_over_kv = block_attn_score.float().mean(dim=(0, 1, 2))  # [kv_tiles]
-        # Selected distribution over KV tiles from topk indices.
+
+        # Sparse selection statistics from topk indices.
+        # topK_indices: [B, H, q_tiles, topk] in kv-tile space.
         sel_idx = topK_indices.reshape(-1).to(torch.long)  # [B*H*q_tiles*topk]
-        sel_counts = torch.bincount(sel_idx, minlength=num_kv_tiles).float()
+        sel_counts = torch.bincount(sel_idx, minlength=num_kv_tiles).float()  # total picks per kv-tile
+        sel_unique = (sel_counts > 0).float()  # whether a kv-tile was ever selected (k-block count proxy)
 
         # Aggregate by KV block id
         def _agg_by_block(vec: torch.Tensor) -> torch.Tensor:
@@ -235,7 +238,9 @@ def video_sparse_attn(
             return vec
 
         attn_by_block = _agg_by_block(attn_over_kv)
+        # Total selection mass (counts) and unique selected tile counts per KV block.
         sel_by_block = _agg_by_block(sel_counts)
+        sel_unique_by_block = _agg_by_block(sel_unique)
         attn_by_block = attn_by_block / (attn_by_block.sum() + 1e-9)
         sel_by_block = sel_by_block / (sel_by_block.sum() + 1e-9)
 
@@ -278,11 +283,48 @@ def video_sparse_attn(
             Control via:
               - FASTVIDEO_VSA_DEBUG_HEATMAP_SQUARE=1/0
               - FASTVIDEO_VSA_DEBUG_HEATMAP_SIDE=360  (only used when square=1)
+              - FASTVIDEO_VSA_DEBUG_HEATMAP_CMAP=turbo|gray  (default: turbo)
             """
             mat = np.clip(mat, 0.0, 1.0)
             h, w = mat.shape
-            arr = (mat * 255).astype(np.uint8)
-            img = Image.fromarray(arr, mode="L")
+
+            cmap = os.environ.get("FASTVIDEO_VSA_DEBUG_HEATMAP_CMAP",
+                                  "turbo").lower()
+
+            def _turbo_rgb(x01: np.ndarray) -> np.ndarray:
+                """
+                Turbo colormap approximation (Google).
+                Input: x in [0,1], shape [H,W]
+                Output: uint8 RGB, shape [H,W,3]
+                """
+                x = x01.astype(np.float32)
+                # Coeffs from turbo colormap polynomial approximation.
+                r = (0.13572138 + x * (4.61539260 + x *
+                                      (-42.66032258 + x *
+                                       (132.13108234 + x *
+                                        (-152.94239396 + x * 59.28637943)))))
+                g = (0.09140261 + x * (2.19418839 + x *
+                                      (4.84296658 + x *
+                                       (-14.18503333 + x *
+                                        (4.27729857 + x * 2.82956604)))))
+                b = (0.10667330 + x * (12.64194608 + x *
+                                      (-60.58204836 + x *
+                                       (110.36276771 + x *
+                                        (-89.90310912 + x * 27.34824973)))))
+                rgb = np.stack([r, g, b], axis=-1)
+                rgb = np.clip(rgb, 0.0, 1.0)
+                return (rgb * 255.0).astype(np.uint8)
+
+            if cmap == "gray" or cmap == "greyscale" or cmap == "grayscale":
+                arr = (mat * 255).astype(np.uint8)
+                img = Image.fromarray(arr, mode="L").convert("RGB")
+            elif cmap == "turbo":
+                rgb = _turbo_rgb(mat)
+                img = Image.fromarray(rgb, mode="RGB")
+            else:
+                raise RuntimeError(
+                    "FASTVIDEO_VSA_DEBUG_HEATMAP_CMAP must be 'turbo' or 'gray', "
+                    f"but got {cmap!r}")
 
             square = os.environ.get("FASTVIDEO_VSA_DEBUG_HEATMAP_SQUARE",
                                     "1") == "1"
@@ -298,15 +340,62 @@ def video_sparse_attn(
             else:
                 img = img.resize((w * scale, h * scale),
                                  resample=Image.NEAREST)
-            return img.convert("RGB")
+            return img
 
         attn_img = _bar_plot(attn_by_block.cpu().numpy())
-        sel_img = _bar_plot(sel_by_block.cpu().numpy())
+
+        # Panel 3: selection heatmap (q_tile x kv_tile) derived from topK indices.
+        # This answers: "for each q_tile, which kv_tiles were selected?"
+        # We aggregate selections across (B, H, topk) into counts, then normalize row-wise.
+        # NOTE: This is debug-only; a small Python loop over q_tiles is acceptable.
+        sel_heat = torch.zeros((num_q_tiles, num_kv_tiles),
+                               device=block_attn_score.device,
+                               dtype=torch.float32)
+        # [q_tiles, B*H*topk]
+        idx_q = topK_indices.permute(2, 0, 1, 3).reshape(num_q_tiles, -1).to(
+            torch.long)
+        for qi in range(num_q_tiles):
+            counts = torch.bincount(idx_q[qi], minlength=num_kv_tiles).float()
+            sel_heat[qi] = counts
+        sel_heat = sel_heat / (sel_heat.sum(dim=1, keepdim=True) + 1e-9)
+        # Make the selection heatmap more contrast-sensitive:
+        # - Use robust percentile stretch on the *values* to avoid "all one color"
+        # - Optional log/gamma to enhance small variations
+        #
+        # Controls:
+        #   FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_PCT_LOW=1
+        #   FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_PCT_HIGH=99
+        #   FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_GAMMA=1.0  (set <1 to boost low values)
+        #   FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_LOG=0/1
+        sel_np = sel_heat.cpu().numpy().astype(np.float32)
+        if os.environ.get("FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_LOG", "0") == "1":
+            # log1p keeps zeros at zero and expands small values.
+            sel_np = np.log1p(sel_np)
+        try:
+            pct_low = float(os.environ.get("FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_PCT_LOW", "1"))
+            pct_high = float(os.environ.get("FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_PCT_HIGH", "99"))
+        except Exception as e:
+            raise RuntimeError(
+                "FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_PCT_LOW/HIGH must be floats"
+            ) from e
+        vmin = float(np.percentile(sel_np, pct_low))
+        vmax = float(np.percentile(sel_np, pct_high))
+        if vmax <= vmin:
+            vmax = vmin + 1e-9
+        sel_np = np.clip((sel_np - vmin) / (vmax - vmin), 0.0, 1.0)
+        try:
+            gamma = float(os.environ.get("FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_GAMMA", "1.0"))
+        except Exception as e:
+            raise RuntimeError("FASTVIDEO_VSA_DEBUG_SEL_HEATMAP_GAMMA must be a float") from e
+        if gamma != 1.0:
+            gamma = max(1e-6, gamma)
+            sel_np = np.power(sel_np, gamma)
+        sel_heat_img = _heatmap(sel_np)
         heat_img = _heatmap(heat.cpu().numpy())
 
-        # Stack: heatmap on top, then 2 bars
-        W = max(heat_img.width, attn_img.width, sel_img.width)
-        H = heat_img.height + attn_img.height + sel_img.height + 40
+        # Stack: heatmap on top, then bar plot, then selection heatmap
+        W = max(heat_img.width, attn_img.width, sel_heat_img.width)
+        H = heat_img.height + attn_img.height + sel_heat_img.height + 40
         canvas = Image.new("RGB", (W, H), (255, 255, 255))
         draw = ImageDraw.Draw(canvas)
 
@@ -324,9 +413,13 @@ def video_sparse_attn(
         y += 16
         canvas.paste(attn_img, (10, y))
         y += attn_img.height + 10
-        draw.text((10, y), "topk selected tile mass per KV block", fill=(0, 0, 0))
+        draw.text(
+            (10, y),
+            "topk selection heatmap (q_tile x kv_tile, row-normalized; contrast-stretched)",
+            fill=(0, 0, 0),
+        )
         y += 16
-        canvas.paste(sel_img, (10, y))
+        canvas.paste(sel_heat_img, (10, y))
 
         ts = int(time.time() * 1000)
         tag = md5(
