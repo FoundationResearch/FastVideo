@@ -4,6 +4,7 @@ import math
 from typing import Any
 
 import numpy as np
+import os
 import torch
 import torch.nn as nn
 
@@ -288,6 +289,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         Returns:
             Tensor of shape [B, L_block, num_heads, head_dim] for the current block.
         """
+        # raise RuntimeError("Correctly calling VSA Self Attention")
         del block_mask, current_start, cache_start  # Unused in VSA path
 
         if kv_cache is None:
@@ -462,6 +464,26 @@ class CausalWanSelfAttention_VSA(nn.Module):
         k_in = k_prefix.transpose(1, 2).contiguous()
         v_in = v_prefix.transpose(1, 2).contiguous()
         gate_in = gate_tiled_block.transpose(1, 2).contiguous()
+
+        # Debug: optionally log q/k tiled lengths during causal generation.
+        # Enable via: FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN=1
+        if os.environ.get("FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN", "0") == "1":
+            cnt = int(getattr(self, "_debug_qklen_cnt", 0))
+            if cnt < 8:
+                setattr(self, "_debug_qklen_cnt", cnt + 1)
+                if (not dist.is_initialized()) or dist.get_rank() == 0:
+                    q_len = q_in.shape[2]
+                    k_len = k_in.shape[2]
+                    logger.info(
+                        "causal_vsa q_len=%s (q_tiles=%s) k_len=%s (kv_tiles=%s) "
+                        "num_cached_blocks(before)=%s cur_topk=%s",
+                        q_len,
+                        q_len // math.prod(VSA_TILE_SIZE),
+                        k_len,
+                        k_len // math.prod(VSA_TILE_SIZE),
+                        num_cached_blocks,
+                        cur_topk,
+                    )
 
         hidden_tiled_out = video_sparse_attn(
             q_in,

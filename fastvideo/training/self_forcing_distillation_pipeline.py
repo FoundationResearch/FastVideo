@@ -106,6 +106,24 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
             if hasattr(module, "num_frame_per_block"):
                 module.num_frame_per_block = self.num_frame_per_block
 
+        # Sanity check: if the user requests a block size that only makes sense for causal generation,
+        # but the loaded student transformer is not the causal architecture, warn loudly.
+        # (Non-causal WanTransformer3DModel ignores KV-cache/start_frame and always uses start_frame=0 RoPE.)
+        try:
+            student = getattr(self, "transformer", None)
+            student_name = None if student is None else student.__class__.__name__
+            if student is not None and student_name != "CausalWanTransformer3DModel":
+                logger.warning(
+                    "Self-forcing configured num_frame_per_block=%s, but student transformer is %s. "
+                    "This likely means you're NOT using causal KV-cache generation. "
+                    "To enable causal generation, pass --override_transformer_cls_name CausalWanTransformer3DModel.",
+                    self.num_frame_per_block,
+                    student_name,
+                )
+        except Exception:
+            # Don't let logging break training.
+            pass
+
         self.kv_cache1: list[dict[str, Any]] | None = None
         self.crossattn_cache: list[dict[str, Any]] | None = None
 

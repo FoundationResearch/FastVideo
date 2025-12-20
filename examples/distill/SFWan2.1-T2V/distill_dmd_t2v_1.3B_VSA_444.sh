@@ -34,12 +34,14 @@ FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
-export CUDA_VISIBLE_DEVICES=1,2
+export CUDA_VISIBLE_DEVICES=0,1
 # IP=[MASTER NODE IP]
 
 training_args=(
   --tracker_project_name alex_VSA_SFwan_t2v_distill_self_forcing_dmd  
   --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_VSA_backend"
+  # IMPORTANT: force the student/generator transformer to the *causal* architecture so that
+  # KV cache + start_frame RoPE offsets are actually used.
   # --override_transformer_cls_name "CausalWanTransformer3DModel"
   --max_train_steps 4000
   --train_batch_size 1
