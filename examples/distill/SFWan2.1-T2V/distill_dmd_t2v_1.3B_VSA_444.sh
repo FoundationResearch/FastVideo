@@ -16,7 +16,7 @@ export NCCL_P2P_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 # different cache dir for different processes
 export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_PROCID}
-export MASTER_PORT=29505
+export MASTER_PORT=29506
 export TOKENIZERS_PARALLELISM=false
 export WANDB_API_KEY="50632ebd88ffd970521cec9ab4a1a2d7e85bfc45"
 export WANDB_BASE_URL="https://api.wandb.ai"
@@ -30,7 +30,16 @@ GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/d
 VSA_SPARSITY="0.05"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
-# export WANDB_NAME="test251220-1"
+export WANDB_NAME="test251220-2"
+TEST_MODE=true
+
+if [ "$TEST_MODE" = "true" ]; then
+    echo "⚠️  TEST MODE ACTIVATED: WandB is DISABLED."
+    export WANDB_MODE="disabled"  # 核心：这行代码会彻底切断上传
+else
+    echo "✅  PRODUCTION MODE: WandB is ONLINE."
+    export WANDB_MODE="online"
+fi
 
 # Configs
 NUM_GPUS=2
@@ -43,7 +52,7 @@ FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
-export CUDA_VISIBLE_DEVICES=2,3
+export CUDA_VISIBLE_DEVICES=6,7
 # IP=[MASTER NODE IP]
 
 training_args=(
