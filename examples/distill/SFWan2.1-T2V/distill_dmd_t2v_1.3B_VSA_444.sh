@@ -22,14 +22,15 @@ export WANDB_API_KEY="50632ebd88ffd970521cec9ab4a1a2d7e85bfc45"
 export WANDB_BASE_URL="https://api.wandb.ai"
 export WANDB_MODE=online
 export FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # W&B run name: {gitcommit_id_前7位}-{vsa_sparsity}-{num_height}
 GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/dev/null || echo nogit)"
 # Remember to change those numbers below - no auto sync exists!
-VSA_SPARSITY="0.85"
+VSA_SPARSITY="0.05"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
-export WANDB_NAME="test251220-1"
+# export WANDB_NAME="test251220-1"
 
 # Configs
 NUM_GPUS=2
@@ -142,7 +143,7 @@ self_forcing_args=(
 )
 
 vsa_args=(
-  --VSA_sparsity 0.85
+  --VSA_sparsity 0.05
   --VSA_decay_rate 0.01
   --VSA_decay_interval_steps 1
 )
