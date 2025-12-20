@@ -468,20 +468,42 @@ class CausalWanSelfAttention_VSA(nn.Module):
         # Debug: optionally log q/k tiled lengths during causal generation.
         # Enable via: FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN=1
         if os.environ.get("FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN", "0") == "1":
-            cnt = int(getattr(self, "_debug_qklen_cnt", 0))
-            if cnt < 8:
-                setattr(self, "_debug_qklen_cnt", cnt + 1)
-                if (not dist.is_initialized()) or dist.get_rank() == 0:
-                    q_len = q_in.shape[2]
-                    k_len = k_in.shape[2]
+            q_len = q_in.shape[2]
+            k_len = k_in.shape[2]
+            if (not dist.is_initialized()) or dist.get_rank() == 0:
+                layer_idx = kv_cache.get("_dbg_layer_idx", None) if kv_cache is not None else None
+                # Only print layer 0, but print every call (no throttling).
+                if layer_idx == 0:
+                    dbg_start_frame = kv_cache.get("_dbg_start_frame", None) if kv_cache is not None else None
+                    dbg_current_start = kv_cache.get("_dbg_current_start", None) if kv_cache is not None else None
+                    dbg_diff_ts = kv_cache.get("_dbg_diff_timestep", None) if kv_cache is not None else None
+                    has_ncb = (kv_cache is not None) and ("num_cached_blocks" in kv_cache)
+                    has_vbs = (kv_cache is not None) and ("variable_block_sizes" in kv_cache)
+                    vbs_len = (int(kv_cache["variable_block_sizes"].numel())
+                               if has_vbs else None)
+                    kv_id = id(kv_cache) if kv_cache is not None else None
+                    k_buf_id = id(kv_cache["k"]) if kv_cache is not None and "k" in kv_cache else None
+                    k_buf_ptr = (int(kv_cache["k"].data_ptr())
+                                 if kv_cache is not None and "k" in kv_cache else None)
                     logger.info(
-                        "causal_vsa q_len=%s (q_tiles=%s) k_len=%s (kv_tiles=%s) "
-                        "num_cached_blocks(before)=%s cur_topk=%s",
+                        "causal_vsa layer=%s kv_id=%s k_buf_id=%s k_ptr=%s start_frame=%s current_start=%s diff_t=%s "
+                        "q_len=%s (q_tiles=%s) k_len=%s (kv_tiles=%s) "
+                        "has_num_cached_blocks=%s num_cached_blocks(before)=%s has_vbs=%s vbs_len=%s cur_topk=%s",
+                        layer_idx,
+                        kv_id,
+                        k_buf_id,
+                        k_buf_ptr,
+                        dbg_start_frame,
+                        dbg_current_start,
+                        dbg_diff_ts,
                         q_len,
                         q_len // math.prod(VSA_TILE_SIZE),
                         k_len,
                         k_len // math.prod(VSA_TILE_SIZE),
+                        has_ncb,
                         num_cached_blocks,
+                        has_vbs,
+                        vbs_len,
                         cur_topk,
                     )
 
@@ -987,6 +1009,20 @@ class CausalWanTransformer3DModel(BaseDiT):
             encoder_hidden_states_image = None
 
         batch_size, num_channels, num_frames, height, width = hidden_states.shape
+
+        # Debug: print per-call high-level info (frames + offsets) for causal VSA investigations.
+        if os.environ.get("FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN", "0") == "1":
+            if (not dist.is_initialized()) or dist.get_rank() == 0:
+                try:
+                    logger.info(
+                        "causal_infer_call start_frame=%s current_start=%s num_frames=%s timestep0=%s",
+                        int(start_frame),
+                        int(current_start),
+                        int(num_frames),
+                        int(timestep.flatten()[0].item()),
+                    )
+                except Exception:
+                    pass
         p_t, p_h, p_w = self.patch_size
         post_patch_num_frames = num_frames // p_t
         post_patch_height = height // p_h
@@ -1033,6 +1069,18 @@ class CausalWanTransformer3DModel(BaseDiT):
 
         # 4. Transformer blocks
         for block_index, block in enumerate(self.blocks):
+            # Debug: annotate kv_cache dicts with per-call metadata so lower-level
+            # attention modules can print meaningful context.
+            if kv_cache is not None and os.environ.get(
+                    "FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN", "0") == "1":
+                try:
+                    kvd = kv_cache[block_index]
+                    kvd["_dbg_layer_idx"] = block_index
+                    kvd["_dbg_start_frame"] = int(start_frame)
+                    kvd["_dbg_current_start"] = int(current_start)
+                    kvd["_dbg_diff_timestep"] = int(timestep.flatten()[0].item())
+                except Exception:
+                    pass
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 causal_kwargs = {
                     "kv_cache": kv_cache[block_index],
