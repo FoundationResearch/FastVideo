@@ -1,3 +1,4 @@
+import math
 import torch  # type: ignore
 
 from fastvideo.distributed import get_local_torch_device
@@ -20,11 +21,12 @@ except ImportError:
 
 try:
     from fastvideo.attention.backends.video_sparse_attn import (
-        VideoSparseAttentionBackend)
+        VideoSparseAttentionBackend, VSA_TILE_SIZE)
     vsa_available = True
 except ImportError:
     vsa_available = False
     VideoSparseAttentionBackend = None  # type: ignore
+    VSA_TILE_SIZE = (4, 4, 4)  # type: ignore
 
 logger = init_logger(__name__)
 
@@ -421,35 +423,76 @@ class CausalDMDDenosingStage(DenoisingStage):
         kv_cache1 = []
         num_attention_heads = self.transformer.num_attention_heads
         attention_head_dim = self.transformer.attention_head_dim
-        if self.local_attn_size != -1:
-            kv_cache_size = self.local_attn_size * self.frame_seq_length
+        # Non-VSA causal cache uses token-level ring buffer sizes.
+        # VSA causal cache uses *tiled* 1D layout (see `understand_kvcache.md`).
+        use_vsa_cache = (vsa_available and self.attn_backend
+                         == VideoSparseAttentionBackend)
+        if use_vsa_cache:
+            # Each causal block is stored as a fixed-length tiled segment.
+            # Tiled tokens per block = num_tiles_block * prod(VSA_TILE_SIZE).
+            T_block_p, H_prime, W_prime = self.dit_seq_shape_block
+            num_tiles_block = (
+                math.ceil(T_block_p / VSA_TILE_SIZE[0]),
+                math.ceil(H_prime / VSA_TILE_SIZE[1]),
+                math.ceil(W_prime / VSA_TILE_SIZE[2]),
+            )
+            num_tiles_flat = math.prod(num_tiles_block)
+            tile_tokens = math.prod(VSA_TILE_SIZE)
+            L_tiled_block = num_tiles_flat * tile_tokens
+
+            # Capacity is sized to match the sliding window in frames.
+            # We store whole blocks; any remainder is rounded up.
+            max_blocks = math.ceil(self.sliding_window_num_frames /
+                                   self.num_frames_per_block)
+            kv_cache_size = L_tiled_block * max_blocks
+            vbs_buf_len = num_tiles_flat * max_blocks
         else:
-            kv_cache_size = self.frame_seq_length * self.sliding_window_num_frames
+            if self.local_attn_size != -1:
+                kv_cache_size = self.local_attn_size * self.frame_seq_length
+            else:
+                kv_cache_size = self.frame_seq_length * self.sliding_window_num_frames
 
         for _ in range(self.num_transformer_blocks):
-            kv_cache1.append({
+            layer_cache: dict = {
                 "k":
-                torch.zeros([
-                    batch_size, kv_cache_size, num_attention_heads,
-                    attention_head_dim
-                ],
-                            dtype=dtype,
-                            device=device),
+                torch.zeros(
+                    [batch_size, kv_cache_size, num_attention_heads,
+                     attention_head_dim],
+                    dtype=dtype,
+                    device=device),
                 "v":
-                torch.zeros([
-                    batch_size, kv_cache_size, num_attention_heads,
-                    attention_head_dim
-                ],
-                            dtype=dtype,
-                            device=device),
-                "global_end_index":
-                torch.tensor([0], dtype=torch.long, device=device),
-                "local_end_index":
-                torch.tensor([0], dtype=torch.long, device=device),
+                torch.zeros(
+                    [batch_size, kv_cache_size, num_attention_heads,
+                     attention_head_dim],
+                    dtype=dtype,
+                    device=device),
                 # Geometry for a single causal block in patch space; required for VSA.
                 "dit_seq_shape_block":
                 self.dit_seq_shape_block,
-            })
+            }
+            if use_vsa_cache:
+                # Use tensor state so shallow-copied dict wrappers still see updates.
+                layer_cache["num_cached_blocks"] = torch.tensor([0],
+                                                               dtype=torch.long,
+                                                               device=device)
+                layer_cache["variable_block_sizes"] = torch.zeros(
+                    [vbs_buf_len], dtype=torch.long, device=device)
+                layer_cache["vbs_buf_len"] = torch.tensor([vbs_buf_len],
+                                                         dtype=torch.long,
+                                                         device=device)
+                layer_cache["num_tiles_flat_block"] = torch.tensor(
+                    [num_tiles_flat], dtype=torch.long, device=device)
+                layer_cache["L_tiled_block"] = torch.tensor([L_tiled_block],
+                                                           dtype=torch.long,
+                                                           device=device)
+            else:
+                layer_cache["global_end_index"] = torch.tensor([0],
+                                                               dtype=torch.long,
+                                                               device=device)
+                layer_cache["local_end_index"] = torch.tensor([0],
+                                                              dtype=torch.long,
+                                                              device=device)
+            kv_cache1.append(layer_cache)
 
         return kv_cache1
 

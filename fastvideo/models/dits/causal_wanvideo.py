@@ -371,67 +371,105 @@ class CausalWanSelfAttention_VSA(nn.Module):
         B, L_tiled_block, num_heads, head_dim = k_tiled_block.shape
         assert num_heads == self.num_heads and head_dim == self.head_dim
 
-        # Update KV cache: append tiled K/V and variable_block_sizes along the 1D tile axis.
-        # Detach cache tensors from any existing computation graph so that in-place
-        # updates are safe even when this module is used under autograd / checkpointing.
-        k_cache: torch.Tensor = kv_cache["k"].detach() #TODO: 这里的detach是不是self-forcing自带的？我记得nips去看self-forcing同期工作的时候提到了这一步detach，他的作用是什么？
-        v_cache: torch.Tensor = kv_cache["v"].detach()
-        kv_cache["k"] = k_cache
-        kv_cache["v"] = v_cache
+        # Update KV cache in-place without rebinding tensors.
+        #
+        # IMPORTANT: We index cache slots by *current block index* (derived from `start_frame`)
+        # so repeated diffusion timesteps overwrite the same slot, matching the non-VSA
+        # causal cache behavior (no "append per timestep").
+        k_cache: torch.Tensor = kv_cache["k"]
+        v_cache: torch.Tensor = kv_cache["v"]
+        # Match non-VSA causal behavior: break the autograd graph through the cache.
+        # Use in-place detach to avoid rebinding `kv_cache["k"]` / `kv_cache["v"]`
+        # (kv_cache dict wrappers may be shallow-copied by higher-level code).
+        #
+        # This matters in distillation/training runs where grad is enabled; without this,
+        # the cache can accidentally retain references to previous graphs and/or trigger
+        # in-place autograd errors.
+        try:
+            if torch.is_grad_enabled():
+                k_cache.detach_()
+                v_cache.detach_()
+        except Exception:
+            # Best-effort: if detach_ isn't possible for some reason, fall back to
+            # leaving the cache as-is (may be slower / less safe under autograd).
+            pass
         cache_capacity = k_cache.shape[1]
 
-        num_cached_blocks: int = int(kv_cache.get("num_cached_blocks", 0))
-        start_idx = num_cached_blocks * L_tiled_block # TODO: 这里assume了每次进来相同数量的kV
+        # `num_cached_blocks` is treated as a tensor state storing the current prefix length
+        # in blocks (i.e. number of valid cached blocks). Use in-place updates so shallow-copied
+        # kv_cache wrappers still observe changes.
+        if "num_cached_blocks" not in kv_cache or not torch.is_tensor(
+                kv_cache["num_cached_blocks"]):
+            kv_cache["num_cached_blocks"] = torch.tensor(
+                [0], dtype=torch.long, device=device)
+        cached_blocks_t: torch.Tensor = kv_cache["num_cached_blocks"]
+        cached_blocks = int(cached_blocks_t.item())
+
+        cur_block_idx = int(kv_cache.get("_cur_block_idx", 0))
+        prefix_blocks = max(cached_blocks, cur_block_idx + 1)
+
+        start_idx = cur_block_idx * L_tiled_block
         end_idx = start_idx + L_tiled_block
 
         # Handle limited KV cache capacity according to policy:
         # - "error"  : raise if capacity is exceeded (strict, recommended for training).
         # - "extend" : dynamically grow KV cache tensors to accommodate new blocks.
-        if end_idx > cache_capacity:
+        if end_idx > cache_capacity or (prefix_blocks * L_tiled_block) > cache_capacity:
             if self.kv_cache_policy == "error":
                 raise RuntimeError(
-                    f"VSA KV cache capacity exceeded: needed {end_idx}, "
+                    f"VSA KV cache capacity exceeded: needed {max(end_idx, prefix_blocks * L_tiled_block)}, "
                     f"but cache has length {cache_capacity}. "
                     "Please increase max_num_frames or adjust KV cache sizing, "
                     "or switch KV cache policy to 'extend'."
                 )
             elif self.kv_cache_policy == "extend":
-                new_capacity = max(end_idx, cache_capacity * 2) # TODO: 这里意味着可能不是2的倍数
+                new_capacity = max(prefix_blocks * L_tiled_block, end_idx,
+                                   cache_capacity * 2) # TODO: 这里意味着可能不是2的倍数
                 if new_capacity <= cache_capacity: # TODO: 这个是不是不可能发生啊？就算发生，那也蕴含着new_capacity等于end_idx了，下面的这个赋值没有意义了吧？
                     new_capacity = end_idx
-                new_k = k_cache.new_zeros(
-                    (k_cache.shape[0], new_capacity, k_cache.shape[2],
-                     k_cache.shape[3]))
-                new_v = v_cache.new_zeros(
-                    (v_cache.shape[0], new_capacity, v_cache.shape[2],
-                     v_cache.shape[3]))
+                # Note: extending capacity requires allocating new tensors and rebinding.
+                # This is opt-in via kv_cache_policy="extend".
+                new_k = k_cache.new_zeros((k_cache.shape[0], new_capacity,
+                                           k_cache.shape[2], k_cache.shape[3]))
+                new_v = v_cache.new_zeros((v_cache.shape[0], new_capacity,
+                                           v_cache.shape[2], v_cache.shape[3]))
                 new_k[:, :cache_capacity] = k_cache
                 new_v[:, :cache_capacity] = v_cache
-                k_cache = new_k
-                v_cache = new_v
-                kv_cache["k"] = k_cache
-                kv_cache["v"] = v_cache
+                kv_cache["k"] = new_k
+                kv_cache["v"] = new_v
+                k_cache = kv_cache["k"]
+                v_cache = kv_cache["v"]
                 cache_capacity = new_capacity
             else:
                 raise ValueError(
                     f"Unsupported KV cache policy: {self.kv_cache_policy}")
         k_cache[:, start_idx:end_idx] = k_tiled_block
         v_cache[:, start_idx:end_idx] = v_tiled_block
+        cached_blocks_t.fill_(prefix_blocks)
 
-        kv_cache["k"] = k_cache
-        kv_cache["v"] = v_cache
-        kv_cache["num_cached_blocks"] = num_cached_blocks + 1
-
+        # KV variable_block_sizes: store into a preallocated 1D buffer, indexed by block idx.
+        # Avoid torch.cat / rebinding so state survives shallow kv_cache wrapper copies.
         variable_block_sizes_block = construct_variable_block_sizes(
             dit_seq_shape_block, num_tiles_block, device
-        ) # TODO: 确认这里的重算会被cache所以不影响性能
-        if kv_cache["variable_block_sizes"].numel() == 0:
-            variable_block_sizes_all = variable_block_sizes_block
-        else:
-            variable_block_sizes_all = torch.cat(
-                [kv_cache["variable_block_sizes"], variable_block_sizes_block],
-                dim=0)
-        kv_cache["variable_block_sizes"] = variable_block_sizes_all # 这里的concat倒是应该没错，后续再思考思考，跟peiyuan交流一下最好是
+        )
+        if "variable_block_sizes" not in kv_cache or kv_cache[
+                "variable_block_sizes"].numel() == 0:
+            raise RuntimeError(
+                "VSA causal KV cache expects a preallocated `variable_block_sizes` buffer. "
+                "Please initialize KV cache via `CausalDMDDenosingStage._initialize_kv_cache()` "
+                "with VIDEO_SPARSE_ATTN enabled."
+            )
+        vbs_buf: torch.Tensor = kv_cache["variable_block_sizes"]
+        num_tiles_flat_block = int(variable_block_sizes_block.numel())
+        start_tile = cur_block_idx * num_tiles_flat_block
+        end_tile = start_tile + num_tiles_flat_block
+        if end_tile > vbs_buf.numel():
+            raise RuntimeError(
+                f"VSA variable_block_sizes buffer too small: need {end_tile}, "
+                f"but have {vbs_buf.numel()}. Increase KV cache sizing."
+            )
+        vbs_buf[start_tile:end_tile].copy_(variable_block_sizes_block)
+        variable_block_sizes_all = vbs_buf[:prefix_blocks * num_tiles_flat_block]
 
         # Build prefix-wide sparsity/topk information using the forward context
         forward_ctx = get_forward_context()
@@ -443,7 +481,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         else:
             VSA_sparsity = float(ctx_attn_metadata.VSA_sparsity)
 
-        total_seq_length_prefix = (num_cached_blocks + 1) * T_block_p * H_prime * W_prime
+        total_seq_length_prefix = prefix_blocks * T_block_p * H_prime * W_prime
         cur_topk = math.ceil(
             (1.0 - VSA_sparsity) *
             (total_seq_length_prefix / math.prod(VSA_TILE_SIZE)))
@@ -454,9 +492,10 @@ class CausalWanSelfAttention_VSA(nn.Module):
             roped_query, num_tiles_block, tile_partition_indices_block,
             non_pad_index_block)
 
-        # K/V prefix: we use all cached tiled tokens up to `end_idx`
-        k_prefix = k_cache[:, :end_idx]
-        v_prefix = v_cache[:, :end_idx]
+        # K/V prefix: we use all cached tiled tokens up to `prefix_blocks`.
+        prefix_end_idx = prefix_blocks * L_tiled_block
+        k_prefix = k_cache[:, :prefix_end_idx]
+        v_prefix = v_cache[:, :prefix_end_idx]
 
         # Call the low-level VSA kernel (q/k can have different lengths, but q_variable_block_sizes
         # must be provided to compute q_compress correctly when tile counts differ).
@@ -501,7 +540,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
                         k_len,
                         k_len // math.prod(VSA_TILE_SIZE),
                         has_ncb,
-                        num_cached_blocks,
+                        cached_blocks,
                         has_vbs,
                         vbs_len,
                         cur_topk,
@@ -1079,6 +1118,14 @@ class CausalWanTransformer3DModel(BaseDiT):
                     kvd["_dbg_start_frame"] = int(start_frame)
                     kvd["_dbg_current_start"] = int(current_start)
                     kvd["_dbg_diff_timestep"] = int(timestep.flatten()[0].item())
+                    # Provide current block index for VSA KV cache slotting.
+                    # This lets VSA overwrite the same slot across diffusion timesteps
+                    # and only grow the prefix when `start_frame` advances.
+                    try:
+                        kvd["_cur_block_idx"] = int(start_frame) // int(
+                            self.num_frame_per_block)
+                    except Exception:
+                        kvd["_cur_block_idx"] = 0
                 except Exception:
                     pass
             if torch.is_grad_enabled() and self.gradient_checkpointing:
