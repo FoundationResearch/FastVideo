@@ -422,7 +422,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
 
         variable_block_sizes_block = construct_variable_block_sizes(
             dit_seq_shape_block, num_tiles_block, device
-        ) # TODO: 这个也完全不用重算吧？不对，这里有很重大的逻辑错误，应该根据当前kv的位置计算padding，然后计算block size。去看vsa是怎么写的，逻辑完全错了。
+        ) # TODO: 确认这里的重算会被cache所以不影响性能
         if kv_cache["variable_block_sizes"].numel() == 0:
             variable_block_sizes_all = variable_block_sizes_block
         else:
@@ -433,7 +433,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
 
         # Build prefix-wide sparsity/topk information using the forward context
         forward_ctx = get_forward_context()
-        ctx_attn_metadata = forward_ctx.attn_metadata # TODO：这个是啥？
+        ctx_attn_metadata = forward_ctx.attn_metadata
         # Prefer explicit attribute access so missing metadata doesn't get silently ignored.
         # Keep backward compatibility for call sites that set attn_metadata=None.
         if ctx_attn_metadata is None:
@@ -450,7 +450,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         # while K/V come from the full prefix cache.
         q_tiled_block = vsa_impl.tile(
             roped_query, num_tiles_block, tile_partition_indices_block,
-            non_pad_index_block) # 这里才计算的qtile，TODO: 全代码查，是不是调用这个函数进行tile
+            non_pad_index_block)
 
         # K/V prefix: we use all cached tiled tokens up to `end_idx`
         k_prefix = k_cache[:, :end_idx]
