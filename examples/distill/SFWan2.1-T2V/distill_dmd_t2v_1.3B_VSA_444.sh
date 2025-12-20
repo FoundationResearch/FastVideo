@@ -25,10 +25,11 @@ export FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN
 
 # W&B run name: {gitcommit_id_前7位}-{vsa_sparsity}-{num_height}
 GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/dev/null || echo nogit)"
+# Remember to change those numbers below - no auto sync exists!
 VSA_SPARSITY="0.85"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
-export WANDB_NAME="test"
+# export WANDB_NAME="test251220"
 
 # Configs
 NUM_GPUS=2
