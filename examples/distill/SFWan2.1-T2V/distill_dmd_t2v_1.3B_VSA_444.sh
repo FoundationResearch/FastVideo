@@ -29,7 +29,7 @@ GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/d
 VSA_SPARSITY="0.85"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
-# export WANDB_NAME="test251220"
+export WANDB_NAME="test251220-1"
 
 # Configs
 NUM_GPUS=2

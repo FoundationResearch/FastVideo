@@ -379,20 +379,14 @@ class CausalWanSelfAttention_VSA(nn.Module):
         k_cache: torch.Tensor = kv_cache["k"]
         v_cache: torch.Tensor = kv_cache["v"]
         # Match non-VSA causal behavior: break the autograd graph through the cache.
-        # Use in-place detach to avoid rebinding `kv_cache["k"]` / `kv_cache["v"]`
-        # (kv_cache dict wrappers may be shallow-copied by higher-level code).
         #
-        # This matters in distillation/training runs where grad is enabled; without this,
-        # the cache can accidentally retain references to previous graphs and/or trigger
-        # in-place autograd errors.
-        try:
-            if torch.is_grad_enabled():
-                k_cache.detach_()
-                v_cache.detach_()
-        except Exception:
-            # Best-effort: if detach_ isn't possible for some reason, fall back to
-            # leaving the cache as-is (may be slower / less safe under autograd).
-            pass
+        # IMPORTANT: do NOT use `detach_()` here — it can fail on certain view tensors
+        # under checkpointing/compile. Using out-of-place `detach()` gives us a safe
+        # tensor handle for subsequent in-place writes while keeping the underlying
+        # storage shared.
+        if torch.is_grad_enabled():
+            k_cache = k_cache.detach()
+            v_cache = v_cache.detach()
         cache_capacity = k_cache.shape[1]
 
         # `num_cached_blocks` is treated as a tensor state storing the current prefix length

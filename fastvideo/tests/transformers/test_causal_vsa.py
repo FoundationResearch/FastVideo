@@ -136,15 +136,29 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
         kv_cache_policy="extend",
     ).to(device=device)
 
+    # VSA causal KV cache uses a preallocated tiled 1D layout + metadata buffer.
+    num_tiles_flat = math.prod(num_tiles_block)
+    L_tiled_block = num_tiles_flat * math.prod(VSA_TILE_SIZE)
     kv_cache = {
-        "k": torch.empty((B, 0, num_heads, head_dim), device=device, dtype=dtype),
-        "v": torch.empty((B, 0, num_heads, head_dim), device=device, dtype=dtype),
+        "k": torch.zeros((B, 2 * L_tiled_block, num_heads, head_dim),
+                         device=device,
+                         dtype=dtype),
+        "v": torch.zeros((B, 2 * L_tiled_block, num_heads, head_dim),
+                         device=device,
+                         dtype=dtype),
         "dit_seq_shape_block": dit_seq_shape_block,
+        # In-place state (tensor) so it survives shallow wrapper copies.
+        "num_cached_blocks": torch.tensor([0], device=device, dtype=torch.long),
+        # Preallocated KV-only variable_block_sizes buffer for up to 2 blocks.
+        "variable_block_sizes": torch.zeros((2 * num_tiles_flat, ),
+                                            device=device,
+                                            dtype=torch.long),
     }
 
     # Provide forward context with sparsity for topk computation.
     # Keep sparsity=0 => maximum topk (dense over tiles), stable reference.
     with set_forward_context(current_timestep=0, attn_metadata=SimpleNamespace(VSA_sparsity=0.0)):
+        kv_cache["_cur_block_idx"] = 0
         out0 = attn(
             q=q0,
             k=k0,
@@ -154,6 +168,7 @@ def test_causal_vsa_kvcache_two_blocks_matches_one_shot_prefix(monkeypatch):
             block_mask=None,
             kv_cache=kv_cache,
         )
+        kv_cache["_cur_block_idx"] = 1
         out1 = attn(
             q=q1,
             k=k1,
