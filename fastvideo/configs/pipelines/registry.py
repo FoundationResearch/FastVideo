@@ -46,11 +46,18 @@ PIPE_NAME_TO_CONFIG: dict[str, type[PipelineConfig]] = {
     "Wan-AI/Wan2.2-T2V-A14B-Diffusers": Wan2_2_T2V_A14B_Config,
     "Wan-AI/Wan2.2-I2V-A14B-Diffusers": Wan2_2_I2V_A14B_Config,
     "nvidia/Cosmos-Predict2-2B-Video2World": CosmosConfig,
+    # LongCat Video models
+    "FastVideo/LongCat-Video-T2V-Diffusers": LongCatT2V480PConfig,
+    "FastVideo/LongCat-Video-I2V-Diffusers": LongCatT2V480PConfig,
+    "FastVideo/LongCat-Video-VC-Diffusers": LongCatT2V480PConfig,
     # Add other specific weight variants
 }
 
 # For determining pipeline type from model ID
 PIPELINE_DETECTOR: dict[str, Callable[[str], bool]] = {
+    "longcatimagetovideo": lambda id: "longcatimagetovideo" in id.lower(),
+    "longcatvideocontinuation":
+    lambda id: "longcatvideocontinuation" in id.lower(),
     "longcat": lambda id: "longcat" in id.lower(),
     "hunyuan": lambda id: "hunyuan" in id.lower(),
     "wanpipeline": lambda id: "wanpipeline" in id.lower(),
@@ -64,6 +71,8 @@ PIPELINE_DETECTOR: dict[str, Callable[[str], bool]] = {
 
 # Fallback configs when exact match isn't found but architecture is detected
 PIPELINE_FALLBACK_CONFIG: dict[str, type[PipelineConfig]] = {
+    "longcatimagetovideo": LongCatT2V480PConfig,
+    "longcatvideocontinuation": LongCatT2V480PConfig,
     "longcat": LongCatT2V480PConfig,
     "hunyuan":
     HunyuanConfig,  # Base Hunyuan config as fallback for any Hunyuan variant
