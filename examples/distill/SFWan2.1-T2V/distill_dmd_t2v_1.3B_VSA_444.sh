@@ -16,12 +16,18 @@ export NCCL_P2P_DISABLE=1
 export TORCH_NCCL_ENABLE_MONITORING=0
 # different cache dir for different processes
 export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_PROCID}
-export MASTER_PORT=29504
+export MASTER_PORT=29505
 export TOKENIZERS_PARALLELISM=false
 export WANDB_API_KEY="50632ebd88ffd970521cec9ab4a1a2d7e85bfc45"
 export WANDB_BASE_URL="https://api.wandb.ai"
 export WANDB_MODE=online
 export FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN
+
+# W&B run name: {gitcommit_id_前7位}-{vsa_sparsity}-{num_height}
+GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/dev/null || echo nogit)"
+VSA_SPARSITY="0.85"
+NUM_HEIGHT="480"
+export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
 
 # Configs
 NUM_GPUS=2
@@ -34,11 +40,12 @@ FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
 # export CUDA_VISIBLE_DEVICES=4,5
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=2,3
 # IP=[MASTER NODE IP]
 
 training_args=(
   --tracker_project_name alex_VSA_SFwan_t2v_distill_self_forcing_dmd  
+  --wandb_run_name "$WANDB_NAME"
   --output_dir "/home/hao_lab/alex/datas/VSA_SF/outputs_VSA_backend"
   # IMPORTANT: force the student/generator transformer to the *causal* architecture so that
   # KV cache + start_frame RoPE offsets are actually used.
@@ -133,7 +140,7 @@ self_forcing_args=(
 )
 
 vsa_args=(
-  --VSA_sparsity 0.05
+  --VSA_sparsity 0.85
   --VSA_decay_rate 0.01
   --VSA_decay_interval_steps 1
 )
