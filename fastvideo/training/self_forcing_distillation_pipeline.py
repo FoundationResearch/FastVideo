@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
+import math
 import os
 import time
 from collections import deque
@@ -12,6 +13,11 @@ from einops import rearrange
 from tqdm.auto import tqdm
 
 import fastvideo.envs as envs
+try:
+    # Only needed when VIDEO_SPARSE_ATTN backend is active.
+    from fastvideo.attention.backends.video_sparse_attn import VSA_TILE_SIZE
+except Exception:
+    VSA_TILE_SIZE = (4, 4, 4)  # type: ignore
 from fastvideo.distributed import (cleanup_dist_env_and_memory,
                                    get_local_torch_device, get_sp_group,
                                    get_world_group)
@@ -641,11 +647,27 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
         if max_num_frames is None:
             max_num_frames = num_frames
         num_max_frames = max(max_num_frames, num_frames)
-        kv_cache_size = num_max_frames * frame_seq_length
+        use_vsa_cache = bool(vsa_available and envs.FASTVIDEO_ATTENTION_BACKEND
+                             == "VIDEO_SPARSE_ATTN")
+        if use_vsa_cache:
+            # VSA uses a 1D tiled KV cache. Each block occupies a fixed-length segment.
+            num_tiles_block = (
+                math.ceil(T_block_p / VSA_TILE_SIZE[0]),
+                math.ceil(post_patch_height / VSA_TILE_SIZE[1]),
+                math.ceil(post_patch_width / VSA_TILE_SIZE[2]),
+            )
+            num_tiles_flat = math.prod(num_tiles_block)
+            tile_tokens = math.prod(VSA_TILE_SIZE)
+            L_tiled_block = num_tiles_flat * tile_tokens
+            max_blocks = math.ceil(num_max_frames / num_frame_per_block)
+            kv_cache_size = L_tiled_block * max_blocks
+            vbs_buf_len = num_tiles_flat * max_blocks
+        else:
+            kv_cache_size = num_max_frames * frame_seq_length
 
         kv_cache = []
         for _ in range(num_transformer_blocks):
-            kv_cache.append({
+            layer_cache: dict[str, Any] = {
                 "k":
                 torch.zeros([
                     batch_size, kv_cache_size, num_attention_heads,
@@ -668,7 +690,23 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                 # Geometry for a single 4-frame (or num_frame_per_block) block in patch space.
                 "dit_seq_shape_block":
                 self.dit_seq_shape_block,
-            })
+            }
+            if use_vsa_cache:
+                # In-place tensor state so shallow-copied kv_cache wrappers still see updates.
+                layer_cache["num_cached_blocks"] = torch.tensor([0],
+                                                               dtype=torch.long,
+                                                               device=device)
+                layer_cache["variable_block_sizes"] = torch.zeros(
+                    [vbs_buf_len], dtype=torch.long, device=device)
+                layer_cache["vbs_buf_len"] = torch.tensor([vbs_buf_len],
+                                                         dtype=torch.long,
+                                                         device=device)
+                layer_cache["num_tiles_flat_block"] = torch.tensor(
+                    [num_tiles_flat], dtype=torch.long, device=device)
+                layer_cache["L_tiled_block"] = torch.tensor([L_tiled_block],
+                                                           dtype=torch.long,
+                                                           device=device)
+            kv_cache.append(layer_cache)
 
         # Initialize cross-attention cache
         crossattn_cache = []
@@ -703,6 +741,12 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                 cache_dict["local_end_index"].fill_(0)
                 cache_dict["k"].zero_()
                 cache_dict["v"].zero_()
+                if "num_cached_blocks" in cache_dict and torch.is_tensor(
+                        cache_dict["num_cached_blocks"]):
+                    cache_dict["num_cached_blocks"].fill_(0)
+                if "variable_block_sizes" in cache_dict and torch.is_tensor(
+                        cache_dict["variable_block_sizes"]):
+                    cache_dict["variable_block_sizes"].zero_()
 
         if crossattn_cache is not None:
             for cache_dict in crossattn_cache:
