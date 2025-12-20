@@ -27,14 +27,15 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # W&B run name: {gitcommit_id_前7位}-{vsa_sparsity}-{num_height}
 GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/dev/null || echo nogit)"
 # Remember to change those numbers below - no auto sync exists!
-VSA_SPARSITY="0.05"
+VSA_SPARSITY="0.00"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
-export WANDB_NAME="test251220-2"
-TEST_MODE=true
+# export WANDB_NAME="test251220-2"
+TEST_MODE=false
 
 if [ "$TEST_MODE" = "true" ]; then
-    echo "⚠️  TEST MODE ACTIVATED: WandB is DISABLED."
+    echo "⚠️  TEST MODE ACTIVATED: WandB is DISABLED, debug output is shown."
+    export FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN=1
     export WANDB_MODE="disabled"  # 核心：这行代码会彻底切断上传
 else
     echo "✅  PRODUCTION MODE: WandB is ONLINE."
@@ -152,7 +153,7 @@ self_forcing_args=(
 )
 
 vsa_args=(
-  --VSA_sparsity 0.05
+  --VSA_sparsity 0.00
   --VSA_decay_rate 0.01
   --VSA_decay_interval_steps 1
 )
