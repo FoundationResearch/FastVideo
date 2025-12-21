@@ -290,7 +290,8 @@ class CausalWanSelfAttention_VSA(nn.Module):
             Tensor of shape [B, L_block, num_heads, head_dim] for the current block.
         """
         # raise RuntimeError("Correctly calling VSA Self Attention")
-        del block_mask, current_start, cache_start  # Unused in VSA path
+        # `block_mask` is unused in VSA path (causality is enforced by KV prefix).
+        del block_mask
 
         if kv_cache is None:
             raise NotImplementedError(
@@ -399,7 +400,40 @@ class CausalWanSelfAttention_VSA(nn.Module):
         cached_blocks_t: torch.Tensor = kv_cache["num_cached_blocks"]
         cached_blocks = int(cached_blocks_t.item())
 
-        cur_block_idx = int(kv_cache.get("_cur_block_idx", 0))
+        # Derive the *relative* block index within the current cache window.
+        #
+        # Non-VSA causal attention uses `current_start` and `cache_start` to define the
+        # visible cache window, and in some training paths `cache_start=None` is used to
+        # indicate "start a new window at current_start".
+        #
+        # If we ignore `cache_start` and index by an absolute start_frame-based block id,
+        # we can create "holes" in the VSA buffers: earlier blocks remain unwritten (zeros),
+        # but we still slice them into the readable prefix. VSA compress attention divides
+        # by per-tile token counts; zeros then create inf/NaN and explode latents.
+        if cache_start is None:
+            cache_start = current_start
+        # Tokens per (patch-time) frame in patch space (H' * W').
+        frame_seq_len = (q.shape[1] // T_block_p)
+        if frame_seq_len <= 0:
+            raise RuntimeError(
+                f"Invalid frame_seq_len={frame_seq_len} computed from q_len={q.shape[1]} and T_block_p={T_block_p}."
+            )
+        rel_tokens = int(current_start) - int(cache_start)
+        if rel_tokens < 0:
+            raise RuntimeError(
+                f"VSA expects current_start>=cache_start, but got current_start={current_start}, cache_start={cache_start}."
+            )
+        if rel_tokens % frame_seq_len != 0:
+            raise RuntimeError(
+                "VSA expects (current_start-cache_start) divisible by frame_seq_len. "
+                f"Got current_start={current_start}, cache_start={cache_start}, frame_seq_len={frame_seq_len}."
+            )
+        rel_frames = rel_tokens // frame_seq_len
+        cur_block_idx = int(rel_frames // T_block_p)
+        # Keep the absolute block idx (if caller/transformer provided one) for debugging only.
+        kv_cache["_cur_block_idx_abs"] = int(kv_cache.get("_cur_block_idx", 0))
+        kv_cache["_cur_block_idx_rel"] = int(cur_block_idx)
+        kv_cache["_vsa_cache_start"] = int(cache_start)
         # CRITICAL for gradient-checkpointing correctness:
         # During backward, checkpointing recomputes forward. By that time, the *global*
         # KV cache state (e.g., num_cached_blocks) may have already advanced due to later
@@ -478,6 +512,37 @@ class CausalWanSelfAttention_VSA(nn.Module):
         vbs_buf[start_tile:end_tile].copy_(variable_block_sizes_block)
         variable_block_sizes_all = vbs_buf[:prefix_blocks_for_attn *
                                            num_tiles_flat_block]
+
+        # NaN guard: VSA compress attention divides by per-tile valid token counts.
+        # Any 0 in (q_)variable_block_sizes will produce inf/NaN and explode latents.
+        # Fail fast with actionable debug info so we can pinpoint which block/timestep
+        # introduced invalid cache metadata.
+        if os.environ.get("FASTVIDEO_VSA_ASSERT_VBS_POSITIVE", "1") == "1":
+            bad_kv = (variable_block_sizes_all <= 0).nonzero(as_tuple=False)
+            bad_q = (variable_block_sizes_block <= 0).nonzero(as_tuple=False)
+            if bad_kv.numel() > 0 or bad_q.numel() > 0:
+                # Keep the error message compact but high-signal.
+                kv_min = int(variable_block_sizes_all.min().item()
+                             ) if variable_block_sizes_all.numel() > 0 else -1
+                kv_max = int(variable_block_sizes_all.max().item()
+                             ) if variable_block_sizes_all.numel() > 0 else -1
+                q_min = int(variable_block_sizes_block.min().item())
+                q_max = int(variable_block_sizes_block.max().item())
+                # show a small sample of offending indices
+                bad_kv_idx = (bad_kv.flatten()[:16].tolist()
+                              if bad_kv.numel() > 0 else [])
+                bad_q_idx = (bad_q.flatten()[:16].tolist()
+                             if bad_q.numel() > 0 else [])
+                raise RuntimeError(
+                    "VSA variable_block_sizes contains non-positive entries (would cause NaNs). "
+                    f"cur_block_idx={cur_block_idx} prefix_blocks_for_attn={prefix_blocks_for_attn} "
+                    f"num_tiles_flat_block={num_tiles_flat_block} "
+                    f"vbs_all_len={int(variable_block_sizes_all.numel())} "
+                    f"vbs_all_min={kv_min} vbs_all_max={kv_max} bad_kv_idx(sample)={bad_kv_idx} "
+                    f"vbs_q_min={q_min} vbs_q_max={q_max} bad_q_idx(sample)={bad_q_idx}. "
+                    "This usually means the VSA KV cache prefix is reading tiles that were never "
+                    "written (still zero from initialization), or cur_block_idx/prefix length is wrong."
+                )
 
         # Build prefix-wide sparsity/topk information using the forward context
         forward_ctx = get_forward_context()
