@@ -1116,24 +1116,31 @@ class CausalWanTransformer3DModel(BaseDiT):
 
         # 4. Transformer blocks
         for block_index, block in enumerate(self.blocks):
-            # Debug: annotate kv_cache dicts with per-call metadata so lower-level
-            # attention modules can print meaningful context.
-            if kv_cache is not None and os.environ.get(
-                    "FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN", "0") == "1":
+            # Provide current block index for VSA KV cache slotting.
+            #
+            # NOTE: This must NOT be gated behind debug flags. VSA causal attention uses
+            # `_cur_block_idx` to decide which cache slot to write and how long of a prefix
+            # to read. If it is missing, it defaults to 0 and the model will effectively
+            # behave as if every block is "block 0" (wrong temporal continuity).
+            if kv_cache is not None:
                 try:
                     kvd = kv_cache[block_index]
-                    kvd["_dbg_layer_idx"] = block_index
-                    kvd["_dbg_start_frame"] = int(start_frame)
-                    kvd["_dbg_current_start"] = int(current_start)
-                    kvd["_dbg_diff_timestep"] = int(timestep.flatten()[0].item())
-                    # Provide current block index for VSA KV cache slotting.
-                    # This lets VSA overwrite the same slot across diffusion timesteps
-                    # and only grow the prefix when `start_frame` advances.
-                    try:
-                        kvd["_cur_block_idx"] = int(start_frame) // int(
-                            self.num_frame_per_block)
-                    except Exception:
-                        kvd["_cur_block_idx"] = 0
+                    if envs.FASTVIDEO_ATTENTION_BACKEND == "VIDEO_SPARSE_ATTN":
+                        try:
+                            kvd["_cur_block_idx"] = int(start_frame) // int(
+                                self.num_frame_per_block)
+                        except Exception:
+                            kvd["_cur_block_idx"] = 0
+
+                    # Debug: annotate kv_cache dicts with per-call metadata so lower-level
+                    # attention modules can print meaningful context.
+                    if os.environ.get("FASTVIDEO_DEBUG_CAUSAL_VSA_QKLEN",
+                                      "0") == "1":
+                        kvd["_dbg_layer_idx"] = block_index
+                        kvd["_dbg_start_frame"] = int(start_frame)
+                        kvd["_dbg_current_start"] = int(current_start)
+                        kvd["_dbg_diff_timestep"] = int(
+                            timestep.flatten()[0].item())
                 except Exception:
                     pass
             if torch.is_grad_enabled() and self.gradient_checkpointing:
