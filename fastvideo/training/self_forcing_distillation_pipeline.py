@@ -850,8 +850,34 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                         setattr(batch_gen, key, copy.deepcopy(value))
 
                 generator_loss, gen_log_dict = self.generator_loss(batch_gen)
+                # IMPORTANT (gradient checkpointing + VSA):
+                # `generator_loss()` runs the student forward under `attn_metadata_vsa`
+                # (which carries VSA_sparsity/topk metadata). During backward, checkpointing
+                # will recompute forward; the recompute sees whatever `set_forward_context`
+                # is active *here*. If we use a different attn_metadata (e.g. one where
+                # VSA_sparsity was forced to 0.0), recomputation will follow a different
+                # sparse pattern and silently produce wrong gradients (often showing up
+                # as temporal artifacts after a few frames).
+                attn_md = getattr(batch_gen, "attn_metadata_vsa", None)
+                if attn_md is None:
+                    # Avoid silent fallback: if VSA metadata is missing, checkpoint recompute
+                    # may follow a different attention path than the original forward.
+                    # Throttle to once per process to avoid log spam.
+                    if not hasattr(self, "_warned_missing_attn_metadata_vsa"):
+                        self._warned_missing_attn_metadata_vsa = True
+                        try:
+                            rank = dist.get_rank() if dist.is_initialized() else 0
+                        except Exception:
+                            rank = 0
+                        if rank == 0:
+                            logger.warning(
+                                "Missing `attn_metadata_vsa` on batch during generator backward; "
+                                "falling back to `attn_metadata`. If using VIDEO_SPARSE_ATTN with "
+                                "gradient checkpointing, this can change recompute behavior."
+                            )
+                    attn_md = batch_gen.attn_metadata
                 with set_forward_context(current_timestep=batch_gen.timesteps,
-                                         attn_metadata=batch_gen.attn_metadata):
+                                         attn_metadata=attn_md):
                     (generator_loss / gradient_accumulation_steps).backward()
                 # IMPORTANT: only reset simulation caches *after* backward.
                 # Resetting inside the simulation forward breaks gradient checkpointing
@@ -921,6 +947,8 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                     setattr(batch_critic, key, copy.deepcopy(value))
 
             critic_loss, crit_log_dict = self.critic_loss(batch_critic)
+            # For critic, keep the default attn_metadata (critic backend is FLASH_ATTN
+            # by default, so VSA metadata is typically irrelevant here).
             with set_forward_context(current_timestep=batch_critic.timesteps,
                                      attn_metadata=batch_critic.attn_metadata):
                 (critic_loss / gradient_accumulation_steps).backward()
