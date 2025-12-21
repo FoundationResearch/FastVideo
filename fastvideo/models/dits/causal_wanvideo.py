@@ -400,7 +400,19 @@ class CausalWanSelfAttention_VSA(nn.Module):
         cached_blocks = int(cached_blocks_t.item())
 
         cur_block_idx = int(kv_cache.get("_cur_block_idx", 0))
-        prefix_blocks = max(cached_blocks, cur_block_idx + 1)
+        # CRITICAL for gradient-checkpointing correctness:
+        # During backward, checkpointing recomputes forward. By that time, the *global*
+        # KV cache state (e.g., num_cached_blocks) may have already advanced due to later
+        # blocks in the original forward. If we derive prefix length from that mutable
+        # global state, recomputation will "see the future" and also change tensor shapes
+        # (k_len grows), causing CheckpointError and/or incorrect grads.
+        #
+        # To match non-VSA causal behavior (which derives the readable prefix from
+        # per-call indices like current_end), we derive the readable prefix purely from
+        # the *current* block index.
+        prefix_blocks_for_attn = cur_block_idx + 1
+        # Still track the max-seen cached blocks as state for later calls / debugging.
+        prefix_blocks_state = max(cached_blocks, prefix_blocks_for_attn)
 
         start_idx = cur_block_idx * L_tiled_block
         end_idx = start_idx + L_tiled_block
@@ -408,16 +420,17 @@ class CausalWanSelfAttention_VSA(nn.Module):
         # Handle limited KV cache capacity according to policy:
         # - "error"  : raise if capacity is exceeded (strict, recommended for training).
         # - "extend" : dynamically grow KV cache tensors to accommodate new blocks.
-        if end_idx > cache_capacity or (prefix_blocks * L_tiled_block) > cache_capacity:
+        if end_idx > cache_capacity or (prefix_blocks_state *
+                                        L_tiled_block) > cache_capacity:
             if self.kv_cache_policy == "error":
                 raise RuntimeError(
-                    f"VSA KV cache capacity exceeded: needed {max(end_idx, prefix_blocks * L_tiled_block)}, "
+                    f"VSA KV cache capacity exceeded: needed {max(end_idx, prefix_blocks_state * L_tiled_block)}, "
                     f"but cache has length {cache_capacity}. "
                     "Please increase max_num_frames or adjust KV cache sizing, "
                     "or switch KV cache policy to 'extend'."
                 )
             elif self.kv_cache_policy == "extend":
-                new_capacity = max(prefix_blocks * L_tiled_block, end_idx,
+                new_capacity = max(prefix_blocks_state * L_tiled_block, end_idx,
                                    cache_capacity * 2) # TODO: 这里意味着可能不是2的倍数
                 if new_capacity <= cache_capacity: # TODO: 这个是不是不可能发生啊？就算发生，那也蕴含着new_capacity等于end_idx了，下面的这个赋值没有意义了吧？
                     new_capacity = end_idx
@@ -439,7 +452,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
                     f"Unsupported KV cache policy: {self.kv_cache_policy}")
         k_cache[:, start_idx:end_idx] = k_tiled_block
         v_cache[:, start_idx:end_idx] = v_tiled_block
-        cached_blocks_t.fill_(prefix_blocks)
+        cached_blocks_t.fill_(prefix_blocks_state)
 
         # KV variable_block_sizes: store into a preallocated 1D buffer, indexed by block idx.
         # Avoid torch.cat / rebinding so state survives shallow kv_cache wrapper copies.
@@ -463,7 +476,8 @@ class CausalWanSelfAttention_VSA(nn.Module):
                 f"but have {vbs_buf.numel()}. Increase KV cache sizing."
             )
         vbs_buf[start_tile:end_tile].copy_(variable_block_sizes_block)
-        variable_block_sizes_all = vbs_buf[:prefix_blocks * num_tiles_flat_block]
+        variable_block_sizes_all = vbs_buf[:prefix_blocks_for_attn *
+                                           num_tiles_flat_block]
 
         # Build prefix-wide sparsity/topk information using the forward context
         forward_ctx = get_forward_context()
@@ -475,7 +489,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
         else:
             VSA_sparsity = float(ctx_attn_metadata.VSA_sparsity)
 
-        total_seq_length_prefix = prefix_blocks * T_block_p * H_prime * W_prime
+        total_seq_length_prefix = prefix_blocks_for_attn * T_block_p * H_prime * W_prime
         cur_topk = math.ceil(
             (1.0 - VSA_sparsity) *
             (total_seq_length_prefix / math.prod(VSA_TILE_SIZE)))
@@ -487,7 +501,7 @@ class CausalWanSelfAttention_VSA(nn.Module):
             non_pad_index_block)
 
         # K/V prefix: we use all cached tiled tokens up to `prefix_blocks`.
-        prefix_end_idx = prefix_blocks * L_tiled_block
+        prefix_end_idx = prefix_blocks_for_attn * L_tiled_block
         k_prefix = k_cache[:, :prefix_end_idx]
         v_prefix = v_cache[:, :prefix_end_idx]
 
