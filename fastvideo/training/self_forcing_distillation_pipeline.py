@@ -592,9 +592,19 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                 min_num_frames, dtype=torch.float32, device=self.device)
 
         # Clean up caches
+        #
+        # IMPORTANT (gradient checkpointing):
+        # When the model uses `torch.utils.checkpoint`, backward will *recompute* parts of
+        # the forward. Our causal VSA forward reads from `kv_cache` (K/V + variable_block_sizes).
+        # If we reset/zero these caches here (i.e., before `.backward()` happens), the
+        # recomputation will see a different cache state and can hit division-by-zero
+        # (variable_block_sizes==0) and/or silently compute wrong grads.
+        #
+        # Therefore: only reset caches eagerly when this simulation produced no gradients.
         assert self.kv_cache1 is not None
         assert self.crossattn_cache is not None
-        self._reset_simulation_caches(self.kv_cache1, self.crossattn_cache)
+        if not getattr(final_output, "requires_grad", False):
+            self._reset_simulation_caches(self.kv_cache1, self.crossattn_cache)
 
         return final_output if gradient_mask is not None else pred_image_or_video
 
@@ -843,6 +853,12 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                 with set_forward_context(current_timestep=batch_gen.timesteps,
                                          attn_metadata=batch_gen.attn_metadata):
                     (generator_loss / gradient_accumulation_steps).backward()
+                # IMPORTANT: only reset simulation caches *after* backward.
+                # Resetting inside the simulation forward breaks gradient checkpointing
+                # recomputation (it would see zeroed KV/VBS buffers).
+                if self.kv_cache1 is not None and self.crossattn_cache is not None:
+                    self._reset_simulation_caches(self.kv_cache1,
+                                                  self.crossattn_cache)
                 total_generator_loss += generator_loss.detach().item()
                 generator_log_dict.update(gen_log_dict)
                 # Store visualization data from generator training
@@ -908,6 +924,10 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
             with set_forward_context(current_timestep=batch_critic.timesteps,
                                      attn_metadata=batch_critic.attn_metadata):
                 (critic_loss / gradient_accumulation_steps).backward()
+            # Same as generator path: reset caches only after backward.
+            if self.kv_cache1 is not None and self.crossattn_cache is not None:
+                self._reset_simulation_caches(self.kv_cache1,
+                                              self.crossattn_cache)
             total_critic_loss += critic_loss.detach().item()
             critic_log_dict.update(crit_log_dict)
             # Store visualization data from critic training
