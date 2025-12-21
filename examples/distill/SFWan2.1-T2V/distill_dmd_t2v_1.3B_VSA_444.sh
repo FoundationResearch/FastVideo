@@ -31,7 +31,7 @@ VSA_SPARSITY="0.00"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
 # export WANDB_NAME="test251220-2"
-TEST_MODE=true
+TEST_MODE=false
 
 if [ "$TEST_MODE" = "true" ]; then
     echo "⚠️  TEST MODE ACTIVATED: WandB is DISABLED, debug output is shown."
