@@ -118,7 +118,13 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
         try:
             student = getattr(self, "transformer", None)
             student_name = None if student is None else student.__class__.__name__
-            if student is not None and student_name != "CausalWanTransformer3DModel":
+            # Be robust to wrappers (e.g., FSDP/compile wrappers) that keep the causal implementation
+            # but change the top-level class name.
+            is_causal_like = (
+                student_name is not None
+                and "CausalWanTransformer3DModel" in student_name
+            )
+            if student is not None and not is_causal_like:
                 logger.warning(
                     "Self-forcing configured num_frame_per_block=%s, but student transformer is %s. "
                     "This likely means you're NOT using causal KV-cache generation. "
@@ -140,7 +146,7 @@ class SelfForcingDistillationPipeline(DistillationPipeline):
                     local_main_process_only=False)
 
     def generate_and_sync_list(self, num_blocks: int, num_denoising_steps: int,
-                               device: torch.device) -> list[int]:
+                               device: torch.device) -> list[int]:  
         """Generate and synchronize random exit flags across distributed processes."""
         logger.info(
             "RANK: %s, enter generate_and_sync_list blocks=%s steps=%s device=%s",
