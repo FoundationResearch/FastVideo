@@ -27,7 +27,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # W&B run name: {gitcommit_id_前7位}-{vsa_sparsity}-{num_height}
 GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/dev/null || echo nogit)"
 # Remember to change those numbers below - no auto sync exists!
-VSA_SPARSITY="0.00"
+VSA_SPARSITY="0.85"
 NUM_HEIGHT="480"
 export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
 # export WANDB_NAME="test251220-2"
@@ -52,7 +52,7 @@ FAKE_SCORE_MODEL_PATH="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"  # Critic modelc
 
 DATA_DIR="/home/hao_lab/alex/datas/VSA_SF/datas/train/mixkit-64_processed"
 VALIDATION_DATASET_FILE="/home/hao_lab/alex/datas/VSA_SF/datas/valid/validation_64.json"
-export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=2,3
 # export CUDA_VISIBLE_DEVICES=6,7
 # IP=[MASTER NODE IP]
 
@@ -153,7 +153,7 @@ self_forcing_args=(
 )
 
 vsa_args=(
-  --VSA_sparsity 0.00
+  --VSA_sparsity 0.85
   --VSA_decay_rate 0.01
   --VSA_decay_interval_steps 1
 )
