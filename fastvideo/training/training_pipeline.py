@@ -153,8 +153,6 @@ class TrainingPipeline(LoRAPipeline, ABC):
         )
         if self.transformer_2 is not None:
             # Ensure transformer_2 has trainable parameters before creating optimizer
-            self.transformer_2.train()
-            self.transformer_2.requires_grad_(True)
             params_to_optimize_2 = self.transformer_2.parameters()
             params_to_optimize_2 = list(
                 filter(lambda p: p.requires_grad, params_to_optimize_2))
@@ -238,28 +236,11 @@ class TrainingPipeline(LoRAPipeline, ABC):
             "Training pipelines must implement this method")
 
     def _prepare_training(self, training_batch: TrainingBatch) -> TrainingBatch:
-        self.transformer.train()
         self.optimizer.zero_grad()
         if self.transformer_2 is not None:
-            self.transformer_2.train()
             self.optimizer_2.zero_grad()
         training_batch.total_loss = 0.0
         return training_batch
-
-    def _enable_training(self, model: torch.nn.Module,
-                         optimizer: torch.optim.Optimizer) -> None:
-        """Enable training mode and gradients for the specified model."""
-        for param in model.parameters():
-            param.requires_grad = True
-        model.train()
-        optimizer.zero_grad()
-
-    def _disable_training(self, model: torch.nn.Module,
-                          optimizer: torch.optim.Optimizer) -> None:
-        """Disable training mode and gradients for the specified model."""
-        for param in model.parameters():
-            param.requires_grad = False
-        optimizer.zero_grad(set_to_none=True)
 
     def _get_next_batch(self, training_batch: TrainingBatch) -> TrainingBatch:
         with self.tracker.timed("timing/get_next_batch"):
@@ -310,15 +291,6 @@ class TrainingPipeline(LoRAPipeline, ABC):
                                 device=latents.device,
                                 dtype=latents.dtype)
             timesteps = self._sample_timesteps(batch_size, latents.device)
-
-            # Enable training for the model that will be trained next and disable the other
-            if self.train_transformer_2:
-                self._enable_training(self.transformer_2, self.optimizer_2)
-                self._disable_training(self.transformer, self.optimizer)
-            else:
-                self._enable_training(self.transformer, self.optimizer)
-                if self.transformer_2 is not None:
-                    self._disable_training(self.transformer_2, self.optimizer_2)
 
             if self.training_args.sp_size > 1:
                 # Make sure that the timesteps are the same across all sp processes.
@@ -470,7 +442,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
         #             local_main_process_only=False)
         with self.tracker.timed("timing/reduce_loss"):
             world_group = get_world_group()
-            world_group.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
+            avg_loss = world_group.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
         training_batch.total_loss += avg_loss.item()
 
         return training_batch
@@ -656,6 +628,23 @@ class TrainingPipeline(LoRAPipeline, ABC):
                     "grad_norm": grad_norm,
                     "vsa_sparsity": current_vsa_sparsity,
                 }
+                metrics["batch_size"] = int(training_batch.raw_latent_shape[0])
+
+                patch_t, patch_h, patch_w = self.training_args.pipeline_config.dit_config.patch_size
+                seq_len = (training_batch.raw_latent_shape[2] // patch_t) * (
+                    training_batch.raw_latent_shape[3] //
+                    patch_h) * (training_batch.raw_latent_shape[4] // patch_w)
+                context_len = int(training_batch.encoder_hidden_states.shape[1])
+
+                metrics["dit_seq_len"] = int(seq_len)
+                metrics["context_len"] = context_len
+
+                arch_config = self.training_args.pipeline_config.dit_config.arch_config
+
+                metrics["hidden_dim"] = arch_config.hidden_size
+                metrics["num_layers"] = arch_config.num_layers
+                metrics["ffn_dim"] = arch_config.ffn_dim
+
                 self.tracker.log(metrics, step)
             if step % self.training_args.training_state_checkpointing_steps == 0:
                 with self.profiler_controller.region(
@@ -741,6 +730,9 @@ class TrainingPipeline(LoRAPipeline, ABC):
         sampling_param.width = training_args.num_width
         sampling_param.num_inference_steps = num_inference_steps
         sampling_param.data_type = "video"
+        if training_args.validation_guidance_scale:
+            sampling_param.guidance_scale = float(
+                training_args.validation_guidance_scale)
         assert self.seed is not None
         sampling_param.seed = self.seed
 

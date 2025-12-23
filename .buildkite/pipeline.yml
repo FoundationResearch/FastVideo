@@ -61,7 +61,7 @@ steps:
                 - "pyproject.toml"
                 - "docker/Dockerfile.python3.12"
               config:
-                command: "timeout 45m .buildkite/scripts/pr_test.sh"
+                command: "timeout 90m .buildkite/scripts/pr_test.sh"
                 label: "SSIM Tests"
                 env:
                   - TEST_TYPE=ssim
@@ -220,5 +220,16 @@ steps:
                 label: "Unit Tests"
                 env:
                   - TEST_TYPE=unit_test
+                agents:
+                  queue: "default"
+            - path:
+                - "scripts/lora_extraction/**"
+                - "pyproject.toml"
+                - "docker/Dockerfile.python3.12"
+              config:
+                command: "timeout 90m .buildkite/scripts/pr_test.sh"
+                label: "LoRA Extraction Tests"
+                env:
+                  - TEST_TYPE=lora_extraction
                 agents:
                   queue: "default"
