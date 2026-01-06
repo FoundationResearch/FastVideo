@@ -27,9 +27,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # W&B run name: {gitcommit_id_前7位}-{vsa_sparsity}-{num_height}
 GIT_COMMIT_SHORT="$(git -C "$(dirname "$0")/../.." rev-parse --short=7 HEAD 2>/dev/null || echo nogit)"
 # Remember to change those numbers below - no auto sync exists!
-VSA_SPARSITY="0.85"
+VSA_SPARSITY="0.50"
 NUM_HEIGHT="480"
-export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}-${NUM_HEIGHT}"
+export WANDB_NAME="${GIT_COMMIT_SHORT}-${VSA_SPARSITY}(0.5,0.0125,100)-${NUM_HEIGHT}"
 # export WANDB_NAME="test251220-2"
 TEST_MODE=false
 
@@ -153,9 +153,9 @@ self_forcing_args=(
 )
 
 vsa_args=(
-  --VSA_sparsity 0.85
-  --VSA_decay_rate 0.01
-  --VSA_decay_interval_steps 1
+  --VSA_sparsity 0.50
+  --VSA_decay_rate 0.0125
+  --VSA_decay_interval_steps 100
 )
 
 torchrun \
