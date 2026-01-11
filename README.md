@@ -9,4 +9,5 @@ Following the recipe of [paper](https://github.com/SkyworkAI/Matrix-Game/blob/ma
 - Run the `remove_text_module.py` to strip text components from checkpoint.
 - Run finetune stage 1 for a few steps, which ensures the model remains stable after the architectural changes.
 - Modify the model config to **use MatrixGame model and pipeline**.
+- Run the `add_action_module.py` to init action weights in safetensors.
 - Run finetune stage 2, train the model to learn action-conditioned.
