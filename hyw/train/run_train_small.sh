@@ -27,8 +27,8 @@ TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_12
 OUT_DIR="${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small"
 
 # 1 GPU smoke test
-NUM_GPUS=1
-export CUDA_VISIBLE_DEVICES=0
+NUM_GPUS=8
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 export MASTER_PORT=29611
 
 if [ ! -d "${MODEL_PATH}" ]; then
