@@ -83,6 +83,28 @@ def main() -> None:
         HunyuanVideo_1_5_Pipeline,
     )
 
+    # HY-WorldPlay expects a global "infer_state" to be initialized (official generate.py does this).
+    # If we don't, create_pipeline() will call get_infer_state() and crash on None.
+    from argparse import Namespace
+
+    from hyvideo.commons.infer_state import (  # type: ignore
+        get_infer_state,
+        initialize_infer_state,
+    )
+
+    if get_infer_state() is None:
+        initialize_infer_state(
+            Namespace(
+                enable_torch_compile=False,
+                use_sageattn=False,
+                sage_blocks_range="0-53",
+                use_vae_parallel=False,
+                use_fp8_gemm=False,
+                quant_type="fp8-per-block",
+                include_patterns="double_blocks",
+            )
+        )
+
     # Load pipeline once (heavy).
     pipe = HunyuanVideo_1_5_Pipeline.create_pipeline(
         pretrained_model_name_or_path=args.model_path,
