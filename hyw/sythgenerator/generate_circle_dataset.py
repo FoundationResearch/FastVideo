@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import imageio
@@ -31,6 +32,30 @@ def _sample_episode_macro_actions(rng: np.random.Generator) -> tuple[str, str]:
     macro_move = str(rng.choice(["W", "A", "S", "D"]))
     macro_view = str(rng.choice(["LR", "LL", "LU", "LD"]))
     return macro_move, macro_view
+
+
+def _sample_macro_move_angle_rad(rng: np.random.Generator) -> float:
+    """Sample a continuous move direction angle (radians) in the XY plane."""
+    return float(rng.uniform(0.0, 2.0 * math.pi))
+
+
+def _angle_to_move_action(angle_rad: float, *, deadzone: float = 0.25) -> str:
+    """
+    Convert a continuous direction (angle) into a WASD-like string for logging/compat.
+    This keeps the output format stable while motion itself can still be continuous.
+    """
+    vx = math.cos(angle_rad)
+    vy = math.sin(angle_rad)
+    s = ""
+    if vy > deadzone:
+        s += "W"
+    elif vy < -deadzone:
+        s += "S"
+    if vx > deadzone:
+        s += "D"
+    elif vx < -deadzone:
+        s += "A"
+    return s
 
 
 def _micro_action(
@@ -70,6 +95,9 @@ def generate_one_episode(
     move_step: float = 0.08,
     yaw_step_deg: float = 3.0,
     pitch_step_deg: float = 2.0,
+    macro_period: int = 8,
+    move_dir_jitter_deg: float = 8.0,
+    circle_radius_px: int = 32,
 ) -> dict:
     """
     Generates:
@@ -87,32 +115,38 @@ def generate_one_episode(
     action_json: dict[str, dict] = {}
 
     # Episode-level "big direction", then per-frame micro adjustments.
-    macro_move, macro_view = _sample_episode_macro_actions(rng)
-    move_alts = {"W": ["A", "D"], "S": ["A", "D"], "A": ["W", "S"], "D": ["W", "S"]}
+    # - movement: continuous direction (any angle) in XY plane, changed every `macro_period` frames
+    # - view: keep 4-way discrete actions for simplicity
+    _, macro_view = _sample_episode_macro_actions(rng)
+    macro_move_angle = _sample_macro_move_angle_rad(rng)
     view_alts = {"LR": ["LU", "LD"], "LL": ["LU", "LD"], "LU": ["LR", "LL"], "LD": ["LR", "LL"]}
-    # Probabilities tuned to: keep moving/turning, but with small jitter.
-    move_empty_prob = 0.12
-    move_macro_prob = 0.78
-    move_alt_prob = 0.10
+
+    # We always apply continuous movement for t>0. `move_action` is a compact label only.
     view_empty_prob = 0.18
     view_macro_prob = 0.72
     view_alt_prob = 0.10
-    max_idle_move = 3  # if we had no movement for this many consecutive frames, force macro_move
-    idle_move_count = 0
+
+    # Screen-edge boundary in world coords (consistent with render_frame mapping).
+    scale = min(width, height) * 0.18
+    max_x = (width / 2.0 - float(circle_radius_px)) / scale
+    max_y = (height / 2.0 - float(circle_radius_px)) / scale
+    world_bounds = (-max_x, max_x, -max_y, max_y)
 
     for t in range(num_frames):
         if t == 0:
             move_action = ""
             view_action = ""
+            move_dir_xy = (0.0, 0.0)
         else:
-            move_action = _micro_action(
-                rng,
-                macro_move,
-                empty_prob=move_empty_prob,
-                macro_prob=move_macro_prob,
-                alt_prob=move_alt_prob,
-                alts=move_alts,
-            )
+            # Change macro movement direction every N frames (t>0).
+            if macro_period > 0 and ((t - 1) % macro_period == 0):
+                macro_move_angle = _sample_macro_move_angle_rad(rng)
+
+            # Per-frame jitter around macro direction.
+            jitter = float(rng.normal(loc=0.0, scale=math.radians(move_dir_jitter_deg)))
+            move_angle = float((macro_move_angle + jitter) % (2.0 * math.pi))
+            move_dir_xy = (math.cos(move_angle), math.sin(move_angle))
+            move_action = _angle_to_move_action(move_angle)
             view_action = _micro_action(
                 rng,
                 macro_view,
@@ -122,14 +156,7 @@ def generate_one_episode(
                 alts=view_alts,
             )
 
-            if move_action == "":
-                idle_move_count += 1
-                if idle_move_count >= max_idle_move:
-                    move_action = macro_move
-                    idle_move_count = 0
-            else:
-                idle_move_count = 0
-
+        prev_x, prev_y = state.x, state.y
         apply_action(
             state,
             move_action=move_action,
@@ -137,7 +164,12 @@ def generate_one_episode(
             move_step=move_step,
             yaw_step_deg=yaw_step_deg,
             pitch_step_deg=pitch_step_deg,
+            move_dir_xy=move_dir_xy,
+            world_bounds=world_bounds,
         )
+        # If we hit the screen edge and couldn't move, resample macro direction once to avoid getting stuck.
+        if t > 0 and state.x == prev_x and state.y == prev_y:
+            macro_move_angle = _sample_macro_move_angle_rad(rng)
 
         # Camera pose uses the SAME yaw/pitch that drives color -> matches requirement.
         w2c = orbit_camera_w2c(CameraPose(yaw_rad=state.yaw_rad, pitch_rad=state.pitch_rad, radius=camera_radius))
@@ -191,6 +223,9 @@ def generate_one_episode(
             "move_step": move_step,
             "yaw_step_deg": yaw_step_deg,
             "pitch_step_deg": pitch_step_deg,
+            "macro_period": macro_period,
+            "move_dir_jitter_deg": move_dir_jitter_deg,
+            "circle_radius_px": circle_radius_px,
         },
     }
 
@@ -207,6 +242,24 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--camera_radius", type=float, default=3.0)
     p.add_argument("--fov_deg", type=float, default=70.0)
+    p.add_argument(
+        "--macro_period",
+        type=int,
+        default=8,
+        help="Change movement macro direction every N frames (t>0).",
+    )
+    p.add_argument(
+        "--move_dir_jitter_deg",
+        type=float,
+        default=8.0,
+        help="Per-frame angular jitter (deg) around macro direction.",
+    )
+    p.add_argument(
+        "--circle_radius_px",
+        type=int,
+        default=32,
+        help="Circle radius in pixels (used for screen-edge boundary).",
+    )
     args = p.parse_args(argv)
 
     out_root = Path(args.out_root).expanduser().resolve()
@@ -225,6 +278,9 @@ def main(argv: list[str] | None = None) -> None:
             seed=args.seed + i,
             camera_radius=args.camera_radius,
             fov_deg=args.fov_deg,
+            macro_period=args.macro_period,
+            move_dir_jitter_deg=args.move_dir_jitter_deg,
+            circle_radius_px=args.circle_radius_px,
         )
         entry["id"] = f"{args.split}_{i:05d}"
         entry["split"] = args.split

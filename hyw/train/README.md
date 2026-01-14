@@ -1,6 +1,8 @@
 # HY-WorldPlay 训练（用 hyw/data 的合成数据）
 
-目标：把 `hyw/data/sythcircle_v0/` 里已生成好的 mp4+pose+action，变成 HY-WorldPlay 训练能直接读取的 `latent.pt` + `json_path`，然后启动一个小规模训练跑通链路。
+目标：把 `hyw/data` 里已生成好的 mp4+pose+action，变成 HY-WorldPlay 训练能直接读取的 `latent.pt` + `json_path`，然后启动一个小规模训练跑通链路。
+
+**重要**：合成数据推荐用 **125 帧**（这样 VAE latent 的时间维 \(T\) 会是 32），避免训练 dataset 的 memory/window 采样逻辑在短视频上大量越界刷屏。
 
 ## Step 0：激活环境（目的：确保依赖齐全）
 
@@ -39,13 +41,13 @@ python download_models.py --weights_root ~/alex/weights --hf_token "$HF_TOKEN"
 ## Step 2：预计算 `latent.pt`（目的：把视频编码成训练期要读的 `.pt`）
 
 ```bash
-cd /home/hao_lab/alex/FastVideo/hyw/train
+cd /home/hao_lab/alex/FastVideo/hyw
 python precompute_latents.py \
-  --raw_manifest ../data/sythcircle_v0/manifest_raw_train.json \
+  --raw_manifest data/sythcircle_v1_125f/manifest_raw_train.json \
   --model_path /mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5 \
   --action_ckpt /mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors \
   --transformer_version 480p_i2v \
-  --out_root ../data/sythcircle_v0_modelinput/latent_pt/train \
+  --out_root data/sythcircle_v1_125f_modelinput/latent_pt/train \
   --max_samples 32
 ```
 
@@ -54,15 +56,15 @@ python precompute_latents.py \
 ## Step 3：生成训练用 `json_path`（目的：把 latent/pose/action 路径拼成训练 manifest）
 
 ```bash
-cd /home/hao_lab/alex/FastVideo/hyw/train
+cd /home/hao_lab/alex/FastVideo/hyw
 python make_training_json.py \
-  --raw_manifest ../data/sythcircle_v0/manifest_raw_train.json \
-  --latent_root ../data/sythcircle_v0_modelinput/latent_pt/train \
-  --out_json ../data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json \
+  --raw_manifest data/sythcircle_v1_125f/manifest_raw_train.json \
+  --latent_root data/sythcircle_v1_125f_modelinput/latent_pt/train \
+  --out_json data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json \
   --max_samples 32
 ```
 
-输出：`.../sythcircle_v0_train_for_hyworld.json`
+输出：`.../sythcircle_v1_125f_train_for_hyworld.json`
 
 ## Step 4：启动训练（目的：跑通 action+camera+memory 的训练 pipeline）
 

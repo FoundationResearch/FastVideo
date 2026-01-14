@@ -51,16 +51,43 @@ def apply_action(
     yaw_step_deg: float = 3.0,
     pitch_step_deg: float = 2.0,
     pitch_limit_deg: float = 35.0,
+    *,
+    move_dir_xy: tuple[float, float] | None = None,
+    world_bounds: tuple[float, float, float, float] | None = None,
 ) -> None:
-    # Movement on XY plane
-    if "W" in move_action and "S" not in move_action:
-        state.y += move_step
-    if "S" in move_action and "W" not in move_action:
-        state.y -= move_step
-    if "D" in move_action and "A" not in move_action:
-        state.x += move_step
-    if "A" in move_action and "D" not in move_action:
-        state.x -= move_step
+    # Movement on XY plane.
+    # - Default: discrete WASD (supports diagonals like "WD")
+    # - Optional: continuous direction vector (any angle), normalized.
+    dx = 0.0
+    dy = 0.0
+    if move_dir_xy is not None:
+        vx, vy = float(move_dir_xy[0]), float(move_dir_xy[1])
+        n = math.hypot(vx, vy)
+        if n > 1e-8:
+            vx /= n
+            vy /= n
+            dx += vx * move_step
+            dy += vy * move_step
+    else:
+        if "W" in move_action and "S" not in move_action:
+            dy += move_step
+        if "S" in move_action and "W" not in move_action:
+            dy -= move_step
+        if "D" in move_action and "A" not in move_action:
+            dx += move_step
+        if "A" in move_action and "D" not in move_action:
+            dx -= move_step
+
+    if dx != 0.0 or dy != 0.0:
+        new_x = state.x + dx
+        new_y = state.y + dy
+        # Optional screen-edge boundary: stop at edge, do not move outside.
+        if world_bounds is not None:
+            min_x, max_x, min_y, max_y = world_bounds
+            new_x = float(np.clip(new_x, min_x, max_x))
+            new_y = float(np.clip(new_y, min_y, max_y))
+        state.x = new_x
+        state.y = new_y
 
     # View control
     yaw_step = math.radians(yaw_step_deg)

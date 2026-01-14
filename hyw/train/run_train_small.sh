@@ -70,6 +70,8 @@ torchrun \
   --num-latent-t 6 \
   --pretrained-model-name-or-path "${MODEL_PATH}" \
   --output-dir "${OUT_DIR}" \
+  --mode finetuning \
+  --workload-type i2v \
   --num-gpus ${NUM_GPUS} \
   --sp-size 1 \
   --tp-size 1 \
