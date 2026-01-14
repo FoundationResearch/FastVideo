@@ -8,33 +8,58 @@
 conda activate alexfv
 ```
 
-## Step 1：预计算 `latent.pt`（目的：把视频编码成训练期要读的 `.pt`）
+## Step 1：下载模型（目的：拿到 `MODEL_PATH` 和 `ACTION_CKPT`）
+
+在仓库根目录执行：
 
 ```bash
+conda activate alexfv
+cd /home/hao_lab/alex/FastVideo/hyw/HY-WorldPlay-main
+
+# 没有 FLUX 权限的话先用这个（足够跑训练/预处理）
+python download_models.py --skip_vision_encoder
+
+# 如果你有 HF token（并且已获 FLUX.1-Redux-dev 访问权限），可用：
+# python download_models.py --hf_token <your_token>
+```
+
+脚本结束会打印：
+- `MODEL_PATH=...`  （这是 HunyuanVideo-1.5 的本地目录）
+- `AR_ACTION_MODEL_PATH=.../diffusion_pytorch_model.safetensors`（这是 action `.safetensors` 文件）
+
+把它们记下来，后面会用到：
+- `--model_path` / `MODEL_PATH` ← 用打印出来的 `MODEL_PATH`
+- `--action_ckpt` / `ACTION_CKPT` ← 用打印出来的 `AR_ACTION_MODEL_PATH`
+
+## Step 2：预计算 `latent.pt`（目的：把视频编码成训练期要读的 `.pt`）
+
+```bash
+cd /home/hao_lab/alex/FastVideo
 python hyw/train/precompute_latents.py \
   --raw_manifest /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0/manifest_raw_train.json \
-  --model_path /PATH/TO/HY_WORLD_MODEL_DIR \
-  --action_ckpt /PATH/TO/ACTION.safetensors \
+  --model_path <MODEL_PATH_FROM_STEP1> \
+  --action_ckpt <AR_ACTION_MODEL_PATH_FROM_STEP1> \
   --transformer_version 480p_i2v \
-  --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_latent_pt/train \
+  --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/latent_pt/train \
   --max_samples 32
 ```
 
 输出：`--out_root/sample_00000/latent.pt`（每个样本一个）
 
-## Step 2：生成训练用 `json_path`（目的：把 latent/pose/action 路径拼成训练 manifest）
+## Step 3：生成训练用 `json_path`（目的：把 latent/pose/action 路径拼成训练 manifest）
 
 ```bash
+cd /home/hao_lab/alex/FastVideo
 python hyw/train/make_training_json.py \
   --raw_manifest /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0/manifest_raw_train.json \
-  --latent_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_latent_pt/train \
-  --out_json /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_train_for_hyworld.json \
+  --latent_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/latent_pt/train \
+  --out_json /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json \
   --max_samples 32
 ```
 
 输出：`.../sythcircle_v0_train_for_hyworld.json`
 
-## Step 3：启动训练（目的：跑通 action+camera+memory 的训练 pipeline）
+## Step 4：启动训练（目的：跑通 action+camera+memory 的训练 pipeline）
 
 1) 先编辑 `hyw/train/run_train_small.sh` 里的：
 - `MODEL_PATH`

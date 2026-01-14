@@ -11,9 +11,9 @@ export TOKENIZERS_PARALLELISM=false
 
 # --- YOU MUST EDIT THESE ---
 MODEL_PATH="/PATH/TO/HY_WORLD_MODEL_DIR"                 # same as used by hyvideo/generate.py --model_path
-ACTION_CKPT="/PATH/TO/ACTION.safetensors"                # same as used by hyvideo/generate.py --action_ckpt
+ACTION_CKPT="/PATH/TO/ACTION.safetensors"                # same as used by hyvideo/generate.py --action_ckpt (a .safetensors file)
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
-AR_ACTION_DIR="${MODEL_PATH}/transformer/480p_i2v"        # for memory training; start with same dir
+AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
 TRAIN_JSON="/home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_train_for_hyworld.json"
 OUT_DIR="/home/hao_lab/alex/FastVideo/outputs/hyworld_sythcircle_small"
@@ -41,7 +41,7 @@ torchrun \
   --hsdp_shard_dim ${NUM_GPUS} \
   --cls_name "HunyuanTransformer3DARActionModel" \
   --load_from_dir "${TRANSFORMER_DIR}" \
-  --ar_action_load_from_dir "${AR_ACTION_DIR}" \
+  --ar_action_load_from_dir "${AR_ACTION_CKPT}" \
   --model_path "${MODEL_PATH}" \
   --pretrained_model_name_or_path "${MODEL_PATH}" \
   --json_path "${TRAIN_JSON}" \
