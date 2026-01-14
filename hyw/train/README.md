@@ -16,11 +16,17 @@ conda activate alexfv
 conda activate alexfv
 cd /home/hao_lab/alex/FastVideo/hyw/HY-WorldPlay-main
 
-# 没有 FLUX 权限的话先用这个（足够跑训练/预处理）
-python download_models.py --skip_vision_encoder
-
-# 如果你有 HF token（并且已获 FLUX.1-Redux-dev 访问权限），可用：
-# python download_models.py --hf_token <your_token>
+# 重要：**不要默认 skip vision encoder**
+# 因为 HY-WorldPlay 的 `create_pipeline()` 会强制检查
+# `MODEL_PATH/vision_encoder/siglip` 是否存在；缺了会导致
+# `precompute_latents.py` / 推理 / eval 在“创建 pipeline”阶段直接报错。
+#
+# 推荐（有 HF token 且已获 FLUX.1-Redux-dev 访问权限）：
+python download_models.py --hf_token <your_token>
+#
+# 如果你暂时没有权限，可以先下载其它权重：
+# python download_models.py --skip_vision_encoder
+# 但注意：这种情况下你**无法**运行 `precompute_latents.py` / 推理 / eval（会找不到 siglip）。
 ```
 
 脚本结束会打印：

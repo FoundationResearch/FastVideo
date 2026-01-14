@@ -43,11 +43,13 @@ conda activate alexfv
 
 ### Step 1: Make sure you have base models + action ckpt
 
-Run the download once (it prints the paths you need):
+Run the download once (it prints the paths you need).
+**Do NOT skip the vision encoder** for eval, because `create_pipeline()` requires
+`MODEL_PATH/vision_encoder/siglip` to exist.
 
 ```bash
 cd /home/hao_lab/alex/FastVideo/hyw/HY-WorldPlay-main
-python download_models.py --skip_vision_encoder
+python download_models.py --hf_token <your_token>
 ```
 
 Record:
