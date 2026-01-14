@@ -10,7 +10,7 @@ conda activate alexfv
 
 ## Step 1：下载模型（目的：拿到 `MODEL_PATH` 和 `ACTION_CKPT`）
 
-在仓库根目录执行：
+在 HY-WorldPlay 目录执行：
 
 ```bash
 conda activate alexfv
@@ -39,13 +39,13 @@ python download_models.py --weights_root ~/alex/weights --hf_token "$HF_TOKEN"
 ## Step 2：预计算 `latent.pt`（目的：把视频编码成训练期要读的 `.pt`）
 
 ```bash
-cd /home/hao_lab/alex/FastVideo
-python hyw/train/precompute_latents.py \
-  --raw_manifest /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0/manifest_raw_train.json \
+cd /home/hao_lab/alex/FastVideo/hyw/train
+python precompute_latents.py \
+  --raw_manifest ../data/sythcircle_v0/manifest_raw_train.json \
   --model_path /mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5 \
   --action_ckpt /mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors \
   --transformer_version 480p_i2v \
-  --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/latent_pt/train \
+  --out_root ../data/sythcircle_v0_modelinput/latent_pt/train \
   --max_samples 32
 ```
 
@@ -54,11 +54,11 @@ python hyw/train/precompute_latents.py \
 ## Step 3：生成训练用 `json_path`（目的：把 latent/pose/action 路径拼成训练 manifest）
 
 ```bash
-cd /home/hao_lab/alex/FastVideo
-python hyw/train/make_training_json.py \
-  --raw_manifest /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0/manifest_raw_train.json \
-  --latent_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/latent_pt/train \
-  --out_json /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json \
+cd /home/hao_lab/alex/FastVideo/hyw/train
+python make_training_json.py \
+  --raw_manifest ../data/sythcircle_v0/manifest_raw_train.json \
+  --latent_root ../data/sythcircle_v0_modelinput/latent_pt/train \
+  --out_json ../data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json \
   --max_samples 32
 ```
 

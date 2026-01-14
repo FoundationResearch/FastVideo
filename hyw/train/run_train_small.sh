@@ -2,13 +2,19 @@
 set -euo pipefail
 
 # Small-scale HY-WorldPlay training on the synthetic circle dataset.
-# You can either edit paths below OR override them via env vars:
+# Run from anywhere:
+#   bash hyw/train/run_train_small.sh
+# Or override:
 #   MODEL_PATH=... ACTION_CKPT=... bash hyw/train/run_train_small.sh
 
 conda activate alexfv
 
 export WANDB_MODE=offline
 export TOKENIZERS_PARALLELISM=false
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+HYWORLD_ROOT="${REPO_ROOT}/hyw/HY-WorldPlay-main"
 
 # --- Paths (defaults) ---
 # These defaults match the typical output printed by hyw/HY-WorldPlay-main/download_models.py
@@ -17,8 +23,8 @@ export TOKENIZERS_PARALLELISM=false
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
-TRAIN_JSON="/home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json"
-OUT_DIR="/home/hao_lab/alex/FastVideo/outputs/hyworld_sythcircle_small"
+TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json"
+OUT_DIR="${REPO_ROOT}/outputs/hyworld_sythcircle_small"
 
 # 1 GPU smoke test
 NUM_GPUS=1
@@ -42,10 +48,6 @@ if [ ! -f "${TRAIN_JSON}" ]; then
   echo "Hint: run hyw/train/make_training_json.py first (see hyw/train/README.md)." >&2
   exit 1
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-HYWORLD_ROOT="${REPO_ROOT}/hyw/HY-WorldPlay-main"
 
 cd "${HYWORLD_ROOT}"
 
