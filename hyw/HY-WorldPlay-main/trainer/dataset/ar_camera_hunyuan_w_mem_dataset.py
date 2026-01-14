@@ -402,17 +402,29 @@ class CameraJsonWMemDataset(Dataset):
 
         self.points_local = generate_points_in_sphere(50000, 8.0).to(device)
 
-        self.neg_prompt_pt = torch.load(
-            "/your_path/to/hunyuan_neg_prompt.pt",
-            map_location="cpu",
-            weights_only=True,
-        )
-
-        self.neg_byt5_pt = torch.load(
-            "/your_path/to/hunyuan_neg_byt5_prompt.pt",
-            map_location="cpu",
-            weights_only=True,
-        )
+        # NOTE: The original code hard-coded `/your_path/to/...`, which is often not writable on shared systems.
+        # We only need negative prompt tensors when `cfg_rate > 0`. So we lazily enable it here:
+        # - If cfg_rate <= 0: do not load any negative prompt files.
+        # - If cfg_rate > 0: load from env overrides if provided, else fall back to the original default paths.
+        self.neg_prompt_pt = None
+        self.neg_byt5_pt = None
+        if self.cfg_rate and self.cfg_rate > 0:
+            neg_prompt_path = os.environ.get(
+                "HY_WORLD_NEG_PROMPT_PT", "/your_path/to/hunyuan_neg_prompt.pt"
+            )
+            neg_byt5_path = os.environ.get(
+                "HY_WORLD_NEG_BYT5_PROMPT_PT", "/your_path/to/hunyuan_neg_byt5_prompt.pt"
+            )
+            self.neg_prompt_pt = torch.load(
+                neg_prompt_path,
+                map_location="cpu",
+                weights_only=True,
+            )
+            self.neg_byt5_pt = torch.load(
+                neg_byt5_path,
+                map_location="cpu",
+                weights_only=True,
+            )
 
     def __len__(self):
         return self.all_length
@@ -487,7 +499,13 @@ class CameraJsonWMemDataset(Dataset):
                 byt5_text_states = latent_pt['byt5_text_states'][0]
                 byt5_text_mask = latent_pt['byt5_text_mask'][0]
 
-                if self.rng.random() < self.cfg_rate:
+                if self.cfg_rate and self.cfg_rate > 0 and self.rng.random() < self.cfg_rate:
+                    if self.neg_prompt_pt is None or self.neg_byt5_pt is None:
+                        raise RuntimeError(
+                            "cfg_rate > 0 requires negative prompt pt files. "
+                            "Set env HY_WORLD_NEG_PROMPT_PT and HY_WORLD_NEG_BYT5_PROMPT_PT, "
+                            "or set training_cfg_rate=0 to disable."
+                        )
                     prompt_embed = self.neg_prompt_pt['negative_prompt_embeds'][0]
                     prompt_mask = self.neg_prompt_pt['negative_prompt_mask'][0]
                     byt5_text_states = self.neg_byt5_pt['byt5_text_states'][0]
