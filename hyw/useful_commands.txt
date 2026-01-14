@@ -11,3 +11,20 @@ MODEL_PATH=/mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5
 AR_ACTION_MODEL_PATH=/mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
 BI_ACTION_MODEL_PATH=/mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors
 AR_DISTILL_ACTION_MODEL_PATH=/mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_distilled_action_model/diffusion_pytorch_model.safetensors
+
+
+# preprocess
+python train/precompute_latents.py \
+  --raw_manifest data/sythcircle_v0/manifest_raw_train.json \
+  --model_path /mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5 \
+  --action_ckpt /mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors \
+  --transformer_version 480p_i2v \
+  --out_root data/sythcircle_v0_modelinput/latent_pt/train \
+  --max_samples 32
+
+# json
+python train/make_training_json.py \
+  --raw_manifest data/sythcircle_v0/manifest_raw_train.json \
+  --latent_root data/sythcircle_v0_modelinput/latent_pt/train \
+  --out_json data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json \
+  --max_samples 32

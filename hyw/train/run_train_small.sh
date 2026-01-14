@@ -7,7 +7,7 @@ set -euo pipefail
 # Or override:
 #   MODEL_PATH=... ACTION_CKPT=... bash hyw/train/run_train_small.sh
 
-conda activate alexfv
+export CUDA_VISIBLE_DEVICES=0
 
 export WANDB_MODE=offline
 export TOKENIZERS_PARALLELISM=false
@@ -24,7 +24,7 @@ TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights 
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
 TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json"
-OUT_DIR="${REPO_ROOT}/outputs/hyworld_sythcircle_small"
+OUT_DIR="${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small"
 
 # 1 GPU smoke test
 NUM_GPUS=1
@@ -51,44 +51,54 @@ fi
 
 cd "${HYWORLD_ROOT}"
 
+# NOTE: Do NOT insert comment-only lines inside a backslash-continued command.
+# In bash, a line that begins with '#' will end the continued command unless the
+# previous line escapes the newline AND this line also escapes it. To avoid
+# accidentally dropping required args, keep comments outside the torchrun arg list.
+
 torchrun \
   --master_port=${MASTER_PORT} \
   --nproc_per_node=${NUM_GPUS} \
   --nnodes 1 \
   trainer/training/ar_hunyuan_w_mem_training_pipeline.py \
-  --num_gpus ${NUM_GPUS} \
-  --sp_size 1 \
-  --tp_size 1 \
-  --hsdp_replicate_dim 1 \
-  --hsdp_shard_dim ${NUM_GPUS} \
-  --cls_name "HunyuanTransformer3DARActionModel" \
-  --load_from_dir "${TRANSFORMER_DIR}" \
-  --ar_action_load_from_dir "${AR_ACTION_CKPT}" \
-  --model_path "${MODEL_PATH}" \
-  --pretrained_model_name_or_path "${MODEL_PATH}" \
-  --json_path "${TRAIN_JSON}" \
+  --data-path "${REPO_ROOT}/hyw/data" \
+  --dataloader-num-workers 0 \
+  --num-height 256 \
+  --num-width 256 \
+  --num-frames 24 \
+  --train-batch-size 1 \
+  --num-latent-t 6 \
+  --pretrained-model-name-or-path "${MODEL_PATH}" \
+  --output-dir "${OUT_DIR}" \
+  --num-gpus ${NUM_GPUS} \
+  --sp-size 1 \
+  --tp-size 1 \
+  --hsdp-replicate-dim 1 \
+  --hsdp-shard-dim ${NUM_GPUS} \
+  --cls-name "HunyuanTransformer3DARActionModel" \
+  --load-from-dir "${TRANSFORMER_DIR}" \
+  --ar-action-load-from-dir "${AR_ACTION_CKPT}" \
+  --model-path "${MODEL_PATH}" \
+  --inference-mode False \
+  --json-path "${TRAIN_JSON}" \
   --causal \
   --action \
-  --i2v_rate 0.2 \
-  --train_time_shift 3.0 \
-  --window_frames 16 \
-  --output_dir "${OUT_DIR}" \
-  --max_train_steps 50 \
-  --train_batch_size 1 \
-  --train_sp_batch_size 1 \
-  --gradient_accumulation_steps 1 \
-  --dataloader_num_workers 0 \
-  --learning_rate 1e-5 \
-  --mixed_precision "bf16" \
-  --checkpointing_steps 25 \
-  --weight_decay 1e-4 \
-  --max_grad_norm 1.0 \
-  --inference_mode False \
-  --checkpoints_total_limit 2 \
-  --training_cfg_rate 0.0 \
-  --not_apply_cfg_solver \
-  --dit_precision "fp32" \
-  --num_euler_timesteps 50 \
-  --ema_start_step 0
+  --i2v-rate 0.2 \
+  --train-time-shift 3.0 \
+  --window-frames 6 \
+  --max-train-steps 50 \
+  --train-sp-batch-size 1 \
+  --gradient-accumulation-steps 1 \
+  --learning-rate 1e-5 \
+  --mixed-precision "bf16" \
+  --checkpointing-steps 25 \
+  --weight-decay 1e-4 \
+  --max-grad-norm 1.0 \
+  --checkpoints-total-limit 2 \
+  --training-cfg-rate 0.0 \
+  --not-apply-cfg-solver \
+  --dit-precision "fp32" \
+  --num-euler-timesteps 50 \
+  --ema-start-step 0
 
 
