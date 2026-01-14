@@ -1,4 +1,7 @@
 
+
+# train
 python -m hyw.sythgenerator --split train --num_samples 16 --num_frames 24 --fps 12 --width 256 --height 256 --seed 36
 
+# test
 python -m hyw.sythgenerator --split test --num_samples 4 --num_frames 48 --fps 12 --width 256 --height 256 --seed 42

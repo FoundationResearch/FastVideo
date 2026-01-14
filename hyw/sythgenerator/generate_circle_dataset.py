@@ -22,6 +22,41 @@ def _choice(rng: np.random.Generator, items: list[str], probs: list[float]) -> s
     return items[idx]
 
 
+def _sample_episode_macro_actions(rng: np.random.Generator) -> tuple[str, str]:
+    """
+    Pick a "big direction" for the episode:
+    - macro_move: one of WASD (no empty)
+    - macro_view: one of LR/LL/LU/LD (no empty)
+    """
+    macro_move = str(rng.choice(["W", "A", "S", "D"]))
+    macro_view = str(rng.choice(["LR", "LL", "LU", "LD"]))
+    return macro_move, macro_view
+
+
+def _micro_action(
+    rng: np.random.Generator,
+    macro: str,
+    *,
+    empty_prob: float,
+    macro_prob: float,
+    alt_prob: float,
+    alts: dict[str, list[str]],
+) -> str:
+    """
+    Sample an action with a macro direction + small perturbations.
+    """
+    r = float(rng.random())
+    if r < empty_prob:
+        return ""
+    r -= empty_prob
+    if r < macro_prob:
+        return macro
+    # small perturbation
+    if r < macro_prob + alt_prob:
+        return str(rng.choice(alts.get(macro, [macro])))
+    return macro
+
+
 def generate_one_episode(
     out_dir: Path,
     *,
@@ -51,18 +86,49 @@ def generate_one_episode(
     pose_json: dict[str, dict] = {}
     action_json: dict[str, dict] = {}
 
-    move_actions = ["", "W", "A", "S", "D"]
-    move_probs = [0.45, 0.14, 0.14, 0.14, 0.13]
-    view_actions = ["", "LR", "LL", "LU", "LD"]
-    view_probs = [0.55, 0.12, 0.12, 0.11, 0.10]
+    # Episode-level "big direction", then per-frame micro adjustments.
+    macro_move, macro_view = _sample_episode_macro_actions(rng)
+    move_alts = {"W": ["A", "D"], "S": ["A", "D"], "A": ["W", "S"], "D": ["W", "S"]}
+    view_alts = {"LR": ["LU", "LD"], "LL": ["LU", "LD"], "LU": ["LR", "LL"], "LD": ["LR", "LL"]}
+    # Probabilities tuned to: keep moving/turning, but with small jitter.
+    move_empty_prob = 0.12
+    move_macro_prob = 0.78
+    move_alt_prob = 0.10
+    view_empty_prob = 0.18
+    view_macro_prob = 0.72
+    view_alt_prob = 0.10
+    max_idle_move = 3  # if we had no movement for this many consecutive frames, force macro_move
+    idle_move_count = 0
 
     for t in range(num_frames):
         if t == 0:
             move_action = ""
             view_action = ""
         else:
-            move_action = _choice(rng, move_actions, move_probs)
-            view_action = _choice(rng, view_actions, view_probs)
+            move_action = _micro_action(
+                rng,
+                macro_move,
+                empty_prob=move_empty_prob,
+                macro_prob=move_macro_prob,
+                alt_prob=move_alt_prob,
+                alts=move_alts,
+            )
+            view_action = _micro_action(
+                rng,
+                macro_view,
+                empty_prob=view_empty_prob,
+                macro_prob=view_macro_prob,
+                alt_prob=view_alt_prob,
+                alts=view_alts,
+            )
+
+            if move_action == "":
+                idle_move_count += 1
+                if idle_move_count >= max_idle_move:
+                    move_action = macro_move
+                    idle_move_count = 0
+            else:
+                idle_move_count = 0
 
         apply_action(
             state,
