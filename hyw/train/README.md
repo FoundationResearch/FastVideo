@@ -22,7 +22,7 @@ cd /home/hao_lab/alex/FastVideo/hyw/HY-WorldPlay-main
 # `precompute_latents.py` / 推理 / eval 在“创建 pipeline”阶段直接报错。
 #
 # 推荐（有 HF token 且已获 FLUX.1-Redux-dev 访问权限）：
-python download_models.py --hf_token $HF_TOKEN$
+python download_models.py --weights_root ~/alex/weights --hf_token $HF_TOKEN$
 #
 # 如果你暂时没有权限，可以先下载其它权重：
 # python download_models.py --skip_vision_encoder
