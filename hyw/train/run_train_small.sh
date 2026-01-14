@@ -2,26 +2,46 @@
 set -euo pipefail
 
 # Small-scale HY-WorldPlay training on the synthetic circle dataset.
-# Edit paths below before running.
+# You can either edit paths below OR override them via env vars:
+#   MODEL_PATH=... ACTION_CKPT=... bash hyw/train/run_train_small.sh
 
 conda activate alexfv
 
 export WANDB_MODE=offline
 export TOKENIZERS_PARALLELISM=false
 
-# --- YOU MUST EDIT THESE ---
-MODEL_PATH="/PATH/TO/HY_WORLD_MODEL_DIR"                 # same as used by hyvideo/generate.py --model_path
-ACTION_CKPT="/PATH/TO/ACTION.safetensors"                # same as used by hyvideo/generate.py --action_ckpt (a .safetensors file)
+# --- Paths (defaults) ---
+# These defaults match the typical output printed by hyw/HY-WorldPlay-main/download_models.py
+: "${MODEL_PATH:=/mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5}"  # same as hyvideo/generate.py --model_path
+: "${ACTION_CKPT:=/mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors}"  # a .safetensors FILE
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
-TRAIN_JSON="/home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_train_for_hyworld.json"
+TRAIN_JSON="/home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json"
 OUT_DIR="/home/hao_lab/alex/FastVideo/outputs/hyworld_sythcircle_small"
 
 # 1 GPU smoke test
 NUM_GPUS=1
 export CUDA_VISIBLE_DEVICES=0
 export MASTER_PORT=29611
+
+if [ ! -d "${MODEL_PATH}" ]; then
+  echo "ERROR: MODEL_PATH does not exist: ${MODEL_PATH}" >&2
+  exit 1
+fi
+if [ ! -f "${AR_ACTION_CKPT}" ]; then
+  echo "ERROR: ACTION_CKPT (safetensors) not found: ${AR_ACTION_CKPT}" >&2
+  exit 1
+fi
+if [ ! -d "${TRANSFORMER_DIR}" ]; then
+  echo "ERROR: TRANSFORMER_DIR not found: ${TRANSFORMER_DIR}" >&2
+  exit 1
+fi
+if [ ! -f "${TRAIN_JSON}" ]; then
+  echo "ERROR: TRAIN_JSON not found: ${TRAIN_JSON}" >&2
+  echo "Hint: run hyw/train/make_training_json.py first (see hyw/train/README.md)." >&2
+  exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

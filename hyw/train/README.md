@@ -16,17 +16,8 @@ conda activate alexfv
 conda activate alexfv
 cd /home/hao_lab/alex/FastVideo/hyw/HY-WorldPlay-main
 
-# 重要：**不要默认 skip vision encoder**
-# 因为 HY-WorldPlay 的 `create_pipeline()` 会强制检查
-# `MODEL_PATH/vision_encoder/siglip` 是否存在；缺了会导致
-# `precompute_latents.py` / 推理 / eval 在“创建 pipeline”阶段直接报错。
-#
-# 推荐（有 HF token 且已获 FLUX.1-Redux-dev 访问权限）：
-python download_models.py --weights_root ~/alex/weights --hf_token $HF_TOKEN$
-#
-# 如果你暂时没有权限，可以先下载其它权重：
-# python download_models.py --skip_vision_encoder
-# 但注意：这种情况下你**无法**运行 `precompute_latents.py` / 推理 / eval（会找不到 siglip）。
+# 推荐：带上 HF token（并且你需要已获 gated 模型 black-forest-labs/FLUX.1-Redux-dev 的访问权限）
+python download_models.py --weights_root ~/alex/weights --hf_token "$HF_TOKEN"
 ```
 
 脚本结束会打印：
@@ -37,14 +28,22 @@ python download_models.py --weights_root ~/alex/weights --hf_token $HF_TOKEN$
 - `--model_path` / `MODEL_PATH` ← 用打印出来的 `MODEL_PATH`
 - `--action_ckpt` / `ACTION_CKPT` ← 用打印出来的 `AR_ACTION_MODEL_PATH`
 
+### 重要检查：SigLIP vision encoder（必须有）
+
+`precompute_latents.py` / 推理 / eval 会在创建 pipeline 时检查：
+
+- `${MODEL_PATH}/vision_encoder/siglip`
+
+如果缺了（你现在就是缺这个），先解决它：重新跑 Step 1（带 token + 已获访问权限），直到目录存在为止。
+
 ## Step 2：预计算 `latent.pt`（目的：把视频编码成训练期要读的 `.pt`）
 
 ```bash
 cd /home/hao_lab/alex/FastVideo
 python hyw/train/precompute_latents.py \
   --raw_manifest /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0/manifest_raw_train.json \
-  --model_path <MODEL_PATH_FROM_STEP1> \
-  --action_ckpt <AR_ACTION_MODEL_PATH_FROM_STEP1> \
+  --model_path /mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5 \
+  --action_ckpt /mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors \
   --transformer_version 480p_i2v \
   --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0_modelinput/latent_pt/train \
   --max_samples 32
@@ -67,9 +66,13 @@ python hyw/train/make_training_json.py \
 
 ## Step 4：启动训练（目的：跑通 action+camera+memory 的训练 pipeline）
 
-1) 先编辑 `hyw/train/run_train_small.sh` 里的：
-- `MODEL_PATH`
-- `ACTION_CKPT`
+1) （可选）编辑 `hyw/train/run_train_small.sh` 里的默认路径，或用环境变量覆盖：
+
+```bash
+MODEL_PATH=/mnt/fast-disks/hao_lab/alex/weights/tencent/HunyuanVideo-1.5 \
+ACTION_CKPT=/mnt/fast-disks/hao_lab/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors \
+bash hyw/train/run_train_small.sh
+```
 
 2) 然后运行：
 
