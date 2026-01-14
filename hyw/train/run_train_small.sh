@@ -11,6 +11,8 @@ export CUDA_VISIBLE_DEVICES=0
 
 export WANDB_MODE=offline
 export TOKENIZERS_PARALLELISM=false
+# Reduce CUDA allocator fragmentation (helps avoid OOM at very small leftover sizes).
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -99,7 +101,7 @@ torchrun \
   --checkpoints-total-limit 2 \
   --training-cfg-rate 0.0 \
   --not-apply-cfg-solver \
-  --dit-precision "fp32" \
+  --dit-precision "bf16" \
   --num-euler-timesteps 50 \
   --ema-start-step 0
 
