@@ -47,7 +47,9 @@ HY-WorldPlay 的 `trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py` 在训练�
 - key: `"0"`, `"1"`, ...
 - value: `{"move_action": "W|A|S|D|", "view_action": "LR|LL|LU|LD|"}`  
 
-注意：训练里会用 `"W" in move_action` 的方式解析，所以这里用字符串更贴合原实现。
+注意：
+- 训练里会用 `"W" in move_action` 的方式解析，所以这里用字符串更贴合原实现。
+- **本生成器的真实运动方向可以是任意角度**（连续方向向量），但 `move_action` 仍会用 WASD 字符串做一个“粗粒度标签”（可能出现对角线如 `"WD"`）。
 
 ## 3) 如何运行
 
@@ -67,15 +69,24 @@ conda activate alexfv
 
 ```bash
 conda activate alexfv
-python -m hyw.sythgenerator --split train --num_samples 8 --num_frames 64 --fps 12
+python -m hyw.sythgenerator.generate_circle_dataset --split train --num_samples 8 --num_frames 125 --fps 12 --width 256 --height 256
 ```
 
 指定输出目录：
 
 ```bash
 conda activate alexfv
-python -m hyw.sythgenerator --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v0 --split train --num_samples 32
+python -m hyw.sythgenerator.generate_circle_dataset \
+  --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v1_125f \
+  --split train --num_samples 16 --num_frames 125 --fps 12 --width 256 --height 256 --seed 36 \
+  --macro_period 8 --move_dir_jitter_deg 8.0 --circle_radius_px 32
 ```
+
+### 参数说明（与“任意角度方向/每N帧换大方向/边缘不越界”相关）
+
+- `--macro_period`: 每 N 帧重新采样一次“移动大方向”（连续角度）。
+- `--move_dir_jitter_deg`: 每帧在大方向周围做小幅角度抖动（更自然）。
+- `--circle_radius_px`: 用来计算“屏幕边缘”边界，确保圆不会移动出画面。
 
 ## 4) 下一步（你要做 step3 训练时会用到）
 

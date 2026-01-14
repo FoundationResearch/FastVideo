@@ -23,7 +23,7 @@ HYWORLD_ROOT="${REPO_ROOT}/hyw/HY-WorldPlay-main"
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
-TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v0_modelinput/sythcircle_v0_train_for_hyworld.json"
+TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json"
 OUT_DIR="${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small"
 
 # 1 GPU smoke test
@@ -65,9 +65,9 @@ torchrun \
   --dataloader-num-workers 0 \
   --num-height 256 \
   --num-width 256 \
-  --num-frames 24 \
+  --num-frames 125 \
   --train-batch-size 1 \
-  --num-latent-t 6 \
+  --num-latent-t 32 \
   --pretrained-model-name-or-path "${MODEL_PATH}" \
   --output-dir "${OUT_DIR}" \
   --mode finetuning \
@@ -87,7 +87,7 @@ torchrun \
   --action \
   --i2v-rate 0.2 \
   --train-time-shift 3.0 \
-  --window-frames 6 \
+  --window-frames 16 \
   --max-train-steps 50 \
   --train-sp-batch-size 1 \
   --gradient-accumulation-steps 1 \

@@ -3,13 +3,13 @@
 # train (推荐：125帧 -> latent_t=32，避免训练时 memory/window 采样越界)
 python -m hyw.sythgenerator.generate_circle_dataset \
   --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v1_125f \
-  --split train --num_samples 16 --num_frames 125 --fps 12 --width 256 --height 256 --seed 36 \
+  --split train --num_samples 32 --num_frames 125 --fps 12 --width 256 --height 256 --seed 36 \
   --macro_period 8 --move_dir_jitter_deg 8.0 --circle_radius_px 32
 
 # test
 python -m hyw.sythgenerator.generate_circle_dataset \
   --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v1_125f \
-  --split test --num_samples 4 --num_frames 125 --fps 12 --width 256 --height 256 --seed 42 \
+  --split test --num_samples 16 --num_frames 125 --fps 12 --width 256 --height 256 --seed 42 \
   --macro_period 8 --move_dir_jitter_deg 8.0 --circle_radius_px 32
 
 # weights dir
