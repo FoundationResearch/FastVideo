@@ -99,10 +99,14 @@ def render_frame(
     cx = width / 2.0 + state.x * scale
     cy = height / 2.0 - state.y * scale
 
-    # Color depends on yaw (hue) and pitch (value)
-    hue = (state.yaw_rad / (2.0 * math.pi)) % 1.0
-    val = 0.65 + 0.35 * math.sin(state.pitch_rad)
-    rgb = hsv_to_rgb(hue, 0.9, float(np.clip(val, 0.2, 1.0)))
+    # Color depends on yaw (hue) and pitch (value) — make it *more sensitive*.
+    # - Amplify yaw contribution (wrap hue faster)
+    # - Let pitch modulate both hue and value with larger amplitude
+    hue_base = (state.yaw_rad / (2.0 * math.pi)) % 1.0
+    hue = (hue_base * 2.5 + 0.20 * math.sin(state.pitch_rad * 4.0)) % 1.0
+    val = 0.25 + 0.75 * (0.5 + 0.5 * math.sin(state.pitch_rad * 5.0))
+    sat = 0.75 + 0.25 * (0.5 + 0.5 * math.cos(state.pitch_rad * 3.0))
+    rgb = hsv_to_rgb(hue, float(np.clip(sat, 0.0, 1.0)), float(np.clip(val, 0.0, 1.0)))
 
     x0 = cx - circle_radius_px
     y0 = cy - circle_radius_px
