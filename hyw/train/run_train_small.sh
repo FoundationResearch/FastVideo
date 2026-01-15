@@ -7,8 +7,6 @@ set -euo pipefail
 # Or override:
 #   MODEL_PATH=... ACTION_CKPT=... bash hyw/train/run_train_small.sh
 
-export CUDA_VISIBLE_DEVICES=0
-
 export WANDB_MODE=offline
 export TOKENIZERS_PARALLELISM=false
 
@@ -20,6 +18,9 @@ HYWORLD_ROOT="${REPO_ROOT}/hyw/HY-WorldPlay-main"
 # These defaults match the typical output printed by hyw/HY-WorldPlay-main/download_models.py
 : "${MODEL_PATH:=~/alex/weights/tencent/HunyuanVideo-1.5}"  # same as hyvideo/generate.py --model_path
 : "${ACTION_CKPT:=~/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors}"  # a .safetensors FILE
+# Expand "~" manually since parameter expansion doesn't expand it.
+MODEL_PATH="${MODEL_PATH/#\~/$HOME}"
+ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
