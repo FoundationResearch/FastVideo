@@ -538,7 +538,18 @@ class TrainingPipeline(LoRAPipeline, ABC):
         if self.global_rank == 0 and training_batch.grad_norm >= 10.0:
             print(self.global_rank, training_batch.grad_norm, training_batch.current_timestep, training_batch.video_path)
 
-        if training_batch.grad_norm < 10.0 or (not self.action): 
+        # NOTE:
+        # `clip_grad_norm_...` returns the *pre-clipping* total norm. Even when max_grad_norm is small
+        # (e.g. 1.0), this value can stay >10 and would cause us to skip optimizer.step() forever.
+        # Rely on clipping for stability; only skip the step for non-finite norms.
+        if not torch.isfinite(torch.tensor(training_batch.grad_norm)):
+            if self.global_rank == 0:
+                logger.warning(
+                    "Non-finite grad_norm=%s at step=%s, skipping optimizer step.",
+                    training_batch.grad_norm,
+                    training_batch.current_timestep,
+                )
+        else:
             self.optimizer.step()
             self.lr_scheduler.step()
 

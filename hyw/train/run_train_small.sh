@@ -7,7 +7,7 @@ set -euo pipefail
 # Or override:
 #   MODEL_PATH=... ACTION_CKPT=... bash hyw/train/run_train_small.sh
 
-export WANDB_MODE=${WANDB_MODE:-offline}
+export WANDB_MODE=${WANDB_MODE:-online}
 export TOKENIZERS_PARALLELISM=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,8 +23,9 @@ MODEL_PATH="${MODEL_PATH/#\~/$HOME}"
 ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
 
 # If you want to train the transformer from scratch (random init), set:
-#   TRANSFORMER_FROM_SCRATCH=1
-: "${TRANSFORMER_FROM_SCRATCH:=0}"
+#   TRANSFORMER_FROM_SCRATCH=true
+# (Note: trainer's StoreBoolean only accepts 'true'/'false', not 0/1.)
+: "${TRANSFORMER_FROM_SCRATCH:=false}"
 
 # WandB online (optional):
 #   export WANDB_MODE=online

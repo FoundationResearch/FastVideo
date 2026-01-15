@@ -32,3 +32,14 @@
 - **What**: change `wandb.login(key=training_args.wandb_key)` to `wandb.login(key=training_args.wandb_key or None)`
 - **Why**: after running `wandb login`, users often don't want to pass an API key on every run; passing an empty string can fail, while `None` properly falls back to stored credentials / env.
 
+### 2026-01-15 — Fix "no learning" bug: optimizer step was skipped when unclipped grad norm is large
+
+- **File**: `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+- **Problem observed**: training could run for many steps with no visible change in outputs / loss stays high.
+- **Root cause**:
+  - The code did `if grad_norm < 10: optimizer.step()`, but `grad_norm` is the *pre-clipping* norm returned by `clip_grad_norm_...`.
+  - With `--max-grad-norm 1.0`, gradients are clipped but the returned pre-clipping norm can remain >10, causing the optimizer step to be skipped forever.
+- **Fix**:
+  - Always perform `optimizer.step()`/`lr_scheduler.step()` when grad norm is finite; rely on clipping for stability.
+  - Only skip the step for non-finite norms.
+
