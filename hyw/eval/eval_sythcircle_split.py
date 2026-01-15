@@ -176,6 +176,28 @@ def main() -> None:
     if str(hyworld_root) not in os.sys.path:
         os.sys.path.insert(0, str(hyworld_root))
 
+    # HY-WorldPlay's pipeline expects a global "infer_state" to be initialized
+    # (normally done in hyvideo/generate.py). If it's missing, create_pipeline()
+    # may crash with: AttributeError: 'NoneType' object has no attribute 'use_fp8_gemm'.
+    from types import SimpleNamespace
+    from hyvideo.commons.infer_state import get_infer_state, initialize_infer_state
+
+    if get_infer_state() is None:
+        initialize_infer_state(
+            SimpleNamespace(
+                # SageAttention related
+                use_sageattn=False,
+                sage_blocks_range="0-0",
+                enable_torch_compile=False,
+                # FP8 GEMM related
+                use_fp8_gemm=False,
+                quant_type="fp8-per-block",
+                include_patterns="double_blocks",
+                # VAE related
+                use_vae_parallel=False,
+            )
+        )
+
     from hyvideo.pipelines.worldplay_video_pipeline import HunyuanVideo_1_5_Pipeline
 
     out_dir = Path(args.out_dir)
