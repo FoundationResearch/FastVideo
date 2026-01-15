@@ -89,12 +89,12 @@ torchrun \
   --i2v-rate 0.2 \
   --train-time-shift 3.0 \
   --window-frames 16 \
-  --max-train-steps 50 \
+  --max-train-steps 1000 \
   --train-sp-batch-size 1 \
   --gradient-accumulation-steps 1 \
-  --learning-rate 1e-5 \
+  --learning-rate 1e-3 \
   --mixed-precision "bf16" \
-  --checkpointing-steps 25 \
+  --checkpointing-steps 250 \
   --weight-decay 1e-4 \
   --max-grad-norm 1.0 \
   --checkpoints-total-limit 2 \

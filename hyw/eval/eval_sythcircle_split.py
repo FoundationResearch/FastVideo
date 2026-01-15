@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -132,6 +133,13 @@ def _default_manifest_path(repo_root: Path, dataset_root: str, split: str) -> Pa
     ds = (repo_root / dataset_root).resolve()
     return ds / f"manifest_raw_{split}.json"
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -231,6 +239,7 @@ def main() -> None:
     )
 
     # Optionally load fine-tuned checkpoint weights into transformer.
+    finetuned_safetensors_path: Path | None = None
     if args.finetuned_ckpt:
         ckpt_dir = Path(args.finetuned_ckpt)
         safetensors_path = ckpt_dir / "transformer" / "diffusion_pytorch_model.safetensors"
@@ -240,10 +249,10 @@ def main() -> None:
 
         sd = load_file(str(safetensors_path))
         missing, unexpected = pipe.transformer.load_state_dict(sd, strict=False)
-        if missing:
-            print(f"[WARN] Missing keys when loading finetuned ckpt: {len(missing)}")
-        if unexpected:
-            print(f"[WARN] Unexpected keys when loading finetuned ckpt: {len(unexpected)}")
+        finetuned_safetensors_path = safetensors_path
+        print(f"[INFO] Loaded finetuned_ckpt: {ckpt_dir}")
+        print(f"[INFO] Finetuned safetensors: {safetensors_path} (sha256={_sha256_file(safetensors_path)[:16]}...)")
+        print(f"[INFO] load_state_dict(strict=False): missing={len(missing)} unexpected={len(unexpected)}")
 
     device = torch.device(args.device)
     pipe = pipe.to(device)
@@ -354,6 +363,10 @@ def main() -> None:
             "n": len(all_rows),
             "manifest": str(manifest_path),
             "out_dir": str(out_dir),
+            "model_path": str(args.model_path),
+            "action_ckpt": str(args.action_ckpt),
+            "finetuned_ckpt": str(args.finetuned_ckpt) if args.finetuned_ckpt else None,
+            "finetuned_safetensors": str(finetuned_safetensors_path) if finetuned_safetensors_path else None,
         }
         summary_path.write_text(json.dumps(avg, indent=2))
         print("Saved:", summary_path)
