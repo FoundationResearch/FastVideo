@@ -33,6 +33,7 @@ env
 *.log
 weights/
 hyw/secrets.txt
+hyw/eval/result
 
 # Distribution / packaging
 build/

@@ -41,3 +41,14 @@ python train/make_training_json.py \
   --latent_root data/sythcircle_v1_125f_modelinput/latent_pt/train \
   --out_json data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json \
   --max_samples 32
+
+# train
+cd hyw && bash train/run_train_small.sh
+
+# eval
+MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5 \
+ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors \
+FINETUNED_CKPT=/mnt/weka/home/hao.zhang/alex/FastVideo/hyw/outputs/hyworld_sythcircle_small_original_official/checkpoint-50 \
+MAX_SAMPLES=5 \
+SPLIT=test \
+bash eval/run_eval_sythcircle.sh

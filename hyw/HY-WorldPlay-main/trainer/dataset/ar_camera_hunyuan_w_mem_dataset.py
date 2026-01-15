@@ -620,28 +620,49 @@ class CameraJsonWMemDataset(Dataset):
 
                 if select_prob < 0.8:
                     select_window_out_flag = 1  # mean to select frames outside the window
-                    max_index = latent.shape[1] - (self.window_frames - self.memory_frames)
-
-                    start_chunk_id = (self.window_frames) // 4
-                    end_chunk_id = max_index // 4
-                    current_frame_idx = self.rng.randint(start_chunk_id, end_chunk_id) * 4  # include the left and right
+                    # IMPORTANT:
+                    # `w2c_list` / `intrinsic_list` are built at *latent* resolution:
+                    #   len(w2c_list) == latent.shape[1]  (e.g. 32 for 125-frame videos)
+                    # Therefore `current_frame_idx` must be a valid latent index in [0, latent_T).
+                    #
+                    # The original implementation computed `max_index` using `(window_frames - memory_frames)`.
+                    # When `memory_frames > window_frames` (e.g. memory_frames=20, window_frames=16),
+                    # `max_index` can exceed `latent_T`, and with `randint` (inclusive upper bound)
+                    # this can yield out-of-range indices like 32/36, triggering:
+                    #   "current frame index ... {current_frame_idx}, {len(w2c_list)}"
+                    #
+                    # We sample a chunk-aligned latent start index safely:
+                    #   current_frame_idx in {window_frames, window_frames+4, ..., latent_T-4}
+                    pred_latent_size = 4
+                    latent_T = latent.shape[1]
+                    start_idx = (self.window_frames // pred_latent_size) * pred_latent_size
+                    max_start = latent_T - pred_latent_size
+                    max_start = (max_start // pred_latent_size) * pred_latent_size
+                    if max_start < start_idx:
+                        # Not enough latents to select an "outside-window" chunk; fall back to in-window.
+                        select_window_out_flag = 0
+                    else:
+                        current_frame_idx = self.rng.randrange(
+                            start_idx, max_start + pred_latent_size, pred_latent_size
+                        )
 
                     # -------------------- for ar, only search the memory for the current chunk
-                    selected_history_frame_id = select_aligned_memory_frames(w2c_list, 
-                                                                            current_frame_idx, 
-                                                                            memory_frames=self.memory_frames, 
-                                                                            temporal_context_size=12, 
-                                                                            pred_latent_size=4, 
-                                                                            points_local=self.points_local, 
-                                                                            device=self.device)   # align the training objective: refine the fov selection
-                    selected_history_frame_id.extend(range(current_frame_idx, current_frame_idx + 4))
-                    latent = latent[:, selected_history_frame_id]
-                    reset_w2c_list = w2c_list[selected_history_frame_id]
-                    w2c_list = reset_w2c_list
-                    reset_intrinsic_list = intrinsic_list[selected_history_frame_id]
-                    intrinsic_list = reset_intrinsic_list
-                    reset_action_for_pe = action_for_pe[selected_history_frame_id]
-                    action_for_pe = reset_action_for_pe
+                    if select_window_out_flag == 1:
+                        selected_history_frame_id = select_aligned_memory_frames(w2c_list, 
+                                                                                current_frame_idx, 
+                                                                                memory_frames=self.memory_frames, 
+                                                                                temporal_context_size=12, 
+                                                                                pred_latent_size=pred_latent_size, 
+                                                                                points_local=self.points_local, 
+                                                                                device=self.device)   # align the training objective: refine the fov selection
+                        selected_history_frame_id.extend(range(current_frame_idx, current_frame_idx + pred_latent_size))
+                        latent = latent[:, selected_history_frame_id]
+                        reset_w2c_list = w2c_list[selected_history_frame_id]
+                        w2c_list = reset_w2c_list
+                        reset_intrinsic_list = intrinsic_list[selected_history_frame_id]
+                        intrinsic_list = reset_intrinsic_list
+                        reset_action_for_pe = action_for_pe[selected_history_frame_id]
+                        action_for_pe = reset_action_for_pe
 
                 else:
                     pred_latent_size = self.window_frames
