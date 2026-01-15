@@ -17,9 +17,15 @@ MODEL_PATH=~/alex/weights/tencent/HunyuanVideo-1.5
 AR_ACTION_MODEL_PATH=~/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
 BI_ACTION_MODEL_PATH=~/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors
 AR_DISTILL_ACTION_MODEL_PATH=~/alex/weights/tencent/HY-WorldPlay/ar_distilled_action_model/diffusion_pytorch_model.safetensors
+# weight dir m2
+MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5
+AR_ACTION_MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
+BI_ACTION_MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors
+AR_DISTILL_ACTION_MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_distilled_action_model/diffusion_pytorch_model.safetensors
 
 
 # preprocess
+cd hyw
 python train/precompute_latents.py \
   --raw_manifest data/sythcircle_v1_125f/manifest_raw_train.json \
   --model_path ~/alex/weights/tencent/HunyuanVideo-1.5 \
@@ -29,6 +35,7 @@ python train/precompute_latents.py \
   --max_samples 32
 
 # json
+cd hyw
 python train/make_training_json.py \
   --raw_manifest data/sythcircle_v1_125f/manifest_raw_train.json \
   --latent_root data/sythcircle_v1_125f_modelinput/latent_pt/train \
