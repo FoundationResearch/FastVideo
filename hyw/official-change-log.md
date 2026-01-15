@@ -14,3 +14,15 @@
     - `current_frame_idx ∈ {window_frames, window_frames+4, ..., latent_T-4}`
   - If the sequence is too short to satisfy this, the code **falls back to the in-window path** (`select_window_out_flag=0`) instead of throwing and retrying.
 
+### 2026-01-15 — Add "transformer from scratch" option (random init) for trainer
+
+- **Files**:
+  - `hyw/HY-WorldPlay-main/trainer/trainer_args.py`
+  - `hyw/HY-WorldPlay-main/trainer/models/loader/fsdp_load.py`
+  - `hyw/HY-WorldPlay-main/trainer/models/loader/component_loader.py`
+- **What**:
+  - Added CLI flag `--transformer-from-scratch` (bool).
+  - When enabled, the transformer is created via `model_cls.from_config(model_cls.load_config(load_from_dir))` (random init) instead of `from_pretrained(load_from_dir)`.
+- **Why**:
+  - Enable experiments where the diffusion transformer is trained without starting from the pretrained transformer weights, while still reusing the same model architecture/config from `--load-from-dir`.
+

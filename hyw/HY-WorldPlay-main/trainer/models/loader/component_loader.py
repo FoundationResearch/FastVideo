@@ -449,7 +449,9 @@ class TransformerLoader(ComponentLoader):
             param_dtype=torch.float32,
             reduce_dtype=torch.float32,
             output_dtype=None,
-            training_mode=trainer_args.training_mode)
+            training_mode=trainer_args.training_mode,
+            transformer_from_scratch=getattr(trainer_args, "transformer_from_scratch", False),
+        )
 
 
         total_params = sum(p.numel() for p in model.parameters())

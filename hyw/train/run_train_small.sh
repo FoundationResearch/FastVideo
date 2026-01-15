@@ -7,7 +7,7 @@ set -euo pipefail
 # Or override:
 #   MODEL_PATH=... ACTION_CKPT=... bash hyw/train/run_train_small.sh
 
-export WANDB_MODE=offline
+export WANDB_MODE=${WANDB_MODE:-offline}
 export TOKENIZERS_PARALLELISM=false
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +21,21 @@ HYWORLD_ROOT="${REPO_ROOT}/hyw/HY-WorldPlay-main"
 # Expand "~" manually since parameter expansion doesn't expand it.
 MODEL_PATH="${MODEL_PATH/#\~/$HOME}"
 ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
+
+# If you want to train the transformer from scratch (random init), set:
+#   TRANSFORMER_FROM_SCRATCH=1
+: "${TRANSFORMER_FROM_SCRATCH:=0}"
+
+# WandB online (optional):
+#   export WANDB_MODE=online
+#   export WANDB_API_KEY=...
+#   export WANDB_ENTITY=...
+#   export WANDB_PROJECT=...
+#   export WANDB_RUN_NAME=...
+: "${WANDB_API_KEY:=}"
+: "${WANDB_ENTITY:=}"
+: "${WANDB_PROJECT:=}"
+: "${WANDB_RUN_NAME:=}"
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
@@ -81,6 +96,7 @@ torchrun \
   --cls-name "HunyuanTransformer3DARActionModel" \
   --load-from-dir "${TRANSFORMER_DIR}" \
   --ar-action-load-from-dir "${AR_ACTION_CKPT}" \
+  --transformer-from-scratch "${TRANSFORMER_FROM_SCRATCH}" \
   --model-path "${MODEL_PATH}" \
   --inference-mode False \
   --json-path "${TRAIN_JSON}" \
@@ -102,4 +118,8 @@ torchrun \
   --not-apply-cfg-solver \
   --dit-precision "fp32" \
   --num-euler-timesteps 50 \
-  --ema-start-step 0
+  --ema-start-step 0 \
+  ${WANDB_MODE:+--wandb-key "${WANDB_API_KEY}"} \
+  ${WANDB_ENTITY:+--wandb-entity "${WANDB_ENTITY}"} \
+  ${WANDB_PROJECT:+--tracker-project-name "${WANDB_PROJECT}"} \
+  ${WANDB_RUN_NAME:+--wandb-run-name "${WANDB_RUN_NAME}"}

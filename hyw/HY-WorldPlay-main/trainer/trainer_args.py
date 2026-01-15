@@ -159,6 +159,7 @@ class TrainerArgs:
     load_from_dir: str | None = None
     module_name: str| None = None
     ar_action_load_from_dir: str | None = None
+    transformer_from_scratch: bool = False
 
     # # DMD parameters
     # dmd_denoising_steps: List[int] | None = field(default=None)
@@ -402,6 +403,14 @@ class TrainerArgs:
             "--ar-action-load-from-dir",
             type=str,
             help="ar action model checkpoint directory",
+        )
+        parser.add_argument(
+            "--transformer-from-scratch",
+            action=StoreBoolean,
+            default=TrainerArgs.transformer_from_scratch,
+            help=
+            "Initialize the transformer from config (random init) instead of loading pretrained weights from --load-from-dir. "
+            "Note: still requires --load-from-dir to point to a directory that contains the model config.json.",
         )
         # Add pipeline configuration arguments
         PipelineConfig.add_cli_args(parser)

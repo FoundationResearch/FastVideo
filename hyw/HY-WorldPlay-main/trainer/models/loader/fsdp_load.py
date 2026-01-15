@@ -81,6 +81,7 @@ def maybe_load_fsdp_model(
     output_dtype: torch.dtype | None = None,
     training_mode: bool = True,
     pin_cpu_memory: bool = True,
+    transformer_from_scratch: bool = False,
 ) -> torch.nn.Module:
     """
     Load the model with FSDP if is training, else load the model without FSDP.
@@ -107,8 +108,15 @@ def maybe_load_fsdp_model(
         # "TypeError: not all arguments converted during string formatting".
         logger.info("model: %s", model_cls)
         # model = model_cls(**init_params)
-        model = model_cls.from_pretrained(
-            load_from_dir, local_attn_size=-1, sink_size=0)
+        if transformer_from_scratch:
+            # Initialize from config only (random init) to support "train from scratch".
+            # Still requires `load_from_dir` to contain a valid config.json.
+            logger.info("Initializing transformer from scratch (config only), ignoring pretrained weights.")
+            config = model_cls.load_config(load_from_dir)
+            model = model_cls.from_config(config)
+        else:
+            model = model_cls.from_pretrained(
+                load_from_dir, local_attn_size=-1, sink_size=0)
 
         
         if "Action" in cls_name:
