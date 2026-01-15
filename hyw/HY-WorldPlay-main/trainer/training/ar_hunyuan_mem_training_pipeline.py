@@ -188,7 +188,8 @@ class TrainingPipeline(LoRAPipeline, ABC):
         if self.global_rank == 0:
             project = training_args.tracker_project_name or "trainer"
             wandb_config = dataclasses.asdict(training_args)
-            wandb.login(key=training_args.wandb_key)
+            # If user already ran `wandb login`, allow empty key and fall back to stored credentials.
+            wandb.login(key=training_args.wandb_key or None)
             wandb.init(
                 config=wandb_config,
                 name=training_args.wandb_run_name,

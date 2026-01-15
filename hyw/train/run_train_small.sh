@@ -28,14 +28,14 @@ ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
 
 # WandB online (optional):
 #   export WANDB_MODE=online
-#   export WANDB_API_KEY=...
+#   export WANDB_API_KEY=...   # optional if you already ran `wandb login`
 #   export WANDB_ENTITY=...
 #   export WANDB_PROJECT=...
-#   export WANDB_RUN_NAME=...
+#   export WANDB_RUN_NAME=...  # you can override this per-run
 : "${WANDB_API_KEY:=}"
-: "${WANDB_ENTITY:=}"
-: "${WANDB_PROJECT:=}"
-: "${WANDB_RUN_NAME:=}"
+: "${WANDB_ENTITY:=alexzms-ucsd}"
+: "${WANDB_PROJECT:=hyw-official}"
+: "${WANDB_RUN_NAME:=hyworld_sythcircle_small}"  # feel free to override
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
@@ -119,7 +119,7 @@ torchrun \
   --dit-precision "fp32" \
   --num-euler-timesteps 50 \
   --ema-start-step 0 \
-  ${WANDB_MODE:+--wandb-key "${WANDB_API_KEY}"} \
+  ${WANDB_API_KEY:+--wandb-key "${WANDB_API_KEY}"} \
   ${WANDB_ENTITY:+--wandb-entity "${WANDB_ENTITY}"} \
   ${WANDB_PROJECT:+--tracker-project-name "${WANDB_PROJECT}"} \
   ${WANDB_RUN_NAME:+--wandb-run-name "${WANDB_RUN_NAME}"}

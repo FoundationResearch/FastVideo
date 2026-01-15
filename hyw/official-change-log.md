@@ -26,3 +26,9 @@
 - **Why**:
   - Enable experiments where the diffusion transformer is trained without starting from the pretrained transformer weights, while still reusing the same model architecture/config from `--load-from-dir`.
 
+### 2026-01-15 — Allow WandB login via stored credentials (no explicit key required)
+
+- **File**: `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+- **What**: change `wandb.login(key=training_args.wandb_key)` to `wandb.login(key=training_args.wandb_key or None)`
+- **Why**: after running `wandb login`, users often don't want to pass an API key on every run; passing an empty string can fail, while `None` properly falls back to stored credentials / env.
+
