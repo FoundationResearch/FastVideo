@@ -43,6 +43,11 @@ AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a sa
 TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json"
 OUT_DIR="${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small"
 
+# Resume (optional):
+#   RESUME_CKPT=hyw/outputs/hyworld_sythcircle_small/checkpoint-250 bash hyw/train/run_train_small.sh
+# Note: pass the checkpoint directory (the one that contains `distributed_checkpoint/`).
+: "${RESUME_CKPT:=}"
+
 # 1 GPU smoke test
 NUM_GPUS=8
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
@@ -64,6 +69,20 @@ if [ ! -f "${TRAIN_JSON}" ]; then
   echo "ERROR: TRAIN_JSON not found: ${TRAIN_JSON}" >&2
   echo "Hint: run hyw/train/make_training_json.py first (see hyw/train/README.md)." >&2
   exit 1
+fi
+if [[ -n "${RESUME_CKPT}" ]]; then
+  # Resolve relative paths against repo root for convenience.
+  if [[ "${RESUME_CKPT}" != /* ]]; then
+    RESUME_CKPT="${REPO_ROOT}/${RESUME_CKPT}"
+  fi
+  if [ ! -d "${RESUME_CKPT}" ]; then
+    echo "ERROR: RESUME_CKPT does not exist: ${RESUME_CKPT}" >&2
+    exit 1
+  fi
+  if [ ! -d "${RESUME_CKPT}/distributed_checkpoint" ]; then
+    echo "ERROR: RESUME_CKPT is missing distributed_checkpoint/: ${RESUME_CKPT}" >&2
+    exit 1
+  fi
 fi
 
 cd "${HYWORLD_ROOT}"
@@ -112,6 +131,7 @@ torchrun \
   --learning-rate 2e-5 \
   --mixed-precision "bf16" \
   --checkpointing-steps 100 \
+  ${RESUME_CKPT:+--resume-from-checkpoint "${RESUME_CKPT}"} \
   --weight-decay 1e-4 \
   --max-grad-norm 1.0 \
   --checkpoints-total-limit 2 \
