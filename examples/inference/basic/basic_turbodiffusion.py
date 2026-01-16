@@ -15,12 +15,14 @@ def main() -> None:
         "loayrashid/TurboWan2.1-T2V-1.3B-Diffusers",
         # FastVideo will automatically handle distributed setup
         num_gpus=1,
-        # TurboDiffusion uses a custom pipeline with RCM scheduler
-        override_pipeline_cls_name="TurboDiffusionPipeline",
+        use_fsdp_inference=False, # set to True if GPU is out of memory
+
+        # set to false if using RTX 4090 
+        # pin_cpu_memory=False,
     )
 
     # Generate videos with the same simple API, regardless of GPU count
-    # TurboDiffusion uses guidance_scale=1.0 (no CFG) and only 4 steps
+    # TurboDiffusion defaults: guidance_scale=1.0 and num_inference_steps=4 (from config)
     prompt = (
         "A curious raccoon peers through a vibrant field of yellow sunflowers, its eyes "
         "wide with interest. The playful yet serene atmosphere is complemented by soft "
@@ -30,9 +32,7 @@ def main() -> None:
         prompt,
         output_path=OUTPUT_PATH,
         save_video=True,
-        num_inference_steps=4,
         seed=42,
-        guidance_scale=1.0,
     )
 
     # Generate another video with a different prompt, without reloading the model!
@@ -47,9 +47,7 @@ def main() -> None:
         prompt2,
         output_path=OUTPUT_PATH,
         save_video=True,
-        num_inference_steps=4,
         seed=42,
-        guidance_scale=1.0,
     )
 
 

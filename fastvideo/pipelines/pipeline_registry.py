@@ -24,13 +24,17 @@ _PIPELINE_NAME_TO_ARCHITECTURE_NAME: dict[str, str] = {
     "WanVideoToVideoPipeline": "wan",
     "WanCausalDMDPipeline": "wan",
     "TurboDiffusionPipeline": "turbodiffusion",
+    "TurboDiffusionI2VPipeline": "turbodiffusion",
     "StepVideoPipeline": "stepvideo",
     "HunyuanVideoPipeline": "hunyuan",
     "HunyuanVideo15Pipeline": "hunyuan15",
     "Cosmos2VideoToWorldPipeline": "cosmos",
+    "Cosmos2_5Pipeline": "cosmos",
     "MatrixGamePipeline": "matrixgame",
     "MatrixGameCausalDMDPipeline": "matrixgame",
     "LongCatPipeline": "longcat",
+    "LongCatImageToVideoPipeline": "longcat",
+    "LongCatVideoContinuationPipeline": "longcat",
 }
 
 _PREPROCESS_WORKLOAD_TYPE_TO_PIPELINE_NAME: dict[WorkloadType, str] = {

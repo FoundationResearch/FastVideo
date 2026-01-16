@@ -6,10 +6,14 @@ from collections.abc import Callable
 
 from fastvideo.configs.pipelines.base import PipelineConfig
 from fastvideo.configs.pipelines.cosmos import CosmosConfig
+from fastvideo.configs.pipelines.cosmos2_5 import Cosmos25Config
 from fastvideo.configs.pipelines.hunyuan import FastHunyuanConfig, HunyuanConfig
 from fastvideo.configs.pipelines.hunyuan15 import Hunyuan15T2V480PConfig, Hunyuan15T2V720PConfig
 from fastvideo.configs.pipelines.stepvideo import StepVideoT2VConfig
 from fastvideo.configs.pipelines.longcat import LongCatT2V480PConfig
+from fastvideo.configs.pipelines.turbodiffusion import (
+    TurboDiffusionT2V_1_3B_Config, TurboDiffusionT2V_14B_Config,
+    TurboDiffusionI2V_A14B_Config)
 
 # isort: off
 from fastvideo.configs.pipelines.wan import (
@@ -52,14 +56,29 @@ PIPE_NAME_TO_CONFIG: dict[str, type[PipelineConfig]] = {
     "Wan-AI/Wan2.2-T2V-A14B-Diffusers": Wan2_2_T2V_A14B_Config,
     "Wan-AI/Wan2.2-I2V-A14B-Diffusers": Wan2_2_I2V_A14B_Config,
     "nvidia/Cosmos-Predict2-2B-Video2World": CosmosConfig,
+    "KyleShao/Cosmos-Predict2.5-2B-Diffusers": Cosmos25Config,
     "FastVideo/Matrix-Game-2.0-Base-Diffusers": MatrixGameI2V480PConfig,
     "FastVideo/Matrix-Game-2.0-GTA-Diffusers": MatrixGameI2V480PConfig,
     "FastVideo/Matrix-Game-2.0-TempleRun-Diffusers": MatrixGameI2V480PConfig,
+    # LongCat Video models
+    "FastVideo/LongCat-Video-T2V-Diffusers": LongCatT2V480PConfig,
+    "FastVideo/LongCat-Video-I2V-Diffusers": LongCatT2V480PConfig,
+    "FastVideo/LongCat-Video-VC-Diffusers": LongCatT2V480PConfig,
+    # TurboDiffusion models
+    "loayrashid/TurboWan2.1-T2V-1.3B-Diffusers": TurboDiffusionT2V_1_3B_Config,
+    "loayrashid/TurboWan2.1-T2V-14B-Diffusers": TurboDiffusionT2V_14B_Config,
+    "loayrashid/TurboWan2.2-I2V-A14B-Diffusers": TurboDiffusionI2V_A14B_Config,
     # Add other specific weight variants
 }
 
 # For determining pipeline type from model ID
 PIPELINE_DETECTOR: dict[str, Callable[[str], bool]] = {
+    "longcatimagetovideo":
+    lambda id: "longcatimagetovideo" in id.lower(),
+    "longcatvideocontinuation":
+    lambda id: "longcatvideocontinuation" in id.lower(),
+    "longcat":
+    lambda id: "longcat" in id.lower(),
     "hunyuan":
     lambda id: "hunyuan" in id.lower(),
     "hunyuan15":
@@ -77,15 +96,21 @@ PIPELINE_DETECTOR: dict[str, Callable[[str], bool]] = {
     "stepvideo":
     lambda id: "stepvideo" in id.lower(),
     "cosmos":
-    lambda id: "cosmos" in id.lower(),
-    "longcat":
-    lambda id: "longcat" in id.lower(),
+    lambda id: "cosmos" in id.lower() and ("2.5" not in id.lower(
+    ) and "2_5" not in id.lower() and "25" not in id.lower()),
+    "cosmos25":
+    lambda id: "cosmos25" in id.lower(),
+    "turbodiffusion":
+    lambda id: "turbodiffusion" in id.lower() or "turbowan" in id.lower(),
     # Add other pipeline architecture detectors
 }
 
 # Fallback configs when exact match isn't found but architecture is detected
 PIPELINE_FALLBACK_CONFIG: dict[str, type[PipelineConfig]] = {
+    "longcatimagetovideo": LongCatT2V480PConfig,
+    "longcatvideocontinuation": LongCatT2V480PConfig,
     "longcat": LongCatT2V480PConfig,
+    "cosmos25": Cosmos25Config,
     "hunyuan":
     HunyuanConfig,  # Base Hunyuan config as fallback for any Hunyuan variant
     "matrixgame": MatrixGameI2V480PConfig,
@@ -96,7 +121,8 @@ PIPELINE_FALLBACK_CONFIG: dict[str, type[PipelineConfig]] = {
     "wanimagetovideo": WanI2V480PConfig,
     "wandmdpipeline": FastWan2_1_T2V_480P_Config,
     "wancausaldmdpipeline": SelfForcingWanT2V480PConfig,
-    "stepvideo": StepVideoT2VConfig
+    "stepvideo": StepVideoT2VConfig,
+    "turbodiffusion": TurboDiffusionT2V_1_3B_Config,
     # Other fallbacks by architecture
 }
 

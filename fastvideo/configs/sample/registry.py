@@ -9,6 +9,7 @@ from fastvideo.configs.sample.hunyuan15 import Hunyuan15_480P_SamplingParam, Hun
 from fastvideo.configs.sample.stepvideo import StepVideoT2VSamplingParam
 
 from fastvideo.configs.sample.cosmos import Cosmos_Predict2_2B_Video2World_SamplingParam
+from fastvideo.configs.sample.cosmos2_5 import Cosmos_Predict2_5_2B_Diffusers_SamplingParam
 
 # isort: off
 from fastvideo.configs.sample.wan import (
@@ -26,6 +27,11 @@ from fastvideo.configs.sample.wan import (
     SelfForcingWan2_2_T2V_A14B_480P_SamplingParam,
     MatrixGame2_SamplingParam,
 )
+from fastvideo.configs.sample.turbodiffusion import (
+    TurboDiffusionT2V_1_3B_SamplingParam,
+    TurboDiffusionT2V_14B_SamplingParam,
+    TurboDiffusionI2V_A14B_SamplingParam,
+)
 # isort: on
 from fastvideo.logger import init_logger
 from fastvideo.utils import (maybe_download_model_index,
@@ -34,36 +40,48 @@ from fastvideo.utils import (maybe_download_model_index,
 logger = init_logger(__name__)
 # Registry maps specific model weights to their config classes
 SAMPLING_PARAM_REGISTRY: dict[str, Any] = {
-    "FastVideo/FastHunyuan-diffusers": FastHunyuanSamplingParam,
-    "hunyuanvideo-community/HunyuanVideo": HunyuanSamplingParam,
+    "FastVideo/FastHunyuan-diffusers":
+    FastHunyuanSamplingParam,
+    "hunyuanvideo-community/HunyuanVideo":
+    HunyuanSamplingParam,
     "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v":
     Hunyuan15_480P_SamplingParam,
     "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v":
     Hunyuan15_720P_SamplingParam,
-    "FastVideo/stepvideo-t2v-diffusers": StepVideoT2VSamplingParam,
+    "FastVideo/stepvideo-t2v-diffusers":
+    StepVideoT2VSamplingParam,
 
     # Wan2.1
-    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers": WanT2V_1_3B_SamplingParam,
-    "Wan-AI/Wan2.1-T2V-14B-Diffusers": WanT2V_14B_SamplingParam,
-    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers": WanI2V_14B_480P_SamplingParam,
-    "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers": WanI2V_14B_720P_SamplingParam,
+    "Wan-AI/Wan2.1-T2V-1.3B-Diffusers":
+    WanT2V_1_3B_SamplingParam,
+    "Wan-AI/Wan2.1-T2V-14B-Diffusers":
+    WanT2V_14B_SamplingParam,
+    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers":
+    WanI2V_14B_480P_SamplingParam,
+    "Wan-AI/Wan2.1-I2V-14B-720P-Diffusers":
+    WanI2V_14B_720P_SamplingParam,
     "weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers":
     Wan2_1_Fun_1_3B_InP_SamplingParam,
     "IRMChen/Wan2.1-Fun-1.3B-Control-Diffusers":
     Wan2_1_Fun_1_3B_Control_SamplingParam,
 
     # Wan2.2
-    "Wan-AI/Wan2.2-TI2V-5B-Diffusers": Wan2_2_TI2V_5B_SamplingParam,
+    "Wan-AI/Wan2.2-TI2V-5B-Diffusers":
+    Wan2_2_TI2V_5B_SamplingParam,
     "FastVideo/FastWan2.2-TI2V-5B-FullAttn-Diffusers":
     Wan2_2_TI2V_5B_SamplingParam,
-    "Wan-AI/Wan2.2-T2V-A14B-Diffusers": Wan2_2_T2V_A14B_SamplingParam,
-    "Wan-AI/Wan2.2-I2V-A14B-Diffusers": Wan2_2_I2V_A14B_SamplingParam,
+    "Wan-AI/Wan2.2-T2V-A14B-Diffusers":
+    Wan2_2_T2V_A14B_SamplingParam,
+    "Wan-AI/Wan2.2-I2V-A14B-Diffusers":
+    Wan2_2_I2V_A14B_SamplingParam,
 
     # FastWan2.1
-    "FastVideo/FastWan2.1-T2V-1.3B-Diffusers": FastWanT2V480P_SamplingParam,
+    "FastVideo/FastWan2.1-T2V-1.3B-Diffusers":
+    FastWanT2V480P_SamplingParam,
 
     # FastWan2.2
-    "FastVideo/FastWan2.2-TI2V-5B-Diffusers": Wan2_2_TI2V_5B_SamplingParam,
+    "FastVideo/FastWan2.2-TI2V-5B-Diffusers":
+    Wan2_2_TI2V_5B_SamplingParam,
 
     # Causal Self-Forcing Wan2.1
     "wlsaidhi/SFWan2.1-T2V-1.3B-Diffusers":
@@ -79,10 +97,25 @@ SAMPLING_PARAM_REGISTRY: dict[str, Any] = {
     "nvidia/Cosmos-Predict2-2B-Video2World":
     Cosmos_Predict2_2B_Video2World_SamplingParam,
 
+    # Cosmos2.5
+    "KyleShao/Cosmos-Predict2.5-2B-Diffusers":
+    Cosmos_Predict2_5_2B_Diffusers_SamplingParam,
+
     # MatrixGame2.0 models
-    "FastVideo/Matrix-Game-2.0-Base-Diffusers": MatrixGame2_SamplingParam,
-    "FastVideo/Matrix-Game-2.0-GTA-Diffusers": MatrixGame2_SamplingParam,
-    "FastVideo/Matrix-Game-2.0-TempleRun-Diffusers": MatrixGame2_SamplingParam,
+    "FastVideo/Matrix-Game-2.0-Base-Diffusers":
+    MatrixGame2_SamplingParam,
+    "FastVideo/Matrix-Game-2.0-GTA-Diffusers":
+    MatrixGame2_SamplingParam,
+    "FastVideo/Matrix-Game-2.0-TempleRun-Diffusers":
+    MatrixGame2_SamplingParam,
+
+    # TurboDiffusion models
+    "loayrashid/TurboWan2.1-T2V-1.3B-Diffusers":
+    TurboDiffusionT2V_1_3B_SamplingParam,
+    "loayrashid/TurboWan2.1-T2V-14B-Diffusers":
+    TurboDiffusionT2V_14B_SamplingParam,
+    "loayrashid/TurboWan2.2-I2V-A14B-Diffusers":
+    TurboDiffusionI2V_A14B_SamplingParam,
 
     # Add other specific weight variants
 }
@@ -105,6 +138,12 @@ SAMPLING_PARAM_DETECTOR: dict[str, Callable[[str], bool]] = {
     lambda id: "wancausaldmdpipeline" in id.lower(),
     "matrixgame":
     lambda id: "matrixgame" in id.lower() or "matrix-game" in id.lower(),
+    "turbodiffusion":
+    lambda id: "turbodiffusion" in id.lower() or "turbowan" in id.lower(),
+    "cosmos25":
+    lambda id: "cosmos2_5" in id.lower(),
+    "cosmos":
+    lambda id: "cosmos" in id.lower() and "2_5" not in id.lower(),
     # Add other pipeline architecture detectors
 }
 
@@ -121,6 +160,10 @@ SAMPLING_FALLBACK_PARAM: dict[str, Any] = {
     "wancausaldmdpipeline": SelfForcingWan2_1_T2V_1_3B_480P_SamplingParam,
     "stepvideo": StepVideoT2VSamplingParam,
     "matrixgame": MatrixGame2_SamplingParam,
+    "turbodiffusion":
+    TurboDiffusionT2V_1_3B_SamplingParam,  # Default to T2V for fallback
+    "cosmos25": Cosmos_Predict2_5_2B_Diffusers_SamplingParam,
+    "cosmos": Cosmos_Predict2_2B_Video2World_SamplingParam,
     # Other fallbacks by architecture
 }
 
@@ -144,9 +187,6 @@ def get_sampling_param_cls_for_name(pipeline_name_or_path: str) -> Any | None:
 
     if os.path.exists(pipeline_name_or_path):
         config = verify_model_config_and_directory(pipeline_name_or_path)
-        logger.warning(
-            "FastVideo may not correctly identify the optimal sampling param for this model, as the local directory may have been renamed."
-        )
     else:
         config = maybe_download_model_index(pipeline_name_or_path)
 
