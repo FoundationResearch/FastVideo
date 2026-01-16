@@ -531,10 +531,16 @@ class CameraJsonWMemDataset(Dataset):
                 w2c_list = self.camera_center_normalization(w2c_list)
                 intrinsic_list = torch.tensor(np.array(intrinsic_list))
 
-                if 'latent_dataset_w_action' in latent_pt_path:    # prepare for dataset with action labels
+                # Prefer action.json if action_path is provided and file exists.
+                # Previously this checked for 'latent_dataset_w_action' substring in latent_pt_path,
+                # which is fragile and easy to miss. Now we check the actual file existence.
+                action_path = json_data.get("action_path")
+                use_action_json = action_path and os.path.exists(action_path)
+
+                if use_action_json:    # prepare for dataset with action labels from action.json
                     trans_one_hot = np.zeros((intrinsic_list.shape[0], 4), dtype=np.int32)
                     rotate_one_hot = np.zeros((intrinsic_list.shape[0], 4), dtype=np.int32)
-                    action_json = json.load(open(json_data["action_path"], 'r'))
+                    action_json = json.load(open(action_path, 'r'))
                     action_keys = list(action_json.keys())
                     for action_idx in range(1, trans_one_hot.shape[0]):
                         t_key = action_keys[4 * (action_idx - 1) + 4]

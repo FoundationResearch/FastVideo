@@ -43,3 +43,16 @@
   - Always perform `optimizer.step()`/`lr_scheduler.step()` when grad norm is finite; rely on clipping for stability.
   - Only skip the step for non-finite norms.
 
+### 2026-01-16 — Fix action.json being ignored: dataset now checks file existence instead of magic path substring
+
+- **File**: `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`
+- **Problem observed**: Custom datasets with explicit `action.json` files had their action labels ignored, causing the model to learn incorrect action→motion mappings.
+- **Root cause**:
+  - The original code checked `if 'latent_dataset_w_action' in latent_pt_path` to decide whether to use `action.json`.
+  - If the `latent_path` didn't contain this magic substring, the code fell back to **on-the-fly action computation** from w2c matrices.
+  - On-the-fly computation often produces **incorrect/inconsistent** action labels compared to ground truth (observed 58% mismatch rate):
+    - Multiple directions can activate simultaneously (e.g., `LLLU` instead of `LL`)
+    - Movement direction detection can be completely wrong (e.g., `D` detected instead of `A`)
+- **Fix**:
+  - Replace the magic-substring check with: `action_path = json_data.get("action_path"); use_action_json = action_path and os.path.exists(action_path)`
+  - Now any dataset that provides `action_path` in its training JSON will correctly use the ground-truth action labels.
