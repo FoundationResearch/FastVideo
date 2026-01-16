@@ -18,10 +18,11 @@ class BallWorldState:
 
     cam_x: float = 0.0
     cam_y: float = 1.2
-    cam_z: float = -2.8
+    # NOTE: must be within world_bounds_xz (default z range: -2.0 to 3.0)
+    cam_z: float = -2.0
     yaw_rad: float = 0.0
-    # positive pitch = look DOWN; ~13° centers the ball (at sphere_center default)
-    pitch_rad: float = math.radians(13.0)
+    # positive pitch = look DOWN; ~15° centers the ball when cam_z=-2.0
+    pitch_rad: float = math.radians(15.0)
 
 
 def _clamp(x: np.ndarray, lo: float = 0.0, hi: float = 1.0) -> np.ndarray:

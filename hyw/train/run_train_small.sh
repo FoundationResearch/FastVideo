@@ -40,8 +40,12 @@ ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
-TRAIN_JSON="${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json"
-OUT_DIR="${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small"
+# Training data and output (can be overridden via env vars for different datasets like sythball)
+: "${TRAIN_JSON:=${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json}"
+: "${OUT_DIR:=${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small}"
+# Expand "~" in TRAIN_JSON and OUT_DIR
+TRAIN_JSON="${TRAIN_JSON/#\~/$HOME}"
+OUT_DIR="${OUT_DIR/#\~/$HOME}"
 
 # Resume (optional):
 #   RESUME_CKPT=hyw/outputs/hyworld_sythcircle_small/checkpoint-250 bash hyw/train/run_train_small.sh
