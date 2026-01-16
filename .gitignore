@@ -34,6 +34,7 @@ env
 weights/
 hyw/secrets.txt
 hyw/eval/result
+*.jsonl
 
 # Distribution / packaging
 build/
