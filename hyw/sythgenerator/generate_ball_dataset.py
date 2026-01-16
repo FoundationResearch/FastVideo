@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 
 import imageio
 import numpy as np
 
-from hyw.sythgenerator.pose_math import CameraPose, make_intrinsic, orbit_camera_w2c
-from hyw.sythgenerator.render_circle_world import WorldState, apply_action, render_frame
+from hyw.sythgenerator.pose_math import make_intrinsic
+from hyw.sythgenerator.render_ball_world import (
+    BallWorldState,
+    apply_action_3d,
+    precompute_camera_rays_cam,
+    render_ball_frame,
+    yaw_pitch_look_at,
+    w2c_from_camera_pose,
+)
 
 
 def _ensure_dir(p: Path) -> None:
@@ -30,13 +36,12 @@ def _find_repo_root(start: Path) -> Path:
         if cur.parent == cur:
             break
         cur = cur.parent
-    # Fallback: current working directory
     return Path.cwd().resolve()
 
 
 def _default_out_root() -> str:
     repo_root = _find_repo_root(Path(__file__).resolve())
-    return str((repo_root / "hyw" / "data" / "sythcircle_v0").resolve())
+    return str((repo_root / "hyw" / "data" / "sythball_v0").resolve())
 
 
 def _choice(rng: np.random.Generator, items: list[str], probs: list[float]) -> str:
@@ -45,38 +50,9 @@ def _choice(rng: np.random.Generator, items: list[str], probs: list[float]) -> s
 
 
 def _sample_episode_macro_actions(rng: np.random.Generator) -> tuple[str, str]:
-    """
-    Pick a "big direction" for the episode:
-    - macro_move: one of WASD (no empty)
-    - macro_view: one of LR/LL/LU/LD (no empty)
-    """
     macro_move = str(rng.choice(["W", "A", "S", "D"]))
     macro_view = str(rng.choice(["LR", "LL", "LU", "LD"]))
     return macro_move, macro_view
-
-
-def _sample_macro_move_angle_rad(rng: np.random.Generator) -> float:
-    """Sample a continuous move direction angle (radians) in the XY plane."""
-    return float(rng.uniform(0.0, 2.0 * math.pi))
-
-
-def _angle_to_move_action(angle_rad: float, *, deadzone: float = 0.25) -> str:
-    """
-    Convert a continuous direction (angle) into a WASD-like string for logging/compat.
-    This keeps the output format stable while motion itself can still be continuous.
-    """
-    vx = math.cos(angle_rad)
-    vy = math.sin(angle_rad)
-    s = ""
-    if vy > deadzone:
-        s += "W"
-    elif vy < -deadzone:
-        s += "S"
-    if vx > deadzone:
-        s += "D"
-    elif vx < -deadzone:
-        s += "A"
-    return s
 
 
 def _micro_action(
@@ -88,16 +64,12 @@ def _micro_action(
     alt_prob: float,
     alts: dict[str, list[str]],
 ) -> str:
-    """
-    Sample an action with a macro direction + small perturbations.
-    """
     r = float(rng.random())
     if r < empty_prob:
         return ""
     r -= empty_prob
     if r < macro_prob:
         return macro
-    # small perturbation
     if r < macro_prob + alt_prob:
         return str(rng.choice(alts.get(macro, [macro])))
     return macro
@@ -111,63 +83,65 @@ def generate_one_episode(
     width: int,
     height: int,
     seed: int,
-    camera_radius: float = 3.0,
     fov_deg: float = 70.0,
     move_step: float = 0.08,
     yaw_step_deg: float = 3.0,
     pitch_step_deg: float = 2.0,
-    macro_period: int = 8,
-    move_dir_jitter_deg: float = 8.0,
-    circle_radius_px: int = 32,
+    macro_period: int = 12,
+    world_bounds_xz: tuple[float, float, float, float] = (-2.0, 2.0, -2.0, 3.0),
 ) -> dict:
     """
-    Generates:
-      - video.mp4 (uint8 RGB)
-      - pose.json  (keys: "0"...; fields include intrinsic+w2c, plus compat K+extrinsic)
-      - action.json (keys: "0"...; fields include move_action/view_action)
+    Generates a simple 3D scene ("sythball"):
+      - ground plane + a ball (sphere) on the plane
+      - camera translation (WASD) + camera yaw/pitch (view_action) are truly rendered
+
+    Outputs compatible with HY-WorldPlay:
+      - video.mp4
+      - pose.json (per-frame intrinsic+w2c)
+      - action.json (per-frame move_action/view_action)
     """
     rng = np.random.default_rng(seed)
 
     K = make_intrinsic(width=width, height=height, fov_deg=fov_deg)
+    rays_cam = precompute_camera_rays_cam(width, height, K)
 
-    state = WorldState(x=0.0, y=0.0, yaw_rad=0.0, pitch_rad=0.0)
+    state = BallWorldState()
+    sphere_center = np.array([0.0, 0.35, 0.8], dtype=np.float32)
+    # Make the first frame look at the ball.
+    cam_pos0 = np.array([state.cam_x, state.cam_y, state.cam_z], dtype=np.float32)
+    state.yaw_rad, state.pitch_rad = yaw_pitch_look_at(cam_pos0, sphere_center)
     frames: list[np.ndarray] = []
     pose_json: dict[str, dict] = {}
     action_json: dict[str, dict] = {}
 
-    # Episode-level "big direction", then per-frame micro adjustments.
-    # - movement: continuous direction (any angle) in XY plane, changed every `macro_period` frames
-    # - view: keep 4-way discrete actions for simplicity
-    _, macro_view = _sample_episode_macro_actions(rng)
-    macro_move_angle = _sample_macro_move_angle_rad(rng)
+    macro_move, macro_view = _sample_episode_macro_actions(rng)
+    move_alts = {"W": ["WD", "WA"], "S": ["SD", "SA"], "D": ["WD", "SD"], "A": ["WA", "SA"]}
     view_alts = {"LR": ["LU", "LD"], "LL": ["LU", "LD"], "LU": ["LR", "LL"], "LD": ["LR", "LL"]}
 
-    # We always apply continuous movement for t>0. `move_action` is a compact label only.
+    move_empty_prob = 0.15
+    move_macro_prob = 0.75
+    move_alt_prob = 0.10
     view_empty_prob = 0.18
     view_macro_prob = 0.72
     view_alt_prob = 0.10
-
-    # Screen-edge boundary in world coords (consistent with render_frame mapping).
-    scale = min(width, height) * 0.18
-    max_x = (width / 2.0 - float(circle_radius_px)) / scale
-    max_y = (height / 2.0 - float(circle_radius_px)) / scale
-    world_bounds = (-max_x, max_x, -max_y, max_y)
 
     for t in range(num_frames):
         if t == 0:
             move_action = ""
             view_action = ""
-            move_dir_xy = (0.0, 0.0)
         else:
-            # Change macro movement direction every N frames (t>0).
-            if macro_period > 0 and ((t - 1) % macro_period == 0):
-                macro_move_angle = _sample_macro_move_angle_rad(rng)
+            # Occasionally change the macro actions to avoid trivial straight lines
+            if macro_period > 0 and (t % macro_period) == 0:
+                macro_move, macro_view = _sample_episode_macro_actions(rng)
 
-            # Per-frame jitter around macro direction.
-            jitter = float(rng.normal(loc=0.0, scale=math.radians(move_dir_jitter_deg)))
-            move_angle = float((macro_move_angle + jitter) % (2.0 * math.pi))
-            move_dir_xy = (math.cos(move_angle), math.sin(move_angle))
-            move_action = _angle_to_move_action(move_angle)
+            move_action = _micro_action(
+                rng,
+                macro_move,
+                empty_prob=move_empty_prob,
+                macro_prob=move_macro_prob,
+                alt_prob=move_alt_prob,
+                alts=move_alts,
+            )
             view_action = _micro_action(
                 rng,
                 macro_view,
@@ -177,43 +151,34 @@ def generate_one_episode(
                 alts=view_alts,
             )
 
-        prev_x, prev_y = state.x, state.y
-        apply_action(
+        apply_action_3d(
             state,
             move_action=move_action,
             view_action=view_action,
             move_step=move_step,
             yaw_step_deg=yaw_step_deg,
             pitch_step_deg=pitch_step_deg,
-            move_dir_xy=move_dir_xy,
-            world_bounds=world_bounds,
+            world_bounds_xz=world_bounds_xz,
         )
-        # If we hit the screen edge and couldn't move, resample macro direction once to avoid getting stuck.
-        if t > 0 and state.x == prev_x and state.y == prev_y:
-            macro_move_angle = _sample_macro_move_angle_rad(rng)
 
-        # Camera pose uses the SAME yaw/pitch that drives color -> matches requirement.
-        w2c = orbit_camera_w2c(CameraPose(yaw_rad=state.yaw_rad, pitch_rad=state.pitch_rad, radius=camera_radius))
+        cam_pos = np.array([state.cam_x, state.cam_y, state.cam_z], dtype=np.float32)
+        w2c = w2c_from_camera_pose(cam_pos, state.yaw_rad, state.pitch_rad)
 
-        # Store full-frame pose/action with string keys.
         pose_json[str(t)] = {
             "intrinsic": K.tolist(),
             "w2c": w2c.tolist(),
-            # Extra compat fields (some code/assets use these names)
             "K": K.tolist(),
             "extrinsic": w2c.tolist(),
         }
-        action_json[str(t)] = {
-            "move_action": move_action,
-            "view_action": view_action,
-        }
+        action_json[str(t)] = {"move_action": move_action, "view_action": view_action}
 
-        frame = render_frame(
+        frame = render_ball_frame(
             state,
             width=width,
             height=height,
-            move_action=move_action,
-            view_action=view_action,
+            K=K,
+            rays_cam=rays_cam,
+            sphere_center=(float(sphere_center[0]), float(sphere_center[1]), float(sphere_center[2])),
         )
         frames.append(frame)
 
@@ -239,20 +204,19 @@ def generate_one_episode(
             "fps": fps,
             "width": width,
             "height": height,
-            "camera_radius": camera_radius,
             "fov_deg": fov_deg,
             "move_step": move_step,
             "yaw_step_deg": yaw_step_deg,
             "pitch_step_deg": pitch_step_deg,
             "macro_period": macro_period,
-            "move_dir_jitter_deg": move_dir_jitter_deg,
-            "circle_radius_px": circle_radius_px,
+            "world_bounds_xz": list(world_bounds_xz),
+            "scene": "sythball_plane+sphere",
         },
     }
 
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="Generate synthetic circle+action+pose videos for HY-WorldPlay.")
+    p = argparse.ArgumentParser(description="Generate synthetic 3D sythball videos for HY-WorldPlay.")
     p.add_argument("--out_root", type=str, default=_default_out_root())
     p.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
     p.add_argument("--num_samples", type=int, default=8)
@@ -261,25 +225,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--width", type=int, default=384)
     p.add_argument("--height", type=int, default=256)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--camera_radius", type=float, default=3.0)
     p.add_argument("--fov_deg", type=float, default=70.0)
+    p.add_argument("--move_step", type=float, default=0.08)
+    p.add_argument("--yaw_step_deg", type=float, default=3.0)
+    p.add_argument("--pitch_step_deg", type=float, default=2.0)
     p.add_argument(
         "--macro_period",
         type=int,
-        default=8,
-        help="Change movement macro direction every N frames (t>0).",
-    )
-    p.add_argument(
-        "--move_dir_jitter_deg",
-        type=float,
-        default=8.0,
-        help="Per-frame angular jitter (deg) around macro direction.",
-    )
-    p.add_argument(
-        "--circle_radius_px",
-        type=int,
-        default=32,
-        help="Circle radius in pixels (used for screen-edge boundary).",
+        default=12,
+        help="Change macro move/view direction every N frames (t>0). Set 0 to disable.",
     )
     args = p.parse_args(argv)
 
@@ -297,15 +251,15 @@ def main(argv: list[str] | None = None) -> None:
             width=args.width,
             height=args.height,
             seed=args.seed + i,
-            camera_radius=args.camera_radius,
             fov_deg=args.fov_deg,
+            move_step=args.move_step,
+            yaw_step_deg=args.yaw_step_deg,
+            pitch_step_deg=args.pitch_step_deg,
             macro_period=args.macro_period,
-            move_dir_jitter_deg=args.move_dir_jitter_deg,
-            circle_radius_px=args.circle_radius_px,
         )
         entry["id"] = f"{args.split}_{i:05d}"
         entry["split"] = args.split
-        entry["text"] = "a colored circle controlled by WASD; camera view angle changes its color"
+        entry["text"] = "a 3D scene with a ball on a ground plane; camera moves with WASD and rotates by view actions"
         manifest.append(entry)
 
     manifest_path = out_root / f"manifest_raw_{args.split}.json"

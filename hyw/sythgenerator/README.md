@@ -72,12 +72,32 @@ conda activate alexfv
 python -m hyw.sythgenerator.generate_circle_dataset --split train --num_samples 8 --num_frames 125 --fps 12 --width 256 --height 256
 ```
 
+### 生成 3D 场景（sythball：地面+球体，真实相机运动/转动渲染）
+
+sythball 会生成一个简单的 3D 场景（无限平面 + 一个球体），并且：
+- **WASD**：相机在世界坐标系的 XZ 平面平移
+- **view_action**：相机 yaw/pitch 旋转
+
+运行示例：
+
+```bash
+conda activate alexfv
+python -m hyw.sythgenerator sythball --split train --num_samples 32 --num_frames 125 --fps 25 --width 256 --height 256
+```
+
+或者直接调用模块：
+
+```bash
+conda activate alexfv
+python -m hyw.sythgenerator.generate_ball_dataset --split train --num_samples 8 --num_frames 125 --fps 12 --width 256 --height 256
+```
+
 指定输出目录：
 
 ```bash
 conda activate alexfv
 python -m hyw.sythgenerator.generate_circle_dataset \
-  --out_root /home/hao_lab/alex/FastVideo/hyw/data/sythcircle_v1_125f \
+  --out_root ~/alex/FastVideo/hyw/data/sythcircle_v1_125f \
   --split train --num_samples 16 --num_frames 125 --fps 12 --width 256 --height 256 --seed 36 \
   --macro_period 8 --move_dir_jitter_deg 8.0 --circle_radius_px 32
 ```
