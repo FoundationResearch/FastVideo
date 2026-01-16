@@ -141,9 +141,42 @@ WANDB_RUN_NAME=hyworld_sythball_small_resumed \
 bash train/run_train_small.sh
 
 # -----------------------------------------------------------------------------
-# 6. 评估 (TODO: 需要写 sythball 专用的 eval 脚本)
+# 6. 评估 (使用 eval/eval_sythcircle_test.py，它是通用的)
 # -----------------------------------------------------------------------------
-# 参考 eval/eval_sythcircle_test.py 修改为 sythball 版本
+cd ~/alex/FastVideo
+
+# 用训练数据做 eval (overfit 测试) - 推荐先用这个检查 loss 是否真正下降
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_125f/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_small/checkpoint-100 \
+  --out_dir hyw/outputs/hyworld_sythball_small/eval_ckpt100_train \
+  --num_inference_steps 20 \
+  --max_samples 4 \
+  --seed 42
+
+# 用测试数据做 eval (泛化能力测试) - 需要先生成 test 数据
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_125f/manifest_raw_test.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_small/checkpoint-100 \
+  --out_dir hyw/outputs/hyworld_sythball_small/eval_ckpt100_test \
+  --num_inference_steps 20 \
+  --max_samples 4 \
+  --seed 42
+
+# 输出文件:
+#   - sample_XXXXX/gt.mp4           GT视频
+#   - sample_XXXXX/pred.mp4         生成视频
+#   - sample_XXXXX/side_by_side.mp4 GT和生成视频并排对比
+#   - summary.json                  平均 PSNR/L1/MSE
+#
+# 指标说明:
+#   - PSNR: 越高越好 (>30 较好, overfit 应该能到 35+)
+#   - L1: 越低越好
+#   - MSE: 越低越好
 
 # =============================================================================
 # 快速一键流程 (复制粘贴即可)
