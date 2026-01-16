@@ -68,29 +68,6 @@ def w2c_from_camera_pose(cam_pos: np.ndarray, yaw: float, pitch: float) -> np.nd
     return w2c
 
 
-def yaw_pitch_look_at(cam_pos: np.ndarray, target: np.ndarray) -> tuple[float, float]:
-    """
-    Compute (yaw, pitch) so that the camera forward (+Z in camera frame) points towards `target`.
-
-    Under our rotation convention (R = R_yaw @ R_pitch), the world-space forward vector is:
-      f = (sin(yaw)*cos(pitch), -sin(pitch), cos(yaw)*cos(pitch))
-    So:
-      pitch = -asin(fy)
-      yaw   = atan2(fx, fz)
-    """
-    cam_pos = cam_pos.astype(np.float32).reshape(3)
-    target = target.astype(np.float32).reshape(3)
-    f = target - cam_pos
-    n = float(np.linalg.norm(f))
-    if n < 1e-8:
-        return 0.0, 0.0
-    f = f / n
-    fy = float(np.clip(f[1], -1.0, 1.0))
-    pitch = float(-math.asin(fy))
-    yaw = float(math.atan2(float(f[0]), float(f[2])))
-    return yaw, pitch
-
-
 def apply_action_3d(
     state: BallWorldState,
     *,

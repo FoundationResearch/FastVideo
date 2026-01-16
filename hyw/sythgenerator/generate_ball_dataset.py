@@ -15,7 +15,6 @@ from hyw.sythgenerator.render_ball_world import (
     apply_action_3d,
     precompute_camera_rays_cam,
     render_ball_frame,
-    yaw_pitch_look_at,
     w2c_from_camera_pose,
 )
 
@@ -106,10 +105,6 @@ def generate_one_episode(
     rays_cam = precompute_camera_rays_cam(width, height, K)
 
     state = BallWorldState()
-    sphere_center = np.array([0.0, 0.35, 0.8], dtype=np.float32)
-    # Make the first frame look at the ball.
-    cam_pos0 = np.array([state.cam_x, state.cam_y, state.cam_z], dtype=np.float32)
-    state.yaw_rad, state.pitch_rad = yaw_pitch_look_at(cam_pos0, sphere_center)
     frames: list[np.ndarray] = []
     pose_json: dict[str, dict] = {}
     action_json: dict[str, dict] = {}
@@ -178,7 +173,6 @@ def generate_one_episode(
             height=height,
             K=K,
             rays_cam=rays_cam,
-            sphere_center=(float(sphere_center[0]), float(sphere_center[1]), float(sphere_center[2])),
         )
         frames.append(frame)
 
