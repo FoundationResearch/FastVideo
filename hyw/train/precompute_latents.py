@@ -166,21 +166,32 @@ def main() -> None:
             byt5_text_mask = torch.ones((1, 1), device=device, dtype=torch.int64)
 
         # vision_states: SigLIP features from reference image (align train with inference).
-        # In the official pipeline, vision states are produced by resizing/cropping the reference image
-        # to match the model's ideal resolution bucket, then running the vision encoder.
-        semantic_images_np = np.array(first_frame.convert("RGB"))
-        target_resolution = pipe.ideal_resolution
-        if target_resolution is None:
-            # Fallback to the common case for 480p_i2v; keeps behavior stable if config is missing.
-            target_resolution = "480p"
-        vision_states = pipe._prepare_vision_states(  # pylint: disable=protected-access
-            semantic_images_np, target_resolution, latents, device
-        )
-        if vision_states is None:
+        #
+        # NOTE:
+        # We do NOT call `pipe._prepare_vision_states(...)` here because that helper touches
+        # `pipe.do_classifier_free_guidance`, which depends on runtime sampling state set inside `pipe(...)`.
+        # For precompute we always run w/o CFG, so we can directly reproduce the same preprocessing:
+        # resize+center-crop to the closest bucket, then `vision_encoder.encode_images`.
+        if pipe.vision_encoder is None:
             raise RuntimeError(
                 "vision_encoder is unavailable, but vision_states alignment (scheme A) requires it. "
                 "Please ensure the vision encoder checkpoint is downloaded and accessible."
             )
+        from hyvideo.utils.data_utils import resize_and_center_crop  # type: ignore
+
+        target_resolution = pipe.ideal_resolution or "480p"
+        bucket_h, bucket_w = pipe.get_closest_resolution_given_reference_image(
+            first_frame, target_resolution
+        )
+        input_image_np = resize_and_center_crop(
+            np.array(first_frame.convert("RGB")),
+            target_width=int(bucket_w),
+            target_height=int(bucket_h),
+        )
+        vision_out = pipe.vision_encoder.encode_images(input_image_np)
+        vision_states = vision_out.last_hidden_state.to(
+            device=device, dtype=prompt_embeds.dtype
+        )
 
         payload = {
             # dataset expects list-like tensors and then indexes [0]
