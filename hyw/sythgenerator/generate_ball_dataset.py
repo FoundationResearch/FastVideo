@@ -87,6 +87,7 @@ def generate_one_episode(
     yaw_step_deg: float = 3.0,
     pitch_step_deg: float = 2.0,
     macro_period: int = 12,
+    hold_action_frames: int = 4,
     world_bounds_xz: tuple[float, float, float, float] = (-2.0, 2.0, -2.0, 3.0),
 ) -> dict:
     """
@@ -120,31 +121,45 @@ def generate_one_episode(
     view_macro_prob = 0.72
     view_alt_prob = 0.10
 
+    if hold_action_frames <= 0:
+        raise ValueError("--hold_action_frames must be a positive integer")
+
+    # Keep actions constant within each block of `hold_action_frames` frames to align with
+    # latent steps (1 latent ~= 4 frames). This reduces supervision noise since training/eval
+    # typically sample action at 0,4,8,...
+    cur_move_action = ""
+    cur_view_action = ""
+
     for t in range(num_frames):
         if t == 0:
-            move_action = ""
-            view_action = ""
+            cur_move_action = ""
+            cur_view_action = ""
         else:
-            # Occasionally change the macro actions to avoid trivial straight lines
-            if macro_period > 0 and (t % macro_period) == 0:
-                macro_move, macro_view = _sample_episode_macro_actions(rng)
+            # Update actions only on block boundaries (e.g., t=4,8,12,... for hold_action_frames=4)
+            if (t % hold_action_frames) == 0:
+                # Occasionally change the macro actions to avoid trivial straight lines
+                if macro_period > 0 and (t % macro_period) == 0:
+                    macro_move, macro_view = _sample_episode_macro_actions(rng)
 
-            move_action = _micro_action(
-                rng,
-                macro_move,
-                empty_prob=move_empty_prob,
-                macro_prob=move_macro_prob,
-                alt_prob=move_alt_prob,
-                alts=move_alts,
-            )
-            view_action = _micro_action(
-                rng,
-                macro_view,
-                empty_prob=view_empty_prob,
-                macro_prob=view_macro_prob,
-                alt_prob=view_alt_prob,
-                alts=view_alts,
-            )
+                cur_move_action = _micro_action(
+                    rng,
+                    macro_move,
+                    empty_prob=move_empty_prob,
+                    macro_prob=move_macro_prob,
+                    alt_prob=move_alt_prob,
+                    alts=move_alts,
+                )
+                cur_view_action = _micro_action(
+                    rng,
+                    macro_view,
+                    empty_prob=view_empty_prob,
+                    macro_prob=view_macro_prob,
+                    alt_prob=view_alt_prob,
+                    alts=view_alts,
+                )
+
+        move_action = cur_move_action
+        view_action = cur_view_action
 
         apply_action_3d(
             state,
@@ -229,6 +244,13 @@ def main(argv: list[str] | None = None) -> None:
         default=12,
         help="Change macro move/view direction every N frames (t>0). Set 0 to disable.",
     )
+    p.add_argument(
+        "--hold_action_frames",
+        type=int,
+        default=4,
+        help="Hold move/view action constant for this many frames (default: 4). "
+        "Use 4 to align with 1 latent ~= 4 frames.",
+    )
     args = p.parse_args(argv)
 
     out_root = Path(args.out_root).expanduser().resolve()
@@ -250,6 +272,7 @@ def main(argv: list[str] | None = None) -> None:
             yaw_step_deg=args.yaw_step_deg,
             pitch_step_deg=args.pitch_step_deg,
             macro_period=args.macro_period,
+            hold_action_frames=args.hold_action_frames,
         )
         entry["id"] = f"{args.split}_{i:05d}"
         entry["split"] = args.split

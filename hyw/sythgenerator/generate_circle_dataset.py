@@ -118,6 +118,7 @@ def generate_one_episode(
     pitch_step_deg: float = 2.0,
     macro_period: int = 8,
     move_dir_jitter_deg: float = 8.0,
+    hold_action_frames: int = 4,
     circle_radius_px: int = 32,
 ) -> dict:
     """
@@ -153,29 +154,45 @@ def generate_one_episode(
     max_y = (height / 2.0 - float(circle_radius_px)) / scale
     world_bounds = (-max_x, max_x, -max_y, max_y)
 
+    if hold_action_frames <= 0:
+        raise ValueError("--hold_action_frames must be a positive integer")
+
+    # Hold move/view actions constant inside each `hold_action_frames` block to better align with
+    # latent-level conditioning (1 latent ~= 4 frames).
+    cur_move_action = ""
+    cur_view_action = ""
+    cur_move_dir_xy = (0.0, 0.0)
+
     for t in range(num_frames):
         if t == 0:
-            move_action = ""
-            view_action = ""
-            move_dir_xy = (0.0, 0.0)
+            cur_move_action = ""
+            cur_view_action = ""
+            cur_move_dir_xy = (0.0, 0.0)
         else:
-            # Change macro movement direction every N frames (t>0).
-            if macro_period > 0 and ((t - 1) % macro_period == 0):
-                macro_move_angle = _sample_macro_move_angle_rad(rng)
+            if (t % hold_action_frames) == 0:
+                # Change macro movement direction every N frames (t>0), aligned to block boundaries.
+                if macro_period > 0 and (t % macro_period) == 0:
+                    macro_move_angle = _sample_macro_move_angle_rad(rng)
 
-            # Per-frame jitter around macro direction.
-            jitter = float(rng.normal(loc=0.0, scale=math.radians(move_dir_jitter_deg)))
-            move_angle = float((macro_move_angle + jitter) % (2.0 * math.pi))
-            move_dir_xy = (math.cos(move_angle), math.sin(move_angle))
-            move_action = _angle_to_move_action(move_angle)
-            view_action = _micro_action(
-                rng,
-                macro_view,
-                empty_prob=view_empty_prob,
-                macro_prob=view_macro_prob,
-                alt_prob=view_alt_prob,
-                alts=view_alts,
-            )
+                # Jitter around macro direction (sampled once per block).
+                jitter = float(
+                    rng.normal(loc=0.0, scale=math.radians(move_dir_jitter_deg))
+                )
+                move_angle = float((macro_move_angle + jitter) % (2.0 * math.pi))
+                cur_move_dir_xy = (math.cos(move_angle), math.sin(move_angle))
+                cur_move_action = _angle_to_move_action(move_angle)
+                cur_view_action = _micro_action(
+                    rng,
+                    macro_view,
+                    empty_prob=view_empty_prob,
+                    macro_prob=view_macro_prob,
+                    alt_prob=view_alt_prob,
+                    alts=view_alts,
+                )
+
+        move_action = cur_move_action
+        view_action = cur_view_action
+        move_dir_xy = cur_move_dir_xy
 
         prev_x, prev_y = state.x, state.y
         apply_action(
@@ -276,6 +293,13 @@ def main(argv: list[str] | None = None) -> None:
         help="Per-frame angular jitter (deg) around macro direction.",
     )
     p.add_argument(
+        "--hold_action_frames",
+        type=int,
+        default=4,
+        help="Hold move/view action constant for this many frames (default: 4). "
+        "Use 4 to align with 1 latent ~= 4 frames.",
+    )
+    p.add_argument(
         "--circle_radius_px",
         type=int,
         default=32,
@@ -301,6 +325,7 @@ def main(argv: list[str] | None = None) -> None:
             fov_deg=args.fov_deg,
             macro_period=args.macro_period,
             move_dir_jitter_deg=args.move_dir_jitter_deg,
+            hold_action_frames=args.hold_action_frames,
             circle_radius_px=args.circle_radius_px,
         )
         entry["id"] = f"{args.split}_{i:05d}"
