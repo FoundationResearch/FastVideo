@@ -156,6 +156,16 @@ bash train/run_train_small.sh
 # -----------------------------------------------------------------------------
 cd ~/alex/FastVideo
 
+# Base model（不加载 finetuned_ckpt）做 eval：用于对比“训练前 vs 训练后”
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --out_dir hyw/outputs/hyworld_sythball_13f_small/eval_base \
+  --num_inference_steps 50 \
+  --max_samples 1 \
+  --seed 42
+
 # 用训练数据做 eval (overfit 测试) - 推荐先用这个检查 loss 是否真正下降
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_train.json \
@@ -163,8 +173,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_small/checkpoint-300 \
   --out_dir hyw/outputs/hyworld_sythball_13f_small/eval_ckpt300 \
-  --num_inference_steps 20 \
-  --max_samples 4 \
+  --num_inference_steps 50 \
+  --max_samples 1 \
   --seed 42
 
 # 用测试数据做 eval (泛化能力测试) - 需要先生成 test 数据
