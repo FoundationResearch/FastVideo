@@ -43,6 +43,14 @@ AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a sa
 # Training data and output (can be overridden via env vars for different datasets like sythball)
 : "${TRAIN_JSON:=${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json}"
 : "${OUT_DIR:=${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small}"
+# Short-video/one-chunk overrides:
+#   - WorldPlay uses F = 4*(L-1)+1 where L is #latent frames
+#   - One chunk for AR corresponds to L=4 => F=13 frames
+: "${NUM_FRAMES:=125}"
+: "${NUM_LATENT_T:=32}"
+: "${WINDOW_FRAMES:=16}"
+: "${NUM_HEIGHT:=256}"
+: "${NUM_WIDTH:=256}"
 # Expand "~" in TRAIN_JSON and OUT_DIR
 TRAIN_JSON="${TRAIN_JSON/#\~/$HOME}"
 OUT_DIR="${OUT_DIR/#\~/$HOME}"
@@ -103,11 +111,11 @@ torchrun \
   trainer/training/ar_hunyuan_w_mem_training_pipeline.py \
   --data-path "${REPO_ROOT}/hyw/data" \
   --dataloader-num-workers 0 \
-  --num-height 256 \
-  --num-width 256 \
-  --num-frames 125 \
+  --num-height "${NUM_HEIGHT}" \
+  --num-width "${NUM_WIDTH}" \
+  --num-frames "${NUM_FRAMES}" \
   --train-batch-size 1 \
-  --num-latent-t 32 \
+  --num-latent-t "${NUM_LATENT_T}" \
   --pretrained-model-name-or-path "${MODEL_PATH}" \
   --output-dir "${OUT_DIR}" \
   --mode finetuning \
@@ -128,7 +136,7 @@ torchrun \
   --action \
   --i2v-rate 0.2 \
   --train-time-shift 3.0 \
-  --window-frames 16 \
+  --window-frames "${WINDOW_FRAMES}" \
   --max-train-steps 1000 \
   --train-sp-batch-size 1 \
   --gradient-accumulation-steps 1 \

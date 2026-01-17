@@ -165,14 +165,22 @@ def main() -> None:
             byt5_text_states = torch.zeros((1, 1, 1), device=device, dtype=prompt_embeds.dtype)
             byt5_text_mask = torch.ones((1, 1), device=device, dtype=torch.int64)
 
-        # vision_states: for training they can be zeros; keep shapes consistent with pipeline config
-        vision_states = torch.zeros(
-            1,
-            int(pipe.config.vision_num_semantic_tokens),
-            int(pipe.config.vision_states_dim),
-            device=device,
-            dtype=prompt_embeds.dtype,
+        # vision_states: SigLIP features from reference image (align train with inference).
+        # In the official pipeline, vision states are produced by resizing/cropping the reference image
+        # to match the model's ideal resolution bucket, then running the vision encoder.
+        semantic_images_np = np.array(first_frame.convert("RGB"))
+        target_resolution = pipe.ideal_resolution
+        if target_resolution is None:
+            # Fallback to the common case for 480p_i2v; keeps behavior stable if config is missing.
+            target_resolution = "480p"
+        vision_states = pipe._prepare_vision_states(  # pylint: disable=protected-access
+            semantic_images_np, target_resolution, latents, device
         )
+        if vision_states is None:
+            raise RuntimeError(
+                "vision_encoder is unavailable, but vision_states alignment (scheme A) requires it. "
+                "Please ensure the vision encoder checkpoint is downloaded and accessible."
+            )
 
         payload = {
             # dataset expects list-like tensors and then indexes [0]
