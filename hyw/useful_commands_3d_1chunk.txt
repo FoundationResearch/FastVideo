@@ -13,12 +13,12 @@ export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar
 # -----------------------------------------------------------------------------
 # train set (32 samples, 13 frames each; == 1 AR chunk in latent space)
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f \
   --split train --num_samples 32 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0
 
 # test set (16 samples)
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f \
   --split test --num_samples 16 --num_frames 13 --fps 25 --width 256 --height 256 --seed 1000
 
 # -----------------------------------------------------------------------------
@@ -28,20 +28,20 @@ cd ~/alex/FastVideo/hyw
 
 # train
 python train/precompute_latents.py \
-  --raw_manifest data/sythball_v1_125f/manifest_raw_train.json \
+  --raw_manifest data/sythball_v1_13f/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --transformer_version 480p_i2v \
-  --out_root data/sythball_v1_125f_modelinput/latent_pt/train \
+  --out_root data/sythball_v1_13f_modelinput/latent_pt/train \
   --max_samples 32
 
 # test (可选，用于 eval)
 python train/precompute_latents.py \
-  --raw_manifest data/sythball_v1_125f/manifest_raw_test.json \
+  --raw_manifest data/sythball_v1_13f/manifest_raw_test.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --transformer_version 480p_i2v \
-  --out_root data/sythball_v1_125f_modelinput/latent_pt/test \
+  --out_root data/sythball_v1_13f_modelinput/latent_pt/test \
   --max_samples 16
 
 # -----------------------------------------------------------------------------
@@ -51,16 +51,16 @@ cd ~/alex/FastVideo/hyw
 
 # train
 python train/make_training_json.py \
-  --raw_manifest data/sythball_v1_125f/manifest_raw_train.json \
-  --latent_root data/sythball_v1_125f_modelinput/latent_pt/train \
-  --out_json data/sythball_v1_125f_modelinput/sythball_v1_125f_train_for_hyworld.json \
+  --raw_manifest data/sythball_v1_13f/manifest_raw_train.json \
+  --latent_root data/sythball_v1_13f_modelinput/latent_pt/train \
+  --out_json data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \
   --max_samples 32
 
 # test (可选)
 python train/make_training_json.py \
-  --raw_manifest data/sythball_v1_125f/manifest_raw_test.json \
-  --latent_root data/sythball_v1_125f_modelinput/latent_pt/test \
-  --out_json data/sythball_v1_125f_modelinput/sythball_v1_125f_test_for_hyworld.json \
+  --raw_manifest data/sythball_v1_13f/manifest_raw_test.json \
+  --latent_root data/sythball_v1_13f_modelinput/latent_pt/test \
+  --out_json data/sythball_v1_13f_modelinput/sythball_v1_13f_test_for_hyworld.json \
   --max_samples 16
 
 # -----------------------------------------------------------------------------
@@ -73,6 +73,13 @@ TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_125f_modelinput/sythball_v1_125
 OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_small \
 WANDB_RUN_NAME=hyworld_sythball_small \
 bash train/run_train_small.sh
+#
+# (1chunk/13f 对应的 TRAIN_JSON 示例)
+# TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \
+# OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_small \
+# WANDB_RUN_NAME=hyworld_sythball_13f_small \
+# NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
+# bash train/run_train_small.sh
 
 # 方式B: 直接用 torchrun (更灵活，可调参数)
 cd ~/alex/FastVideo/hyw/HY-WorldPlay-main
@@ -108,7 +115,7 @@ torchrun \
   --transformer-from-scratch false \
   --model-path $MODEL_PATH \
   --inference-mode False \
-  --json-path ~/alex/FastVideo/hyw/data/sythball_v1_125f_modelinput/sythball_v1_125f_train_for_hyworld.json \
+  --json-path ~/alex/FastVideo/hyw/data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \
   --causal \
   --action \
   --i2v-rate 0.2 \
@@ -147,7 +154,7 @@ cd ~/alex/FastVideo
 
 # 用训练数据做 eval (overfit 测试) - 推荐先用这个检查 loss 是否真正下降
 python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_125f/manifest_raw_train.json \
+  --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_small/checkpoint-300 \
@@ -158,7 +165,7 @@ python hyw/eval/eval_sythcircle_test.py \
 
 # 用测试数据做 eval (泛化能力测试) - 需要先生成 test 数据
 python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_125f/manifest_raw_test.json \
+  --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_test.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_small/checkpoint-100 \
@@ -182,14 +189,14 @@ python hyw/eval/eval_sythcircle_test.py \
 # 快速一键流程 (复制粘贴即可)
 # =============================================================================
 # Step 1: 生成数据
-python -m hyw.sythgenerator sythball --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f --split train --num_samples 32 --num_frames 125 --fps 25 --width 256 --height 256 --seed 0
+python -m hyw.sythgenerator sythball --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f --split train --num_samples 32 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0
 
 # Step 2: 预计算 latents
-cd ~/alex/FastVideo/hyw && python train/precompute_latents.py --raw_manifest data/sythball_v1_125f/manifest_raw_train.json --model_path $MODEL_PATH --action_ckpt $ACTION_CKPT --transformer_version 480p_i2v --out_root data/sythball_v1_125f_modelinput/latent_pt/train --max_samples 32
+cd ~/alex/FastVideo/hyw && python train/precompute_latents.py --raw_manifest data/sythball_v1_13f/manifest_raw_train.json --model_path $MODEL_PATH --action_ckpt $ACTION_CKPT --transformer_version 480p_i2v --out_root data/sythball_v1_13f_modelinput/latent_pt/train --max_samples 32
 
 # Step 3: 生成训练 JSON
-cd ~/alex/FastVideo/hyw && python train/make_training_json.py --raw_manifest data/sythball_v1_125f/manifest_raw_train.json --latent_root data/sythball_v1_125f_modelinput/latent_pt/train --out_json data/sythball_v1_125f_modelinput/sythball_v1_125f_train_for_hyworld.json --max_samples 32
+cd ~/alex/FastVideo/hyw && python train/make_training_json.py --raw_manifest data/sythball_v1_13f/manifest_raw_train.json --latent_root data/sythball_v1_13f_modelinput/latent_pt/train --out_json data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json --max_samples 32
 
 # Step 4: 训练
-cd ~/alex/FastVideo/hyw && TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_125f_modelinput/sythball_v1_125f_train_for_hyworld.json OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_small WANDB_RUN_NAME=hyworld_sythball_small bash train/run_train_small.sh
+cd ~/alex/FastVideo/hyw && TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_small WANDB_RUN_NAME=hyworld_sythball_13f_small NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 bash train/run_train_small.sh
 
