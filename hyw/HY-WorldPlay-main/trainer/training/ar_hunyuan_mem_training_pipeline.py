@@ -358,22 +358,22 @@ class TrainingPipeline(LoRAPipeline, ABC):
         # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
         vae = self.get_module("vae", None) or self._get_train_vis_vae()
 
-        # Build predicted x0 latents for visualization.
-        # - If precondition_outputs=True, model_pred is already transformed into x0_hat.
-        # - Else, training target is (noise - latents), so x0_hat = noise - model_pred.
+        # Build x0_hat latents for visualization (does NOT affect training).
+        # - If precondition_outputs=True, `model_pred` is already transformed into x0_hat.
+        # - Else, training target is (noise - latents) = (epsilon - x0), so x0_hat = epsilon - v_hat.
         if self.training_args.precondition_outputs:
-            pred_latents = training_batch.model_pred
+            x0_hat_latents = training_batch.model_pred
         else:
-            pred_latents = training_batch.noise - training_batch.model_pred
+            x0_hat_latents = training_batch.noise - training_batch.model_pred
 
         gt_latents = training_batch.latents[:max_samples].to(device)
         noisy_latents = training_batch.noisy_model_input[:max_samples].to(device)
-        pred_latents = pred_latents[:max_samples].to(device)
+        x0_hat_latents = x0_hat_latents[:max_samples].to(device)
 
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
             gt_frames = _vae_decode_video_frames(vae, gt_latents)
             noisy_frames = _vae_decode_video_frames(vae, noisy_latents)
-            pred_frames = _vae_decode_video_frames(vae, pred_latents)
+            x0_hat_frames = _vae_decode_video_frames(vae, x0_hat_latents)
 
         def _to_uint8_video(frames01: torch.Tensor) -> np.ndarray:
             # (B,3,T,H,W) -> (T,H,W,3) uint8 (only first sample)
@@ -383,22 +383,22 @@ class TrainingPipeline(LoRAPipeline, ABC):
 
         gt_vid = _to_uint8_video(gt_frames)
         noisy_vid = _to_uint8_video(noisy_frames)
-        pred_vid = _to_uint8_video(pred_frames)
+        x0_hat_vid = _to_uint8_video(x0_hat_frames)
 
         os.makedirs(self.training_args.output_dir, exist_ok=True)
-        # Combine into one side-by-side (GT | noisy | pred) so wandb shows a single video panel.
-        T = min(gt_vid.shape[0], noisy_vid.shape[0], pred_vid.shape[0])
+        # Combine into one side-by-side (GT | noisy | x0_hat) so wandb shows a single video panel.
+        T = min(gt_vid.shape[0], noisy_vid.shape[0], x0_hat_vid.shape[0])
         gt_vid = gt_vid[:T]
         noisy_vid = noisy_vid[:T]
-        pred_vid = pred_vid[:T]
-        triptych = np.concatenate([gt_vid, noisy_vid, pred_vid], axis=2)
-        triptych_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt_noisy_pred.mp4")
+        x0_hat_vid = x0_hat_vid[:T]
+        triptych = np.concatenate([gt_vid, noisy_vid, x0_hat_vid], axis=2)
+        triptych_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
         imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
         caption = f"step={step} loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
         wandb.log(
             {
-                "train_video_gt_noisy_pred": wandb.Video(triptych_path, caption=caption),
+                "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),
             },
             step=step,
         )

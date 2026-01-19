@@ -26,7 +26,9 @@
   - Fix a bug where the VAE wrapper could be incorrectly unwrapped into `None` (causing `'NoneType' object has no attribute 'decode'`).
   - Change behavior to be **strict** for debugging: require a real VAE module + scaling factor; do not silently skip video logging.
   - Fix VAE=None in training visualization by lazily loading a dedicated VAE decoder from `${pretrained_model_name_or_path}/vae` (rank0 only).
-  - Log a single side-by-side video panel to WandB (`train_video_gt_noisy_pred`) instead of 3 separate videos, for easier visual comparison.
+  - Log a single side-by-side video panel to WandB (`train_video_gt_noisy_x0hat`) instead of 3 separate videos, for easier visual comparison. The third panel is always \(x_0\) estimate:
+    - `precondition_outputs=True`: use model output directly as \(x_0\_hat\)
+    - else: compute \(x_0\_hat = \epsilon - (\epsilon - x_0)\_hat\)
 
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
