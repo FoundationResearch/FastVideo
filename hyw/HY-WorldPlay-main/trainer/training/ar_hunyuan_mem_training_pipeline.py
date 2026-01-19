@@ -74,6 +74,64 @@ def merge_tensor_by_mask(tensor_1, tensor_2, mask, dim):
     return tmp
 
 
+def _unwrap_module(m):
+    """
+    Handle common wrappers (FSDP/DDP/torch.compile) without importing their types.
+
+    NOTE: Do NOT unwrap a `.vae` attribute here. Some VAE wrappers may expose a `.vae`
+    field that can be `None` (or not the actual decode implementation). Unwrapping it
+    can incorrectly turn a valid module into `None`.
+    """
+    for attr in ("module", "_orig_mod"):
+        if hasattr(m, attr):
+            m = getattr(m, attr)
+    return m
+
+
+def _resolve_vae_scaling_and_shift(vae):
+    """
+    Best-effort resolve (scaling_factor, shift_factor) from a variety of VAE implementations.
+    Returns:
+        (scaling_factor: float, shift_factor: float|None)
+    """
+    vae_u = _unwrap_module(vae)
+    # Try common locations
+    scaling = getattr(vae_u, "scaling_factor", None)
+    cfg = getattr(vae_u, "config", None)
+    if scaling is None and cfg is not None:
+        scaling = getattr(cfg, "scaling_factor", None)
+    # Some trainers keep scaling in nested config objects
+    if scaling is None:
+        cfg2 = getattr(vae_u, "vae_config", None)
+        if cfg2 is not None:
+            scaling = getattr(cfg2, "scaling_factor", None)
+    # Some configs may have scaling_factor=0 as default; treat that as unknown
+    try:
+        if scaling is not None:
+            scaling = float(scaling)
+            if scaling == 0.0:
+                scaling = None
+    except Exception:
+        scaling = None
+
+    shift = None
+    if cfg is not None:
+        shift = getattr(cfg, "shift_factor", None)
+        try:
+            if shift is not None:
+                shift = float(shift)
+        except Exception:
+            shift = None
+
+    # Be strict: visualization must decode correctly.
+    if scaling is None:
+        raise RuntimeError(
+            f"VAE scaling_factor not found (vae={type(vae_u).__name__}). "
+            "Expected `vae.scaling_factor` or `vae.config.scaling_factor` to exist."
+        )
+    return scaling, shift
+
+
 def _vae_decode_video_frames(vae, latents: torch.Tensor) -> torch.Tensor:
     """
     Decode VAE latents into video frames for visualization.
@@ -85,22 +143,27 @@ def _vae_decode_video_frames(vae, latents: torch.Tensor) -> torch.Tensor:
     Returns:
         frames: (B,3,F,H,W) float in [0,1]
     """
-    scaling = getattr(vae, "scaling_factor", None)
-    if scaling is None:
-        scaling = getattr(getattr(vae, "config", None), "scaling_factor", None)
-    if scaling is None:
-        raise RuntimeError("VAE scaling_factor not found; cannot decode latents for visualization.")
-
-    # Match HY-WorldPlay pipeline behavior: divide by scaling_factor, optionally add shift_factor.
+    vae_u = _unwrap_module(vae)
+    scaling, shift_factor = _resolve_vae_scaling_and_shift(vae_u)
+    # Match HY-WorldPlay pipeline behavior when possible: divide by scaling_factor, optionally add shift_factor.
     z = latents / scaling
-    shift_factor = getattr(getattr(vae, "config", None), "shift_factor", None)
     if shift_factor is not None:
         z = z + shift_factor
 
-    dec = vae.decode(z)
+    # Decode on the VAE's device to avoid device mismatch (CPU/GPU offload variants).
+    try:
+        vae_device = next(vae_u.parameters()).device
+    except StopIteration:
+        vae_device = z.device
+    z = z.to(device=vae_device)
+
+    dec = vae_u.decode(z)
     # Some VAE impls return tuple/list; some return tensor directly.
     if isinstance(dec, (tuple, list)):
         dec = dec[0]
+    # diffusers-style DecoderOutput
+    if hasattr(dec, "sample"):
+        dec = dec.sample
     frames = (dec / 2 + 0.5).clamp(0, 1)
     return frames
 
@@ -237,6 +300,34 @@ class TrainingPipeline(LoRAPipeline, ABC):
         every = int(getattr(self.training_args, "train_video_log_steps", 0) or 0)
         return every > 0 and (step % every) == 0
 
+    def _get_train_vis_vae(self) -> torch.nn.Module:
+        """
+        Training pipeline does not load the VAE by default (`_required_config_modules` excludes it).
+        For strict train-time visualization, we lazily load a VAE decoder from the pretrained model.
+        """
+        if hasattr(self, "_train_vis_vae") and self._train_vis_vae is not None:
+            return self._train_vis_vae
+
+        model_root = getattr(self.training_args, "pretrained_model_name_or_path", None) or getattr(self.training_args, "model_path", None)
+        if not model_root:
+            raise RuntimeError("Cannot load visualization VAE: pretrained_model_name_or_path/model_path is empty.")
+        vae_dir = os.path.join(str(model_root), "vae")
+        if not os.path.isdir(vae_dir):
+            raise RuntimeError(f"Cannot load visualization VAE: missing vae directory: {vae_dir}")
+
+        # Use the hyvideo VAE implementation (matches latent encoding used by our precompute script).
+        from hyvideo.models.autoencoders.hunyuanvideo_15_vae_w_cache import AutoencoderKLConv3D  # type: ignore
+
+        device = get_local_torch_device()
+        vis_vae = AutoencoderKLConv3D.from_pretrained(vae_dir, torch_dtype=torch.float16)
+        vis_vae = vis_vae.to(device).eval()
+        for p in vis_vae.parameters():
+            p.requires_grad_(False)
+
+        self._train_vis_vae = vis_vae
+        logger.info("Loaded visualization VAE for train video logging from %s", vae_dir)
+        return self._train_vis_vae
+
     @torch.no_grad()
     def _log_train_videos_to_wandb(self, training_batch: TrainingBatch, step: int) -> None:
         """
@@ -264,7 +355,8 @@ class TrainingPipeline(LoRAPipeline, ABC):
         fps = int(getattr(self.training_args, "train_video_log_fps", 25) or 25)
 
         device = get_local_torch_device()
-        vae = self.get_module("vae")
+        # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
+        vae = self.get_module("vae", None) or self._get_train_vis_vae()
 
         # Build predicted x0 latents for visualization.
         # - If precondition_outputs=True, model_pred is already transformed into x0_hat.
@@ -294,19 +386,19 @@ class TrainingPipeline(LoRAPipeline, ABC):
         pred_vid = _to_uint8_video(pred_frames)
 
         os.makedirs(self.training_args.output_dir, exist_ok=True)
-        gt_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt.mp4")
-        noisy_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_noisy.mp4")
-        pred_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_pred.mp4")
-        imageio.mimsave(gt_path, gt_vid, fps=fps, format="mp4")
-        imageio.mimsave(noisy_path, noisy_vid, fps=fps, format="mp4")
-        imageio.mimsave(pred_path, pred_vid, fps=fps, format="mp4")
+        # Combine into one side-by-side (GT | noisy | pred) so wandb shows a single video panel.
+        T = min(gt_vid.shape[0], noisy_vid.shape[0], pred_vid.shape[0])
+        gt_vid = gt_vid[:T]
+        noisy_vid = noisy_vid[:T]
+        pred_vid = pred_vid[:T]
+        triptych = np.concatenate([gt_vid, noisy_vid, pred_vid], axis=2)
+        triptych_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt_noisy_pred.mp4")
+        imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
         caption = f"step={step} loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
         wandb.log(
             {
-                "train_video_gt": wandb.Video(gt_path, caption=caption),
-                "train_video_noisy": wandb.Video(noisy_path, caption=caption),
-                "train_video_pred": wandb.Video(pred_path, caption=caption),
+                "train_video_gt_noisy_pred": wandb.Video(triptych_path, caption=caption),
             },
             step=step,
         )

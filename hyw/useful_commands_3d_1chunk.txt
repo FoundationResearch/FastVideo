@@ -79,7 +79,7 @@ OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_simple_small \
 WANDB_RUN_NAME=hyworld_sythball_13f_simple_small \
 NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
 NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
-TRAIN_VIDEO_LOG_STEPS=100 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
+TRAIN_VIDEO_LOG_STEPS=10 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
 bash train/run_train_small.sh
 #
 # NOTE: if --num_samples is very small (e.g. 1), training with 8 GPUs + drop_last can yield 0 batches.

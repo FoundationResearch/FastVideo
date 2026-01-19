@@ -19,6 +19,15 @@
 - **Why**:
   - Make it easy to visually compare train-time forward behavior vs eval/infer behavior and quickly spot mismatches (CFG, timestep schedule, conditioning usage, etc.).
 
+- **Follow-up (same day)**:
+  - Make train-time visualization robust across different trainer VAE implementations:
+    - resolve scaling/shift factors best-effort (fallback to scaling=1.0 with warning)
+    - if decode fails, skip logging instead of crashing training
+  - Fix a bug where the VAE wrapper could be incorrectly unwrapped into `None` (causing `'NoneType' object has no attribute 'decode'`).
+  - Change behavior to be **strict** for debugging: require a real VAE module + scaling factor; do not silently skip video logging.
+  - Fix VAE=None in training visualization by lazily loading a dedicated VAE decoder from `${pretrained_model_name_or_path}/vae` (rank0 only).
+  - Log a single side-by-side video panel to WandB (`train_video_gt_noisy_pred`) instead of 3 separate videos, for easier visual comparison.
+
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
 - **File**: `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`
