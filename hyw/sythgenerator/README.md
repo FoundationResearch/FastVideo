@@ -85,6 +85,22 @@ conda activate alexfv
 python -m hyw.sythgenerator sythball --split train --num_samples 32 --num_frames 125 --fps 25 --width 256 --height 256
 ```
 
+#### 简单/调试模式（相机直线移动、朝向不变、动作固定）
+
+为了更容易做 overfit/debug，你可以把动作序列固定成“持续向一个方向移动”，并且禁用视角旋转：
+
+```bash
+conda activate alexfv
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_simple_v1_13f \
+  --split train --num_samples 32 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0 \
+  --fixed_move_action W --fixed_view_action ""
+```
+
+说明：
+- `--fixed_move_action`: 固定 `move_action`（例如 `W/A/S/D/WA/...`），对所有 `t>0` 生效（`t=0` 仍为 `""`，更贴合 latent 对齐逻辑）。
+- `--fixed_view_action`: 固定 `view_action`（例如 `""/LR/LL/LU/LD`）；用 `""` 表示相机朝向不变。
+
 或者直接调用模块：
 
 ```bash

@@ -88,6 +88,8 @@ def generate_one_episode(
     pitch_step_deg: float = 2.0,
     macro_period: int = 12,
     hold_action_frames: int = 4,
+    fixed_move_action: str | None = None,
+    fixed_view_action: str | None = None,
     world_bounds_xz: tuple[float, float, float, float] = (-2.0, 2.0, -2.0, 3.0),
 ) -> dict:
     """
@@ -135,28 +137,34 @@ def generate_one_episode(
             cur_move_action = ""
             cur_view_action = ""
         else:
-            # Update actions only on block boundaries (e.g., t=4,8,12,... for hold_action_frames=4)
-            if (t % hold_action_frames) == 0:
-                # Occasionally change the macro actions to avoid trivial straight lines
-                if macro_period > 0 and (t % macro_period) == 0:
-                    macro_move, macro_view = _sample_episode_macro_actions(rng)
+            # Simple mode overrides: keep a fixed move/view action for the entire episode (t>0).
+            # This is useful for debugging/overfitting (reduce stochasticity).
+            if fixed_move_action is not None or fixed_view_action is not None:
+                cur_move_action = fixed_move_action or ""
+                cur_view_action = fixed_view_action or ""
+            else:
+                # Default: update actions only on block boundaries (e.g., t=4,8,12,... for hold_action_frames=4)
+                if (t % hold_action_frames) == 0:
+                    # Occasionally change the macro actions to avoid trivial straight lines
+                    if macro_period > 0 and (t % macro_period) == 0:
+                        macro_move, macro_view = _sample_episode_macro_actions(rng)
 
-                cur_move_action = _micro_action(
-                    rng,
-                    macro_move,
-                    empty_prob=move_empty_prob,
-                    macro_prob=move_macro_prob,
-                    alt_prob=move_alt_prob,
-                    alts=move_alts,
-                )
-                cur_view_action = _micro_action(
-                    rng,
-                    macro_view,
-                    empty_prob=view_empty_prob,
-                    macro_prob=view_macro_prob,
-                    alt_prob=view_alt_prob,
-                    alts=view_alts,
-                )
+                    cur_move_action = _micro_action(
+                        rng,
+                        macro_move,
+                        empty_prob=move_empty_prob,
+                        macro_prob=move_macro_prob,
+                        alt_prob=move_alt_prob,
+                        alts=move_alts,
+                    )
+                    cur_view_action = _micro_action(
+                        rng,
+                        macro_view,
+                        empty_prob=view_empty_prob,
+                        macro_prob=view_macro_prob,
+                        alt_prob=view_alt_prob,
+                        alts=view_alts,
+                    )
 
         move_action = cur_move_action
         view_action = cur_view_action
@@ -251,6 +259,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Hold move/view action constant for this many frames (default: 4). "
         "Use 4 to align with 1 latent ~= 4 frames.",
     )
+    p.add_argument(
+        "--fixed_move_action",
+        type=str,
+        default=None,
+        help="If set, force a fixed move_action for all t>0 frames (e.g. 'W', 'A', 'S', 'D', 'WA'). "
+        "This enables a simple/debug mode (reduced randomness).",
+    )
+    p.add_argument(
+        "--fixed_view_action",
+        type=str,
+        default=None,
+        help="If set, force a fixed view_action for all t>0 frames (e.g. '', 'LR', 'LL', 'LU', 'LD'). "
+        "Use '' to keep camera orientation fixed.",
+    )
     args = p.parse_args(argv)
 
     out_root = Path(args.out_root).expanduser().resolve()
@@ -273,6 +295,8 @@ def main(argv: list[str] | None = None) -> None:
             pitch_step_deg=args.pitch_step_deg,
             macro_period=args.macro_period,
             hold_action_frames=args.hold_action_frames,
+            fixed_move_action=args.fixed_move_action,
+            fixed_view_action=args.fixed_view_action,
         )
         entry["id"] = f"{args.split}_{i:05d}"
         entry["split"] = args.split

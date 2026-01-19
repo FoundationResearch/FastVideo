@@ -13,9 +13,12 @@ export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar
 # -----------------------------------------------------------------------------
 # train set (32 samples, 13 frames each; == 1 AR chunk in latent space)
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f \
-  --split train --num_samples 32 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0 \
-  --hold_action_frames 4
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f_simple \
+  --split train --num_samples 1 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0 \
+  --hold_action_frames 4 --fixed_move_action W --fixed_view_action ""
+#
+# Simple/debug mode (fixed action, no view rotation):
+#   --fixed_move_action W --fixed_view_action ""
 
 # test set (16 samples)
 python -m hyw.sythgenerator sythball \
@@ -30,11 +33,11 @@ cd ~/alex/FastVideo/hyw
 
 # train
 python train/precompute_latents.py \
-  --raw_manifest data/sythball_v1_13f/manifest_raw_train.json \
+  --raw_manifest data/sythball_v1_13f_simple/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --transformer_version 480p_i2v \
-  --out_root data/sythball_v1_13f_modelinput_1sample/latent_pt/train \
+  --out_root data/sythball_v1_13f_simple_modelinput/latent_pt/train \
   --max_samples 32
 
 # test (可选，用于 eval)
@@ -53,9 +56,9 @@ cd ~/alex/FastVideo/hyw
 
 # train
 python train/make_training_json.py \
-  --raw_manifest data/sythball_v1_13f/manifest_raw_train.json \
-  --latent_root data/sythball_v1_13f_modelinput/latent_pt/train \
-  --out_json data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \
+  --raw_manifest data/sythball_v1_13f_simple/manifest_raw_train.json \
+  --latent_root data/sythball_v1_13f_simple_modelinput/latent_pt/train \
+  --out_json data/sythball_v1_13f_simple_modelinput/sythball_v1_13f_train_for_hyworld.json \
   --max_samples 32
 
 # test (可选)
@@ -71,11 +74,16 @@ python train/make_training_json.py \
 cd ~/alex/FastVideo/hyw
 
 # 方式A: 使用环境变量覆盖默认配置
-TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \
-OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_small \
-WANDB_RUN_NAME=hyworld_sythball_13f_small \
+TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_simple_modelinput/sythball_v1_13f_train_for_hyworld.json \
+OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_simple_small \
+WANDB_RUN_NAME=hyworld_sythball_13f_simple_small \
 NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
+NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
 bash train/run_train_small.sh
+#
+# NOTE: if --num_samples is very small (e.g. 1), training with 8 GPUs + drop_last can yield 0 batches.
+# Use 1 GPU for tiny debug/overfit runs:
+#   NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 bash train/run_train_small.sh
 #
 # (1chunk/13f 对应的 TRAIN_JSON 示例)
 # TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \

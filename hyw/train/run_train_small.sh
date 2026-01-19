@@ -60,10 +60,12 @@ OUT_DIR="${OUT_DIR/#\~/$HOME}"
 # Note: pass the checkpoint directory (the one that contains `distributed_checkpoint/`).
 : "${RESUME_CKPT:=}"
 
-# 1 GPU smoke test
-NUM_GPUS=8
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export MASTER_PORT=29611
+# GPU config (allow overrides for small/debug runs)
+# - For tiny datasets (e.g. 1 sample), using 8 GPUs with drop_last=True can lead to 0 batches.
+#   In that case, set NUM_GPUS=1 and CUDA_VISIBLE_DEVICES=0.
+NUM_GPUS=${NUM_GPUS:-8}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export MASTER_PORT=${MASTER_PORT:-29611}
 
 if [ ! -d "${MODEL_PATH}" ]; then
   echo "ERROR: MODEL_PATH does not exist: ${MODEL_PATH}" >&2
