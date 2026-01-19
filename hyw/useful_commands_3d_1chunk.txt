@@ -128,6 +128,7 @@ python hyw/eval/eval_sythcircle_test.py \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --max_samples 1 \
+  --print_weight_delta \
   --seed 42
 
 # 用测试数据做 eval (泛化能力测试) - 需要先生成 test 数据

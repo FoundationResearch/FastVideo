@@ -150,6 +150,12 @@ def main() -> None:
         default=None,
         help="Optional scheduler flow shift override. If None, use pipeline default.",
     )
+    parser.add_argument(
+        "--print_weight_delta",
+        action="store_true",
+        help="Before loading finetuned_ckpt, compute and print max(|ft-base|) over overlapping transformer params. "
+        "This can be expensive for large checkpoints.",
+    )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max_samples", type=int, default=8)
     parser.add_argument("--device", type=str, default="cuda")
@@ -219,6 +225,47 @@ def main() -> None:
                 f"(overlap_ratio={overlap_ratio:.3f}). "
                 "This usually means the checkpoint was saved for a different class/architecture."
             )
+
+        if args.print_weight_delta:
+            # Compute max(|ft-base|) over overlapping tensors.
+            # NOTE: This may be slow and will move finetuned tensors to the model device one-by-one.
+            with torch.no_grad():
+                base_sd = pipe.transformer.state_dict()
+                max_abs = 0.0
+                max_key = None
+                max_base_abs = 0.0
+                max_base_key = None
+                compared = 0
+                skipped = 0
+                for k, ft_v in sd.items():
+                    base_v = base_sd.get(k)
+                    if base_v is None:
+                        skipped += 1
+                        continue
+                    # Some entries may be non-floating; handle them conservatively.
+                    if not torch.is_tensor(ft_v) or not torch.is_tensor(base_v):
+                        skipped += 1
+                        continue
+                    try:
+                        ft_t = ft_v.to(device=base_v.device, dtype=base_v.dtype, non_blocking=True)
+                        diff = (ft_t - base_v).abs()
+                        dmax = float(diff.max().item())
+                        bmax = float(base_v.abs().max().item())
+                        compared += 1
+                        if dmax > max_abs:
+                            max_abs = dmax
+                            max_key = k
+                        if bmax > max_base_abs:
+                            max_base_abs = bmax
+                            max_base_key = k
+                    except Exception:
+                        skipped += 1
+                        continue
+                ratio = (max_abs / max_base_abs) if max_base_abs > 0 else float("inf")
+                print(
+                    f"[INFO] max(|ft-base|)/max(|base|) over {compared} tensors = {ratio:.6g} "
+                    f"(max_diff={max_abs:.6g} @ {max_key}; max_base={max_base_abs:.6g} @ {max_base_key}; skipped={skipped})"
+                )
 
         missing, unexpected = pipe.transformer.load_state_dict(sd, strict=False)
         if missing:
