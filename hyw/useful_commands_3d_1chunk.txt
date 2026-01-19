@@ -34,7 +34,7 @@ python train/precompute_latents.py \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --transformer_version 480p_i2v \
-  --out_root data/sythball_v1_13f_modelinput/latent_pt/train \
+  --out_root data/sythball_v1_13f_modelinput_1sample/latent_pt/train \
   --max_samples 32
 
 # test (可选，用于 eval)
@@ -171,9 +171,10 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_small/checkpoint-300 \
-  --out_dir hyw/outputs/hyworld_sythball_13f_small/eval_ckpt300 \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_small/checkpoint-900 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_small/eval_ckpt900 \
   --num_inference_steps 50 \
+  --guidance_scale 1.0 \
   --max_samples 1 \
   --seed 42
 

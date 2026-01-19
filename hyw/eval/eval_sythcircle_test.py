@@ -138,6 +138,18 @@ def main() -> None:
     parser.add_argument("--finetuned_ckpt", type=str, default=None, help="e.g. outputs/.../checkpoint-50")
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--num_inference_steps", type=int, default=20)
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=1.0,
+        help="CFG scale. Set to 1.0 to disable CFG (aligns with our training cfg_rate=0 precompute).",
+    )
+    parser.add_argument(
+        "--flow_shift",
+        type=float,
+        default=None,
+        help="Optional scheduler flow shift override. If None, use pipeline default.",
+    )
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max_samples", type=int, default=8)
     parser.add_argument("--device", type=str, default="cuda")
@@ -192,6 +204,22 @@ def main() -> None:
         from safetensors.torch import load_file
 
         sd = load_file(str(safetensors_path))
+        # Sanity check: ensure this checkpoint is actually compatible with the inference transformer.
+        model_keys = set(pipe.transformer.state_dict().keys())
+        sd_keys = set(sd.keys())
+        overlap = len(model_keys.intersection(sd_keys))
+        overlap_ratio = overlap / max(1, len(sd_keys))
+        print(
+            f"[INFO] finetuned_ckpt key overlap: {overlap}/{len(sd_keys)} = {overlap_ratio:.3f} "
+            f"(model_keys={len(model_keys)})"
+        )
+        if overlap_ratio < 0.5:
+            raise RuntimeError(
+                "finetuned_ckpt seems incompatible with the inference transformer "
+                f"(overlap_ratio={overlap_ratio:.3f}). "
+                "This usually means the checkpoint was saved for a different class/architecture."
+            )
+
         missing, unexpected = pipe.transformer.load_state_dict(sd, strict=False)
         if missing:
             print(f"[WARN] Missing keys when loading finetuned ckpt: {len(missing)}")
@@ -246,7 +274,8 @@ def main() -> None:
                 num_inference_steps=int(args.num_inference_steps),
                 sr_num_inference_steps=None,
                 video_length=int(video_length),
-                negative_prompt="",
+                guidance_scale=float(args.guidance_scale),
+                negative_prompt=None,
                 seed=int(args.seed),
                 output_type="pt",
                 prompt_rewrite=False,
@@ -260,6 +289,7 @@ def main() -> None:
                 user_height=int(meta.get("height", 256)),
                 user_width=int(meta.get("width", 256)),
                 reference_image=ref_img,
+                flow_shift=(float(args.flow_shift) if args.flow_shift is not None else None),
             )
 
         pred = out.videos
