@@ -79,6 +79,7 @@ OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_simple_small \
 WANDB_RUN_NAME=hyworld_sythball_13f_simple_small \
 NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
 NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
+TRAIN_VIDEO_LOG_STEPS=100 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
 bash train/run_train_small.sh
 #
 # NOTE: if --num_samples is very small (e.g. 1), training with 8 GPUs + drop_last can yield 0 batches.
@@ -91,63 +92,6 @@ bash train/run_train_small.sh
 # WANDB_RUN_NAME=hyworld_sythball_13f_small \
 # NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
 # bash train/run_train_small.sh
-
-# 方式B: 直接用 torchrun (更灵活，可调参数)
-cd ~/alex/FastVideo/hyw/HY-WorldPlay-main
-export WANDB_MODE=online
-export TOKENIZERS_PARALLELISM=false
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-export MASTER_PORT=29612
-
-torchrun \
-  --master_port=29612 \
-  --nproc_per_node=8 \
-  --nnodes 1 \
-  trainer/training/ar_hunyuan_w_mem_training_pipeline.py \
-  --data-path ~/alex/FastVideo/hyw/data \
-  --dataloader-num-workers 0 \
-  --num-height 256 \
-  --num-width 256 \
-  --num-frames 13 \
-  --train-batch-size 1 \
-  --num-latent-t 4 \
-  --pretrained-model-name-or-path $MODEL_PATH \
-  --output-dir ~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_small \
-  --mode finetuning \
-  --workload-type i2v \
-  --num-gpus 8 \
-  --sp-size 1 \
-  --tp-size 1 \
-  --hsdp-replicate-dim 1 \
-  --hsdp-shard-dim 8 \
-  --cls-name "HunyuanTransformer3DARActionModel" \
-  --load-from-dir $MODEL_PATH/transformer/480p_i2v \
-  --ar-action-load-from-dir $ACTION_CKPT \
-  --transformer-from-scratch false \
-  --model-path $MODEL_PATH \
-  --inference-mode False \
-  --json-path ~/alex/FastVideo/hyw/data/sythball_v1_13f_modelinput/sythball_v1_13f_train_for_hyworld.json \
-  --causal \
-  --action \
-  --i2v-rate 0.2 \
-  --train-time-shift 3.0 \
-  --window-frames 4 \
-  --max-train-steps 1000 \
-  --train-sp-batch-size 1 \
-  --gradient-accumulation-steps 1 \
-  --learning-rate 2e-5 \
-  --mixed-precision "bf16" \
-  --checkpointing-steps 100 \
-  --weight-decay 1e-4 \
-  --max-grad-norm 1.0 \
-  --checkpoints-total-limit 2 \
-  --training-cfg-rate 0.0 \
-  --not-apply-cfg-solver \
-  --dit-precision "fp32" \
-  --num-euler-timesteps 50 \
-  --ema-start-step 0 \
-  --tracker-project-name hyw-official \
-  --wandb-run-name hyworld_sythball_small
 
 # -----------------------------------------------------------------------------
 # 5. 从 checkpoint 恢复训练 (可选)
@@ -176,11 +120,11 @@ python hyw/eval/eval_sythcircle_test.py \
 
 # 用训练数据做 eval (overfit 测试) - 推荐先用这个检查 loss 是否真正下降
 python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_train.json \
+  --raw_manifest hyw/data/sythball_v1_13f_simple/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_small/checkpoint-900 \
-  --out_dir hyw/outputs/hyworld_sythball_13f_small/eval_ckpt900 \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_simple_small/checkpoint-100 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/eval_ckpt100 \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --max_samples 1 \

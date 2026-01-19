@@ -73,6 +73,37 @@ def merge_tensor_by_mask(tensor_1, tensor_2, mask, dim):
         tmp[:, :, masked_indices] = tensor_2[:, :, masked_indices]
     return tmp
 
+
+def _vae_decode_video_frames(vae, latents: torch.Tensor) -> torch.Tensor:
+    """
+    Decode VAE latents into video frames for visualization.
+
+    Args:
+        vae: trainer VAE module (supports .decode and has .scaling_factor or .config.scaling_factor)
+        latents: (B,C,T,H,W) in *scaled latent space* (i.e. encoder output multiplied by scaling_factor).
+
+    Returns:
+        frames: (B,3,F,H,W) float in [0,1]
+    """
+    scaling = getattr(vae, "scaling_factor", None)
+    if scaling is None:
+        scaling = getattr(getattr(vae, "config", None), "scaling_factor", None)
+    if scaling is None:
+        raise RuntimeError("VAE scaling_factor not found; cannot decode latents for visualization.")
+
+    # Match HY-WorldPlay pipeline behavior: divide by scaling_factor, optionally add shift_factor.
+    z = latents / scaling
+    shift_factor = getattr(getattr(vae, "config", None), "shift_factor", None)
+    if shift_factor is not None:
+        z = z + shift_factor
+
+    dec = vae.decode(z)
+    # Some VAE impls return tuple/list; some return tensor directly.
+    if isinstance(dec, (tuple, list)):
+        dec = dec[0]
+    frames = (dec / 2 + 0.5).clamp(0, 1)
+    return frames
+
 class TrainingPipeline(LoRAPipeline, ABC):
     """
     A pipeline for training a model. All training pipelines should inherit from this class.
@@ -201,6 +232,84 @@ class TrainingPipeline(LoRAPipeline, ABC):
     def initialize_validation_pipeline(self, training_args: TrainingArgs):
         raise NotImplementedError(
             "Training pipelines must implement this method")
+
+    def _should_log_train_videos(self, step: int) -> bool:
+        every = int(getattr(self.training_args, "train_video_log_steps", 0) or 0)
+        return every > 0 and (step % every) == 0
+
+    @torch.no_grad()
+    def _log_train_videos_to_wandb(self, training_batch: TrainingBatch, step: int) -> None:
+        """
+        Log gt/noisy/pred decoded videos to wandb (rank0 only).
+        """
+        if self.global_rank != 0:
+            return
+        if not self._should_log_train_videos(step):
+            return
+        if self.training_args.sp_size > 1:
+            # SP shards tokens/latents; reconstructing full video for logging is non-trivial.
+            logger.warning(
+                "Skipping train video logging because sp_size > 1 (sp_size=%s).",
+                self.training_args.sp_size,
+            )
+            return
+
+        if training_batch.latents is None or training_batch.noisy_model_input is None or training_batch.noise is None:
+            return
+        if training_batch.model_pred is None:
+            return
+
+        max_samples = int(getattr(self.training_args, "train_video_log_max_samples", 1) or 1)
+        max_samples = max(1, max_samples)
+        fps = int(getattr(self.training_args, "train_video_log_fps", 25) or 25)
+
+        device = get_local_torch_device()
+        vae = self.get_module("vae")
+
+        # Build predicted x0 latents for visualization.
+        # - If precondition_outputs=True, model_pred is already transformed into x0_hat.
+        # - Else, training target is (noise - latents), so x0_hat = noise - model_pred.
+        if self.training_args.precondition_outputs:
+            pred_latents = training_batch.model_pred
+        else:
+            pred_latents = training_batch.noise - training_batch.model_pred
+
+        gt_latents = training_batch.latents[:max_samples].to(device)
+        noisy_latents = training_batch.noisy_model_input[:max_samples].to(device)
+        pred_latents = pred_latents[:max_samples].to(device)
+
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
+            gt_frames = _vae_decode_video_frames(vae, gt_latents)
+            noisy_frames = _vae_decode_video_frames(vae, noisy_latents)
+            pred_frames = _vae_decode_video_frames(vae, pred_latents)
+
+        def _to_uint8_video(frames01: torch.Tensor) -> np.ndarray:
+            # (B,3,T,H,W) -> (T,H,W,3) uint8 (only first sample)
+            x = frames01[0].detach().cpu()
+            x = (x * 255.0).clamp(0, 255).to(torch.uint8)
+            return x.permute(1, 2, 3, 0).numpy()
+
+        gt_vid = _to_uint8_video(gt_frames)
+        noisy_vid = _to_uint8_video(noisy_frames)
+        pred_vid = _to_uint8_video(pred_frames)
+
+        os.makedirs(self.training_args.output_dir, exist_ok=True)
+        gt_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt.mp4")
+        noisy_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_noisy.mp4")
+        pred_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_pred.mp4")
+        imageio.mimsave(gt_path, gt_vid, fps=fps, format="mp4")
+        imageio.mimsave(noisy_path, noisy_vid, fps=fps, format="mp4")
+        imageio.mimsave(pred_path, pred_vid, fps=fps, format="mp4")
+
+        caption = f"step={step} loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
+        wandb.log(
+            {
+                "train_video_gt": wandb.Video(gt_path, caption=caption),
+                "train_video_noisy": wandb.Video(noisy_path, caption=caption),
+                "train_video_pred": wandb.Video(pred_path, caption=caption),
+            },
+            step=step,
+        )
 
     def _prepare_training(self, training_batch: TrainingBatch) -> TrainingBatch:
         self.transformer.train()
@@ -477,6 +586,9 @@ class TrainingPipeline(LoRAPipeline, ABC):
             if self.training_args.precondition_outputs:
                 assert training_batch.sigmas is not None
                 model_pred = training_batch.noisy_model_input - model_pred * training_batch.sigmas
+            # Stash model output for optional visualization (detach to avoid autograd retention)
+            if self._should_log_train_videos(training_batch.current_timestep):
+                training_batch.model_pred = model_pred.detach()
             assert training_batch.latents is not None
             assert training_batch.noise is not None
             target = training_batch.latents if self.training_args.precondition_outputs else training_batch.noise - training_batch.latents
@@ -659,6 +771,8 @@ class TrainingPipeline(LoRAPipeline, ABC):
                     },
                     step=step,
                 )
+                # Optional: log decoded train-time videos (gt/noisy/pred)
+                self._log_train_videos_to_wandb(training_batch, step)
 
             if step % self.training_args.checkpointing_steps == 0:
                 save_checkpoint(self.transformer, self.global_rank,

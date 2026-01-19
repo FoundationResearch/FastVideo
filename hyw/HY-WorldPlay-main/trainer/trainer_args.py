@@ -638,6 +638,10 @@ class TrainingArgs(TrainerArgs):
     tracker_project_name: str = ""
     wandb_run_name: str = ""
     seed: int | None = None
+    # train-time debug visualization (wandb videos)
+    train_video_log_steps: int = 0  # 0 disables
+    train_video_log_fps: int = 25
+    train_video_log_max_samples: int = 1
 
     # output
     output_dir: str = ""
@@ -860,6 +864,24 @@ class TrainingArgs(TrainerArgs):
         parser.add_argument("--wandb-run-name",
                             type=str,
                             help="Run name for wandb")
+        parser.add_argument(
+            "--train-video-log-steps",
+            type=int,
+            default=0,
+            help="Log training-time decoded videos to wandb every N steps (0 disables).",
+        )
+        parser.add_argument(
+            "--train-video-log-fps",
+            type=int,
+            default=25,
+            help="FPS used when saving training-time videos for wandb logging.",
+        )
+        parser.add_argument(
+            "--train-video-log-max-samples",
+            type=int,
+            default=1,
+            help="Max number of samples to log per training video logging step (rank0 only).",
+        )
         parser.add_argument("--seed",
                             type=int,
                             default=42,

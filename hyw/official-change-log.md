@@ -1,5 +1,24 @@
 ## Changes to `HY-WorldPlay-main/` (local fork)
 
+### 2026-01-19 — Log train-time decoded videos (gt/noisy/pred) to WandB for debugging train vs eval
+
+- **Files**:
+  - `hyw/HY-WorldPlay-main/trainer/trainer_args.py`
+  - `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+  - `hyw/HY-WorldPlay-main/trainer/pipelines/pipeline_batch_info.py`
+- **What**:
+  - Add CLI flags:
+    - `--train-video-log-steps` (int, default 0 disables)
+    - `--train-video-log-fps` (int, default 25)
+    - `--train-video-log-max-samples` (int, default 1)
+  - During training (rank0 only), every `train_video_log_steps` steps decode and log 3 videos to WandB:
+    - `train_video_gt`: decoded `training_batch.latents`
+    - `train_video_noisy`: decoded `training_batch.noisy_model_input`
+    - `train_video_pred`: decoded predicted \(x_0\) latents computed from the model output
+  - Store `TrainingBatch.model_pred` for visualization when logging is enabled.
+- **Why**:
+  - Make it easy to visually compare train-time forward behavior vs eval/infer behavior and quickly spot mismatches (CFG, timestep schedule, conditioning usage, etc.).
+
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
 - **File**: `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`

@@ -40,6 +40,13 @@ ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
 AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
 
+# Train-time wandb video logging (official debug hook)
+# - Default: log every 100 steps (rank0 only), 1 sample, fps=25.
+# - Set TRAIN_VIDEO_LOG_STEPS=0 to disable.
+: "${TRAIN_VIDEO_LOG_STEPS:=100}"
+: "${TRAIN_VIDEO_LOG_FPS:=25}"
+: "${TRAIN_VIDEO_LOG_MAX_SAMPLES:=1}"
+
 # Training data and output (can be overridden via env vars for different datasets like sythball)
 : "${TRAIN_JSON:=${REPO_ROOT}/hyw/data/sythcircle_v1_125f_modelinput/sythcircle_v1_125f_train_for_hyworld.json}"
 : "${OUT_DIR:=${REPO_ROOT}/hyw/outputs/hyworld_sythcircle_small}"
@@ -154,6 +161,9 @@ torchrun \
   --dit-precision "fp32" \
   --num-euler-timesteps 50 \
   --ema-start-step 0 \
+  --train-video-log-steps "${TRAIN_VIDEO_LOG_STEPS}" \
+  --train-video-log-fps "${TRAIN_VIDEO_LOG_FPS}" \
+  --train-video-log-max-samples "${TRAIN_VIDEO_LOG_MAX_SAMPLES}" \
   ${WANDB_API_KEY:+--wandb-key "${WANDB_API_KEY}"} \
   ${WANDB_ENTITY:+--wandb-entity "${WANDB_ENTITY}"} \
   ${WANDB_PROJECT:+--tracker-project-name "${WANDB_PROJECT}"} \
