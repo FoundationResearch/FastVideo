@@ -126,10 +126,11 @@ python hyw/eval/eval_sythcircle_test.py \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_simple_small/checkpoint-500 \
-  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/eval_ckpt500 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/eval_ckpt500-3.0shift \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --max_samples 1 \
+  --flow_shift 3.0 \
   --print_weight_delta \
   --seed 42
 
