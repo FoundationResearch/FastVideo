@@ -125,8 +125,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_13f_simple/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_simple_small/checkpoint-100 \
-  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/eval_ckpt100 \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_simple_small/checkpoint-500 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/eval_ckpt500 \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --max_samples 1 \
