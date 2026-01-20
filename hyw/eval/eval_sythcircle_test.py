@@ -139,6 +139,14 @@ def main() -> None:
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--num_inference_steps", type=int, default=20)
     parser.add_argument(
+        "--model_type",
+        type=str,
+        default="ar",
+        choices=["ar", "bi"],
+        help="Which transformer denoise path to use inside HY-WorldPlay pipeline. "
+        "'ar' uses kv-cache + ar_vision_inference; 'bi' uses bi_inference (joint img+txt attention, closer to training).",
+    )
+    parser.add_argument(
         "--guidance_scale",
         type=float,
         default=1.0,
@@ -332,7 +340,7 @@ def main() -> None:
                 action=action_labels.unsqueeze(0).to(device),
                 few_step=False,
                 chunk_latent_frames=4,
-                model_type="ar",
+                model_type=str(args.model_type),
                 user_height=int(meta.get("height", 256)),
                 user_width=int(meta.get("width", 256)),
                 reference_image=ref_img,
