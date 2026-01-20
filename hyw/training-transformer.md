@@ -66,3 +66,17 @@ trainer 侧 transformer 的 forward 会直接调用 HY-WorldPlay 的并行工具
 
 所以做“单脚本 forward 对齐诊断”时，需要在脚本里显式初始化一个单进程配置（world_size=1, tp=1, sp=1）。
 
+### 额外发现：trainer vs hyvideo forward 不是“微小差异”
+
+我们用同一份权重、同一份输入（包含 `x_t || cond_latents || cond_mask`、pose、action、prompt/vision states）直接比较：
+- trainer-side transformer forward 输出 vs hyvideo-side `forward_bi` 输出
+
+得到的差异量级（示例）：
+- `mean_abs ~ 1.0`（latent 空间）
+
+这说明：**train 预览和 eval 推理如果分别走 trainer/hyvideo 两套 forward，很可能是“实质不同的函数”**，足以导致：
+- 训练时看起来“某些 step 已经 overfit”
+- 但 eval 用 hyvideo pipeline 生成时仍然更像 base
+
+因此需要一个更强的对齐验证：直接用 trainer transformer 跑完整的 50-step denoising（同 scheduler/shift），看生成结果是否与训练预览一致。
+

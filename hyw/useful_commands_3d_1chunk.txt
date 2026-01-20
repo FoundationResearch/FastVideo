@@ -133,6 +133,26 @@ python hyw/eval/eval_sythcircle_test.py \
   --print_weight_delta \
   --seed 42
 
+# -----------------------------------------------------------------------------
+# 6b. 诊断：用 training(transformer) 的 forward 跑完整 50-step denoising（对齐训练逻辑）
+# -----------------------------------------------------------------------------
+# 说明：
+# - 这条命令使用 HY-WorldPlay trainer 侧 transformer（训练时用的那套）做 50 step 推理
+# - 输入 packing 使用 (x_t || cond_latents || cond_mask) => 2*C+1 通道（C=32 -> 65）
+# - 自动初始化单进程的 SP/TP/DP group（避免 `_SP is None`）
+python -m hyw.eval.infer_with_trainer_transformer_50step \
+  --train_json hyw/data/sythball_v1_13f_simple_modelinput/sythball_v1_13f_train_for_hyworld.json \
+  --sample_idx 0 \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_simple_small/checkpoint-500 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/infer_trainer_50step_ckpt500 \
+  --num_inference_steps 50 \
+  --flow_shift 3.0 \
+  --dtype bf16 \
+  --seed 42 \
+  --fps 25
+
 # 用测试数据做 eval (泛化能力测试) - 需要先生成 test 数据
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_test.json \
@@ -143,14 +163,3 @@ python hyw/eval/eval_sythcircle_test.py \
   --num_inference_steps 20 \
   --max_samples 4 \
   --seed 42
-
-# 输出文件:
-#   - sample_XXXXX/gt.mp4           GT视频
-#   - sample_XXXXX/pred.mp4         生成视频
-#   - sample_XXXXX/side_by_side.mp4 GT和生成视频并排对比
-#   - summary.json                  平均 PSNR/L1/MSE
-#
-# 指标说明:
-#   - PSNR: 越高越好 (>30 较好, overfit 应该能到 35+)
-#   - L1: 越低越好
-#   - MSE: 越低越好
