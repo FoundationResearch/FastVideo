@@ -129,8 +129,15 @@ def main() -> None:
     p.add_argument("--sigma", type=float, default=0.5, help="Noise mixing sigma for constructing x_t = (1-s)*x0 + s*eps.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--diff_threshold", type=float, default=1e-4, help="Stop when max_abs diff exceeds this.")
+    p.add_argument("--diff_threshold", type=float, default=1e-4, help="Stop when max_abs diff exceeds this (where shapes match).")
     p.add_argument("--max_blocks", type=int, default=4, help="How many double_blocks to step through before stopping.")
+    p.add_argument(
+        "--hyvideo_step_mode",
+        type=str,
+        default="forward_vision",
+        choices=["forward_bi", "forward_vision"],
+        help="Which hyvideo path to compare against. forward_vision matches pipeline denoising; forward_bi is bi-mode.",
+    )
     p.add_argument(
         "--dtype",
         type=str,
@@ -144,6 +151,24 @@ def main() -> None:
     hyworld_root = (repo_root / "hyw" / "HY-WorldPlay-main").resolve()
     if str(hyworld_root) not in os.sys.path:
         os.sys.path.insert(0, str(hyworld_root))
+
+    # hyvideo-side modules (attention wrappers) expect a global infer_state.
+    # The official eval script initializes it; do the same here for standalone tracing.
+    from argparse import Namespace
+    from hyvideo.commons.infer_state import get_infer_state, initialize_infer_state  # type: ignore
+
+    if get_infer_state() is None:
+        initialize_infer_state(
+            Namespace(
+                enable_torch_compile=False,
+                use_sageattn=False,
+                sage_blocks_range="0-53",
+                use_vae_parallel=False,
+                use_fp8_gemm=False,
+                quant_type="fp8-per-block",
+                include_patterns="double_blocks",
+            )
+        )
 
     device = torch.device(args.device)
     # In training, HY-WorldPlay often uses `--dit-precision fp32` with AMP for compute.
@@ -267,6 +292,8 @@ def main() -> None:
 
     try:
         with torch.no_grad(), autocast_ctx:
+            # Ensure kv_cache is always defined in this function scope (avoid UnboundLocalError on some paths).
+            kv_cache = None
             # --- Stage 0: inputs ---
             _print_stage("hidden_states input", hidden_states, hidden_states, args.diff_threshold)
 
@@ -302,15 +329,9 @@ def main() -> None:
                 print("[STOP] diverged at action_in")
                 return
 
-            # --- Stage 4: text projection/refiner + reorder (ByT5 + vision) ---
-            # We run both models' get_text_and_mask pipelines as they are implemented.
-            txt_tr = prompt_embeds
-            mask_tr = prompt_mask
-            if trainer_model.text_projection == "linear":
-                txt_tr = trainer_model.txt_in(txt_tr)
-            else:
-                txt_tr = trainer_model.txt_in(txt_tr, timestep_txt, mask_tr if trainer_model.use_attention_mask else None)
-            txt_hv, mask_hv, _ = hyvideo_model.get_text_and_mask(
+            # --- Stage 4: build the SAME txt sequence on both sides (txt_in + cond_type + ByT5 + vision merges) ---
+            # hyvideo: use get_text_and_mask()
+            txt_hv_full, mask_hv_full, vec_txt_hv_full = hyvideo_model.get_text_and_mask(
                 encoder_attention_mask=prompt_mask,
                 text_states=prompt_embeds,
                 timestep_txt=timestep_txt,
@@ -318,35 +339,77 @@ def main() -> None:
                 vision_states=vision_states,
                 mask_type="i2v",
             )
-            diverged = _print_stage("txt after txt_in (trainer manual vs hyvideo get_text_and_mask)", txt_tr, txt_hv, args.diff_threshold)
-            if diverged:
-                print("[STOP] diverged at txt_in/get_text_and_mask")
-                return
-
-            # trainer continues to apply byt5/vision reorder in forward; replicate minimally via get_text_and_mask-equivalent pieces
+            # trainer: replicate its forward() logic exactly for txt construction
+            txt_tr_full = prompt_embeds
+            mask_tr_full = prompt_mask
+            bs = txt_tr_full.shape[0]
+            # txt_in / refiner
+            if trainer_model.text_projection == "linear":
+                txt_tr_full = trainer_model.txt_in(txt_tr_full)
+            else:
+                txt_tr_full = trainer_model.txt_in(
+                    txt_tr_full, timestep_txt, mask_tr_full if trainer_model.use_attention_mask else None
+                )
+            # cond type embedding (matches both sides when enabled)
+            if trainer_model.cond_type_embedding is not None:
+                cond_emb0 = trainer_model.cond_type_embedding(
+                    torch.zeros_like(txt_tr_full[:, :, 0], device=mask_tr_full.device, dtype=torch.long)
+                )
+                txt_tr_full = txt_tr_full + cond_emb0
+            # ByT5 merge
             if trainer_model.glyph_byT5_v2:
                 byt5_txt_tr = trainer_model.byt5_in(extra_kwargs["byt5_text_states"])
-                txt_tr, mask_tr = trainer_model.reorder_txt_token(byt5_txt_tr, txt_tr, extra_kwargs["byt5_text_mask"], mask_tr, zero_feat=True)
+                if trainer_model.cond_type_embedding is not None:
+                    cond_emb1 = trainer_model.cond_type_embedding(
+                        torch.ones_like(byt5_txt_tr[:, :, 0], device=byt5_txt_tr.device, dtype=torch.long)
+                    )
+                    byt5_txt_tr = byt5_txt_tr + cond_emb1
+                txt_tr_full, mask_tr_full = trainer_model.reorder_txt_token(
+                    byt5_txt_tr, txt_tr_full, extra_kwargs["byt5_text_mask"], mask_tr_full, zero_feat=True
+                )
+            # vision merge
             if trainer_model.vision_in is not None and vision_states is not None:
                 extra_enc_tr = trainer_model.vision_in(vision_states)
-                extra_attn_mask_tr = torch.ones((extra_enc_tr.shape[0], extra_enc_tr.shape[1]), dtype=mask_tr.dtype, device=mask_tr.device)
-                txt_tr, mask_tr = trainer_model.reorder_txt_token(extra_enc_tr, txt_tr, extra_attn_mask_tr, mask_tr)
+                if trainer_model.cond_type_embedding is not None:
+                    cond_emb2 = trainer_model.cond_type_embedding(
+                        2
+                        * torch.ones_like(
+                            extra_enc_tr[:, :, 0], dtype=torch.long, device=extra_enc_tr.device
+                        )
+                    )
+                    extra_enc_tr = extra_enc_tr + cond_emb2
+                extra_attn_mask_tr = torch.ones(
+                    (bs, extra_enc_tr.shape[1]), dtype=mask_tr_full.dtype, device=mask_tr_full.device
+                )
+                txt_tr_full, mask_tr_full = trainer_model.reorder_txt_token(
+                    extra_enc_tr, txt_tr_full, extra_attn_mask_tr, mask_tr_full
+                )
 
-            # Compare with hyvideo get_text_and_mask output already includes those merges
-            diverged = _print_stage("txt after (ByT5+vision) reorder", txt_tr, txt_hv, args.diff_threshold)
+            diverged = _print_stage("txt_full (after txt_in + cond_type + byt5 + vision merges)", txt_tr_full, txt_hv_full, args.diff_threshold)
             if diverged:
-                print("[STOP] diverged at reorder_txt_token")
+                print("[STOP] diverged while building txt_full (unexpected; these should match if implementations align)")
+                return
+
+            diverged = _print_stage("mask_full", mask_tr_full.to(torch.int64), mask_hv_full.to(torch.int64), args.diff_threshold)
+            if diverged:
+                print("[STOP] diverged while building mask_full")
                 return
 
             # --- Stage 5: masking strategy before blocks differs between the two implementations ---
             # trainer: masks out padding tokens and passes text_mask=None into blocks.
-            txt_tr_masked = txt_tr[mask_tr.bool().to(txt_tr.device)].unsqueeze(0)
-            # hyvideo forward_bi: does NOT pre-mask txt; it passes text_mask into block(...) for masking.
-            txt_hv_unmasked = txt_hv
+            txt_tr_packed = txt_tr_full[mask_tr_full.bool().to(txt_tr_full.device)].unsqueeze(0)
+            # hyvideo forward_bi: keeps padding tokens + provides text_mask
+            txt_hv_unpacked = txt_hv_full
+            # hyvideo forward_txt: packs tokens (same as trainer packing) for K/V cache
+            txt_hv_packed = txt_hv_full[mask_hv_full.bool().to(txt_hv_full.device)].unsqueeze(0)
             print("\n=== txt masking strategy (this is a known divergence point) ===")
-            print(f"[trainer] txt masked: {_tensor_stats(txt_tr_masked)}")
-            print(f"[hyvideo] txt unmasked: {_tensor_stats(txt_hv_unmasked)}")
-            print("[NOTE] shapes differ here by design (trainer pre-masks; hyvideo keeps padding + provides text_mask).")
+            print(f"[trainer] txt_packed:   {_tensor_stats(txt_tr_packed)}")
+            print(f"[hyvideo] txt_unpacked: {_tensor_stats(txt_hv_unpacked)}")
+            print(f"[hyvideo] txt_packed:   {_tensor_stats(txt_hv_packed)}")
+            if txt_tr_packed.shape == txt_hv_packed.shape:
+                print(f"[DIFF packed txt] {_diff_stats(txt_tr_packed, txt_hv_packed)}")
+            else:
+                print("[DIFF packed txt] shape mismatch (unexpected)")
 
             # --- Stage 6: run a few double_blocks and compare outputs ---
             # Prepare freqs (both use same helper)
@@ -363,67 +426,150 @@ def main() -> None:
 
             # hyvideo forward_bi broadcasts vec to token length before blocks; trainer does not.
             # We compare the *inputs into block 0* as they are actually used:
-            img0_tr = img_tr
-            txt0_tr = txt_tr_masked
-            vec0_tr = vec_tr2
-            vec_txt0_tr = vec_txt_tr
+            if args.hyvideo_step_mode == "forward_bi":
+                # Compare to hyvideo forward_bi (bi-mode, un-packed txt + mask passed into block).
+                img0_tr = img_tr
+                txt0_tr = txt_tr_packed
+                vec0_tr = vec_tr2
+                vec_txt0_tr = vec_txt_tr
 
-            img0_hv = img_hv
-            # forward_bi uses get_text_and_mask -> txt_hv, mask_hv and passes text_mask into blocks.
-            txt0_hv = txt_hv
-            vec0_hv = vec_hv2
-            vec_txt0_hv = vec_txt_hv
+                img0_hv = img_hv
+                txt0_hv = txt_hv_unpacked
+                vec0_hv = vec_hv2
+                vec_txt0_hv = vec_txt_hv_full
+                mask0_hv = mask_hv_full
 
-            # Run blocks
-            n = min(args.max_blocks, len(trainer_model.double_blocks), len(hyvideo_model.double_blocks))
-            for i in range(n):
-                # trainer block: expects (img, txt, vec_txt, vec, freqs_cis, text_mask=None, ...)
-                trainer_block = trainer_model.double_blocks[i]
-                img0_tr, txt0_tr = trainer_block(
-                    img=img0_tr,
-                    txt=txt0_tr,
-                    vec_txt=vec_txt0_tr,
-                    vec=vec0_tr,
-                    freqs_cis=freqs_cis_tr,
-                    text_mask=None,  # trainer pre-masked tokens
-                    attn_param=trainer_model.attn_param,
-                    is_flash=False,
-                    block_idx=i,
-                    viewmats=viewmats,
-                    Ks=Ks,
+                n = min(args.max_blocks, len(trainer_model.double_blocks), len(hyvideo_model.double_blocks))
+                for i in range(n):
+                    trainer_block = trainer_model.double_blocks[i]
+                    img0_tr, txt0_tr = trainer_block(
+                        img=img0_tr,
+                        txt=txt0_tr,
+                        vec_txt=vec_txt0_tr,
+                        vec=vec0_tr,
+                        freqs_cis=freqs_cis_tr,
+                        text_mask=None,
+                        attn_param=trainer_model.attn_param,
+                        is_flash=False,
+                        block_idx=i,
+                        viewmats=viewmats,
+                        Ks=Ks,
+                    )
+
+                    hy_block = hyvideo_model.double_blocks[i]
+                    img0_hv, txt0_hv = hy_block(
+                        bi_inference=True,
+                        ar_txt_inference=False,
+                        ar_vision_inference=False,
+                        img=img0_hv,
+                        txt=txt0_hv,
+                        vec_txt=vec_txt0_hv,
+                        vec=vec0_hv,
+                        freqs_cis=freqs_cis_hv,
+                        text_mask=mask0_hv,
+                        attn_param=hyvideo_model.attn_param,
+                        is_flash=False,
+                        block_idx=i,
+                        viewmats=viewmats,
+                        Ks=Ks,
+                    )
+
+                    print(f"\n--- after double_block[{i}] (forward_bi) ---")
+                    if img0_tr.shape == img0_hv.shape:
+                        print(f"[img diff] {_diff_stats(img0_tr, img0_hv)}")
+                        if (img0_tr - img0_hv).detach().float().abs().max().item() > args.diff_threshold:
+                            print(f"[STOP] first divergence beyond threshold at double_block[{i}] (img stream)")
+                            return
+                    else:
+                        print(f"[img diff] shape mismatch trainer={tuple(img0_tr.shape)} hyvideo={tuple(img0_hv.shape)}")
+                        return
+            else:
+                # Compare to hyvideo forward_vision (pipeline denoise path): txt is injected via kv_cache.
+                # Build kv_cache by calling hyvideo forward_txt(cache_txt=True) with packed tokens.
+                kv_cache = hyvideo_model.forward_txt(
+                    timestep_txt=timestep_txt.to(dtype=hidden_states.dtype),
+                    text_states=prompt_embeds,
+                    encoder_attention_mask=prompt_mask,
+                    vision_states=vision_states,
+                    mask_type="i2v",
+                    extra_kwargs=extra_kwargs,
+                    kv_cache=kv_cache,
+                    cache_txt=True,
                 )
+                print("\n=== built hyvideo kv_cache via forward_txt(cache_txt=True) ===")
+                print(f"[kv_cache] layers={len(kv_cache)} keys={list(kv_cache[0].keys())}")
 
-                # hyvideo block: signature includes inference flags; forward_bi sets bi_inference=True when viewmats is not None
-                hy_block = hyvideo_model.double_blocks[i]
-                img0_hv, txt0_hv = hy_block(
-                    bi_inference=True,
-                    ar_txt_inference=False,
-                    ar_vision_inference=False,
-                    img=img0_hv,
-                    txt=txt0_hv,
-                    vec_txt=vec_txt0_hv,
-                    vec=vec0_hv,
-                    freqs_cis=freqs_cis_hv,
-                    text_mask=mask_hv,
-                    attn_param=hyvideo_model.attn_param,
-                    is_flash=False,
-                    block_idx=i,
-                    viewmats=viewmats,
-                    Ks=Ks,
-                )
+                # Hook-based tracing: let each model run its *native* forward path, but record
+                # per-double-block img outputs for the first N blocks and compare.
+                n = min(args.max_blocks, len(trainer_model.double_blocks), len(hyvideo_model.double_blocks))
+                tr_imgs = [None] * n
+                hv_imgs = [None] * n
+                hooks = []
 
-                print(f"\n--- after double_block[{i}] ---")
-                if img0_tr.shape == img0_hv.shape:
-                    print(f"[img diff] {_diff_stats(img0_tr, img0_hv)}")
-                else:
-                    print(f"[img diff] shape mismatch trainer={tuple(img0_tr.shape)} hyvideo={tuple(img0_hv.shape)}")
-                    break
-                # For txt, shapes will likely differ due to masking strategy; report both stats only.
-                print(f"[trainer txt] {_tensor_stats(txt0_tr)}")
-                print(f"[hyvideo txt] {_tensor_stats(txt0_hv)}")
-                if img0_tr.shape == img0_hv.shape and (img0_tr - img0_hv).detach().float().abs().max().item() > args.diff_threshold:
-                    print(f"[STOP] first divergence beyond threshold at double_block[{i}] (img stream)")
-                    return
+                def _mk_hook(store_list, idx: int):
+                    def _hook(_mod, _inp, out):
+                        # out can be (img, txt) or (img, kv)
+                        if isinstance(out, (tuple, list)) and len(out) >= 1:
+                            store_list[idx] = out[0].detach()
+                        else:
+                            store_list[idx] = out.detach()
+                    return _hook
+
+                for i in range(n):
+                    hooks.append(trainer_model.double_blocks[i].register_forward_hook(_mk_hook(tr_imgs, i)))
+                    hooks.append(hyvideo_model.double_blocks[i].register_forward_hook(_mk_hook(hv_imgs, i)))
+
+                try:
+                    # Run full trainer forward once (records block outputs).
+                    _ = trainer_model(
+                        hidden_states=hidden_states,
+                        timestep=timestep,
+                        timestep_txt=timestep_txt,
+                        text_states=prompt_embeds,
+                        text_states_2=None,
+                        encoder_attention_mask=prompt_mask,
+                        timestep_r=None,
+                        vision_states=vision_states,
+                        return_dict=False,
+                        guidance=None,
+                        mask_type="i2v",
+                        extra_kwargs=extra_kwargs,
+                        action=action_vec,
+                        viewmats=viewmats,
+                        Ks=Ks,
+                    )[0]
+
+                    # Run hyvideo forward_vision once (records block outputs).
+                    _ = hyvideo_model.forward_vision(
+                        hidden_states=hidden_states,
+                        timestep=timestep,
+                        timestep_r=None,
+                        freqs_cos=None,
+                        freqs_sin=None,
+                        return_dict=False,
+                        mask_type="i2v",
+                        extra_kwargs=extra_kwargs,
+                        action=action_vec,
+                        viewmats=viewmats,
+                        Ks=Ks,
+                        kv_cache=kv_cache,
+                        cache_vision=False,
+                        rope_temporal_size=hidden_states.shape[2],
+                        start_rope_start_idx=0,
+                    )[0]
+                finally:
+                    for h in hooks:
+                        h.remove()
+
+                for i in range(n):
+                    print(f"\n--- double_block[{i}] img output diff (trainer.forward vs hyvideo.forward_vision) ---")
+                    if tr_imgs[i] is None or hv_imgs[i] is None:
+                        print(f"[WARN] missing captured outputs (trainer={tr_imgs[i] is None}, hyvideo={hv_imgs[i] is None})")
+                        return
+                    print(f"[img diff] {_diff_stats(tr_imgs[i], hv_imgs[i])}")
+                    if (tr_imgs[i] - hv_imgs[i]).detach().float().abs().max().item() > args.diff_threshold:
+                        print(f"[STOP] first divergence beyond threshold at double_block[{i}] (img stream)")
+                        return
 
             # Final outputs (call full forwards just to show end diff)
             out_tr = trainer_model(
@@ -444,23 +590,43 @@ def main() -> None:
                 Ks=Ks,
             )[0]
 
-            out_hv = hyvideo_model.forward_bi(
-                hidden_states=hidden_states,
-                timestep=timestep,
-                timestep_txt=timestep_txt,
-                text_states=prompt_embeds,
-                text_states_2=None,
-                encoder_attention_mask=prompt_mask,
-                timestep_r=None,
-                vision_states=vision_states,
-                return_dict=False,
-                guidance=None,
-                mask_type="i2v",
-                extra_kwargs=extra_kwargs,
-                action=action_vec,
-                viewmats=viewmats,
-                Ks=Ks,
-            )[0]
+            if args.hyvideo_step_mode == "forward_bi":
+                out_hv = hyvideo_model.forward_bi(
+                    hidden_states=hidden_states,
+                    timestep=timestep,
+                    timestep_txt=timestep_txt,
+                    text_states=prompt_embeds,
+                    text_states_2=None,
+                    encoder_attention_mask=prompt_mask,
+                    timestep_r=None,
+                    vision_states=vision_states,
+                    return_dict=False,
+                    guidance=None,
+                    mask_type="i2v",
+                    extra_kwargs=extra_kwargs,
+                    action=action_vec,
+                    viewmats=viewmats,
+                    Ks=Ks,
+                )[0]
+            else:
+                # forward_vision returns (img, features_list); we compare its output image tensor.
+                out_hv = hyvideo_model.forward_vision(
+                    hidden_states=hidden_states,
+                    timestep=timestep,
+                    timestep_r=None,
+                    freqs_cos=None,
+                    freqs_sin=None,
+                    return_dict=False,
+                    mask_type="i2v",
+                    extra_kwargs=extra_kwargs,
+                    action=action_vec,
+                    viewmats=viewmats,
+                    Ks=Ks,
+                    kv_cache=kv_cache,
+                    cache_vision=False,
+                    rope_temporal_size=hidden_states.shape[2],
+                    start_rope_start_idx=0,
+                )[0]
             print("\n=== final output ===")
             print(f"[OUT trainer] {_tensor_stats(out_tr)}")
             print(f"[OUT hyvideo] {_tensor_stats(out_hv)}")
