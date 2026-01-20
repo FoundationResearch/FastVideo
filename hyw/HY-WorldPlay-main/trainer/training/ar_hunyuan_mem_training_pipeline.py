@@ -15,6 +15,7 @@ import torch.distributed as dist
 import torchvision
 from diffusers import FlowMatchEulerDiscreteScheduler
 from einops import rearrange
+from PIL import Image, ImageDraw, ImageFont
 from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm.auto import tqdm
@@ -386,6 +387,38 @@ class TrainingPipeline(LoRAPipeline, ABC):
         x0_hat_vid = _to_uint8_video(x0_hat_frames)
 
         os.makedirs(self.training_args.output_dir, exist_ok=True)
+        # Add timestep/sigma stats overlay for clarity.
+        t_stats = None
+        if training_batch.timesteps is not None:
+            t = training_batch.timesteps.detach().float().cpu()
+            t_stats = (float(t.min().item()), float(t.mean().item()), float(t.max().item()))
+        s_stats = None
+        if training_batch.sigmas is not None:
+            s = training_batch.sigmas.detach().float().cpu()
+            s_stats = (float(s.min().item()), float(s.mean().item()), float(s.max().item()))
+        overlay = f"step={step}"
+        if t_stats is not None:
+            overlay += f"  t[min/mean/max]={t_stats[0]:.1f}/{t_stats[1]:.1f}/{t_stats[2]:.1f}"
+        if s_stats is not None:
+            overlay += f"  sigma[min/mean/max]={s_stats[0]:.3f}/{s_stats[1]:.3f}/{s_stats[2]:.3f}"
+
+        def _draw_overlay(frames: np.ndarray) -> np.ndarray:
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = None
+            out = frames.copy()
+            for i in range(out.shape[0]):
+                im = Image.fromarray(out[i])
+                draw = ImageDraw.Draw(im)
+                draw.rectangle([(0, 0), (im.size[0], 18)], fill=(0, 0, 0))
+                draw.text((4, 2), overlay, fill=(255, 255, 255), font=font)
+                out[i] = np.asarray(im)
+            return out
+
+        gt_vid = _draw_overlay(gt_vid)
+        noisy_vid = _draw_overlay(noisy_vid)
+        x0_hat_vid = _draw_overlay(x0_hat_vid)
         # Combine into one side-by-side (GT | noisy | x0_hat) so wandb shows a single video panel.
         T = min(gt_vid.shape[0], noisy_vid.shape[0], x0_hat_vid.shape[0])
         gt_vid = gt_vid[:T]
@@ -395,7 +428,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
         triptych_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
         imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
-        caption = f"step={step} loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
+        caption = f"{overlay}  loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
         wandb.log(
             {
                 "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),

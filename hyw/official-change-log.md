@@ -29,6 +29,7 @@
   - Log a single side-by-side video panel to WandB (`train_video_gt_noisy_x0hat`) instead of 3 separate videos, for easier visual comparison. The third panel is always \(x_0\) estimate:
     - `precondition_outputs=True`: use model output directly as \(x_0\_hat\)
     - else: compute \(x_0\_hat = \epsilon - (\epsilon - x_0)\_hat\)
+  - Overlay sampled diffusion timestep/sigma statistics onto the training preview video (top-left) and include them in the WandB caption for easier debugging.
 
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
