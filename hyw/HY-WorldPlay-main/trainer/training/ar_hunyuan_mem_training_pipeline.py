@@ -396,11 +396,15 @@ class TrainingPipeline(LoRAPipeline, ABC):
         if training_batch.sigmas is not None:
             s = training_batch.sigmas.detach().float().cpu()
             s_stats = (float(s.min().item()), float(s.mean().item()), float(s.max().item()))
-        overlay = f"step={step}"
-        if t_stats is not None:
-            overlay += f"  t[min/mean/max]={t_stats[0]:.1f}/{t_stats[1]:.1f}/{t_stats[2]:.1f}"
-        if s_stats is not None:
-            overlay += f"  sigma[min/mean/max]={s_stats[0]:.3f}/{s_stats[1]:.3f}/{s_stats[2]:.3f}"
+        # Keep overlay short for low-res videos (e.g. 256x256). Prefer means only.
+        overlay_lines = [f"step={step}"]
+        if t_stats is not None and s_stats is not None:
+            overlay_lines.append(f"t={t_stats[1]:.0f}  σ={s_stats[1]:.3f}")
+        elif t_stats is not None:
+            overlay_lines.append(f"t={t_stats[1]:.0f}")
+        elif s_stats is not None:
+            overlay_lines.append(f"σ={s_stats[1]:.3f}")
+        overlay = "\n".join(overlay_lines)
 
         def _draw_overlay(frames: np.ndarray) -> np.ndarray:
             try:
@@ -411,8 +415,10 @@ class TrainingPipeline(LoRAPipeline, ABC):
             for i in range(out.shape[0]):
                 im = Image.fromarray(out[i])
                 draw = ImageDraw.Draw(im)
-                draw.rectangle([(0, 0), (im.size[0], 18)], fill=(0, 0, 0))
-                draw.text((4, 2), overlay, fill=(255, 255, 255), font=font)
+                # Two-line HUD: reserve enough height.
+                hud_h = 34
+                draw.rectangle([(0, 0), (im.size[0], hud_h)], fill=(0, 0, 0))
+                draw.multiline_text((4, 2), overlay, fill=(255, 255, 255), font=font, spacing=0)
                 out[i] = np.asarray(im)
             return out
 
@@ -428,7 +434,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
         triptych_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
         imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
-        caption = f"{overlay}  loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
+        caption = f"{overlay.replace(chr(10), '  ')}  loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
         wandb.log(
             {
                 "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),

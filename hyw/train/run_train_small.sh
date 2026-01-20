@@ -58,6 +58,11 @@ AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a sa
 : "${WINDOW_FRAMES:=16}"
 : "${NUM_HEIGHT:=256}"
 : "${NUM_WIDTH:=256}"
+
+# Training schedule overrides
+#   MAX_TRAIN_STEPS=... CHECKPOINTING_STEPS=... bash hyw/train/run_train_small.sh
+: "${MAX_TRAIN_STEPS:=1000}"
+: "${CHECKPOINTING_STEPS:=100}"
 # Expand "~" in TRAIN_JSON and OUT_DIR
 TRAIN_JSON="${TRAIN_JSON/#\~/$HOME}"
 OUT_DIR="${OUT_DIR/#\~/$HOME}"
@@ -146,12 +151,12 @@ torchrun \
   --i2v-rate 0.2 \
   --train-time-shift 3.0 \
   --window-frames "${WINDOW_FRAMES}" \
-  --max-train-steps 1000 \
+  --max-train-steps "${MAX_TRAIN_STEPS}" \
   --train-sp-batch-size 1 \
   --gradient-accumulation-steps 1 \
   --learning-rate 2e-5 \
   --mixed-precision "bf16" \
-  --checkpointing-steps 100 \
+  --checkpointing-steps "${CHECKPOINTING_STEPS}" \
   ${RESUME_CKPT:+--resume-from-checkpoint "${RESUME_CKPT}"} \
   --weight-decay 1e-4 \
   --max-grad-norm 1.0 \
