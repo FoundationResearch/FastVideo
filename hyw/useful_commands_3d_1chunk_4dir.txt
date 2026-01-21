@@ -67,7 +67,7 @@ TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_4dir_modelinput/sythball_v1
 OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_4dir_small \
 WANDB_RUN_NAME=hyworld_sythball_13f_4dir_small \
 NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
-NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
+NUM_GPUS=4 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
 TRAIN_VIDEO_LOG_STEPS=25 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
 bash train/run_train_small.sh
@@ -89,7 +89,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --dtype bf16 \
   --seed 42 \
   --fps 25 \
-  --model_type bi
+  --model_type bi \
+  --max_samples 1 \
 
 # Finetuned ckpt eval（把 checkpoint-XXX 改成你想测的）
 python hyw/eval/eval_sythcircle_test.py \
@@ -104,6 +105,7 @@ python hyw/eval/eval_sythcircle_test.py \
   --dtype bf16 \
   --seed 42 \
   --fps 25 \
-  --model_type bi
+  --model_type bi \
+  --max_samples 1 \
 
 
