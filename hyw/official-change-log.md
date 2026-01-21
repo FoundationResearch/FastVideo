@@ -48,11 +48,16 @@
 
 - **File**: `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
 - **What**:
-  - Change `_log_train_videos_to_wandb()` so VAE decode + MP4 writing is performed by a **deterministically-randomly selected `vis_rank` per step** (chosen on rank0 and broadcast).
-  - Rank0 waits (`dist.barrier()`) and logs the single MP4 to WandB to avoid duplicate videos.
-  - Caption stats (`loss/grad_norm/t_mean/sigma_mean`) are broadcast from `vis_rank` to rank0 so the caption matches the decoded video.
+  - Change `_log_train_videos_to_wandb()` to a **no-collectives** DDP-friendly debug mode:
+    - Each rank loads its own visualization VAE decoder once (cached).
+    - On each log event, choose `vis_rank = log_idx % world_size` (round-robin: first save rank0, second save rank1, ...).
+    - Only `vis_rank` decodes its **local** batch and writes:
+      - `train_step_XXXXXX_rankR_gt_noisy_x0hat.mp4`
+      - `train_step_XXXXXX_rankR_stats.json` (t/sigma/loss/grad_norm for caption)
+    - Rank0 logs to WandB exactly once by **polling the filesystem** for the expected MP4 (and reading the stats JSON), avoiding `dist.broadcast/barrier`.
+    - Optional env var: `TRAIN_VIDEO_LOG_TIMEOUT_S` (default 120s) to control rank0's wait time for the MP4.
 - **Why**:
-  - Avoid concentrating decode overhead on GPU0; spread the visualization cost across GPUs without affecting training computation.
+  - Maximize speed and simplicity when GPUs have ample memory: no inter-rank comm and easy per-rank qualitative inspection (e.g. different directions).
 
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 

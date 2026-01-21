@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import dataclasses
+import json
 import math
 import os
 import time
@@ -334,8 +335,11 @@ class TrainingPipeline(LoRAPipeline, ABC):
         """
         Log gt/noisy/pred decoded videos to wandb.
 
-        To avoid always decoding on GPU0, we pick a (deterministic) random visualization rank per step.
-        Only that rank runs VAE decode + writes the MP4. Rank0 then logs the MP4 to WandB.
+        Fast path for multi-GPU debugging (no inter-rank collectives):
+        - Each rank loads its own VAE decoder (cached after first use).
+        - At each log event we select `vis_rank = log_idx % world_size` (round-robin).
+          Only `vis_rank` decodes & writes the MP4 (from its own local batch).
+        - Rank0 logs the MP4 to WandB exactly once, by polling the filesystem for the expected output file.
         """
         if not self._should_log_train_videos(step):
             return
@@ -353,24 +357,13 @@ class TrainingPipeline(LoRAPipeline, ABC):
             return
 
         # -----------------------------
-        # Choose a visualization rank.
+        # Choose visualization rank (round-robin).
         # -----------------------------
-        # NOTE: "random" but deterministic given (seed, step) so runs are reproducible.
-        vis_rank = 0
-        if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
-            # NCCL backend does not support CPU tensors for collectives.
-            # Use the local CUDA device for broadcast (small tensors only).
-            bcast_device = get_local_torch_device()
-            if self.global_rank == 0:
-                g = torch.Generator(device="cpu")
-                base_seed = int(getattr(self.training_args, "seed", 0) or 0)
-                g.manual_seed(base_seed * 1_000_003 + int(step))
-                vis_rank = int(torch.randint(0, int(self.world_size), (1,), generator=g).item())
-                vis_rank_t = torch.tensor([vis_rank], dtype=torch.int64, device=bcast_device)
-            else:
-                vis_rank_t = torch.zeros((1,), dtype=torch.int64, device=bcast_device)
-            dist.broadcast(vis_rank_t, src=0)
-            vis_rank = int(vis_rank_t.item())
+        world_size = int(getattr(self, "world_size", 1) or 1)
+        rank = int(getattr(self, "global_rank", 0) or 0)
+        every = int(getattr(self.training_args, "train_video_log_steps", 0) or 0)
+        log_idx = (int(step) // max(1, every)) if every > 0 else int(step)
+        vis_rank = int(log_idx % max(1, world_size))
 
         max_samples = int(getattr(self.training_args, "train_video_log_max_samples", 1) or 1)
         max_samples = max(1, max_samples)
@@ -379,41 +372,21 @@ class TrainingPipeline(LoRAPipeline, ABC):
         # Keep training output dir tidy: write VAE-decoded previews under a dedicated subfolder.
         vis_dir = os.path.join(self.training_args.output_dir, "vae_during_training")
         os.makedirs(vis_dir, exist_ok=True)
-        triptych_path = os.path.join(vis_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
+        triptych_path = os.path.join(vis_dir, f"train_step_{step:06d}_rank{vis_rank}_gt_noisy_x0hat.mp4")
+        stats_path = os.path.join(vis_dir, f"train_step_{step:06d}_rank{vis_rank}_stats.json")
 
-        # Gather small scalar stats from the chosen visualization rank so rank0 can caption correctly.
-        # (Do NOT try to allgather videos; write MP4 once and let rank0 log from filesystem.)
-        bcast_device = get_local_torch_device() if (dist.is_available() and dist.is_initialized()) else torch.device("cpu")
-        loss_gn = torch.tensor([0.0, 0.0], dtype=torch.float32, device=bcast_device)
-        t_sigma = torch.tensor([float("nan"), float("nan")], dtype=torch.float32, device=bcast_device)
-        if self.global_rank == vis_rank:
-            try:
-                loss_gn[0] = float(training_batch.total_loss)
-            except Exception:
-                loss_gn[0] = 0.0
-            try:
-                loss_gn[1] = float(training_batch.grad_norm)
-            except Exception:
-                loss_gn[1] = 0.0
-            if training_batch.timesteps is not None:
-                t_sigma[0] = float(training_batch.timesteps.detach().float().mean().cpu().item())
-            if training_batch.sigmas is not None:
-                t_sigma[1] = float(training_batch.sigmas.detach().float().mean().cpu().item())
-        if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
-            dist.broadcast(loss_gn, src=vis_rank)
-            dist.broadcast(t_sigma, src=vis_rank)
+        # Load VAE on every rank (cached) so that when it's a rank's turn it can decode immediately.
+        # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
+        _ = self.get_module("vae", None) or self._get_train_vis_vae()
 
         # -----------------------------
-        # Decode only on the chosen rank.
+        # Decode only on vis_rank, using that rank's local batch.
         # -----------------------------
-        if self.global_rank == vis_rank:
+        if rank == vis_rank:
             device = get_local_torch_device()
-            # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
             vae = self.get_module("vae", None) or self._get_train_vis_vae()
 
             # Build x0_hat latents for visualization (does NOT affect training).
-            # - If precondition_outputs=True, `model_pred` is already transformed into x0_hat.
-            # - Else, training target is (noise - latents) = (epsilon - x0), so x0_hat = epsilon - v_hat.
             if self.training_args.precondition_outputs:
                 x0_hat_latents = training_batch.model_pred
             else:
@@ -422,6 +395,25 @@ class TrainingPipeline(LoRAPipeline, ABC):
             gt_latents = training_batch.latents[:max_samples].to(device)
             noisy_latents = training_batch.noisy_model_input[:max_samples].to(device)
             x0_hat_latents = x0_hat_latents[:max_samples].to(device)
+
+            # Local scalar stats for caption/overlay (written to a sidecar JSON for rank0 to read).
+            t_mean = float("nan")
+            s_mean = float("nan")
+            if training_batch.timesteps is not None:
+                t_mean = float(training_batch.timesteps.detach().float().mean().cpu().item())
+            if training_batch.sigmas is not None:
+                s_mean = float(training_batch.sigmas.detach().float().mean().cpu().item())
+            loss0 = float(getattr(training_batch, "total_loss", 0.0) or 0.0)
+            gn0 = float(getattr(training_batch, "grad_norm", 0.0) or 0.0)
+            try:
+                with open(stats_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {"vis_rank": vis_rank, "t_mean": t_mean, "sigma_mean": s_mean, "loss": loss0, "grad_norm": gn0},
+                        f,
+                        indent=2,
+                    )
+            except Exception:
+                pass
 
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
                 gt_frames = _vae_decode_video_frames(vae, gt_latents)
@@ -440,8 +432,6 @@ class TrainingPipeline(LoRAPipeline, ABC):
 
             # Add timestep/sigma overlay for clarity (compact for low-res videos).
             overlay_lines = [f"step={step}"]
-            t_mean = float(t_sigma[0].item())
-            s_mean = float(t_sigma[1].item())
             if not math.isnan(t_mean) and not math.isnan(s_mean):
                 overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
             elif not math.isnan(t_mean):
@@ -477,15 +467,38 @@ class TrainingPipeline(LoRAPipeline, ABC):
             triptych = np.concatenate([gt_vid, noisy_vid, x0_hat_vid], axis=2)
             imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
-        # Ensure the chosen rank finished writing before rank0 logs.
-        if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
-            dist.barrier()
-
         if self.global_rank == 0:
             # Rank0 logs exactly once to WandB (avoid duplicate panels).
-            # Caption uses stats from the visualization rank.
-            t_mean = float(t_sigma[0].detach().float().cpu().item())
-            s_mean = float(t_sigma[1].detach().float().cpu().item())
+            # Caption uses stats written by vis_rank (sidecar JSON). Avoid collectives by polling filesystem.
+            t_mean = float("nan")
+            s_mean = float("nan")
+            loss0 = float("nan")
+            gn0 = float("nan")
+            # Wait up to ~120s for the mp4 (and stats) to appear.
+            timeout_s = float(os.environ.get("TRAIN_VIDEO_LOG_TIMEOUT_S", "120"))
+            t0 = time.time()
+            while (not os.path.exists(triptych_path)) and (time.time() - t0 < timeout_s):
+                time.sleep(0.2)
+            # Stats is optional; try best-effort.
+            if os.path.exists(stats_path):
+                try:
+                    st = json.loads(open(stats_path, "r", encoding="utf-8").read())
+                    t_mean = float(st.get("t_mean", t_mean))
+                    s_mean = float(st.get("sigma_mean", s_mean))
+                    loss0 = float(st.get("loss", loss0))
+                    gn0 = float(st.get("grad_norm", gn0))
+                except Exception:
+                    pass
+
+            if not os.path.exists(triptych_path):
+                logger.warning(
+                    "Train video preview not found within timeout (step=%s, vis_rank=%s, path=%s). Skipping wandb video log.",
+                    step,
+                    vis_rank,
+                    triptych_path,
+                )
+                return
+
             overlay_lines = [f"step={step}"]
             if not math.isnan(t_mean) and not math.isnan(s_mean):
                 overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
@@ -494,8 +507,6 @@ class TrainingPipeline(LoRAPipeline, ABC):
             elif not math.isnan(s_mean):
                 overlay_lines.append(f"σ={s_mean:.3f}")
             overlay = "  ".join(overlay_lines)
-            loss0 = float(loss_gn[0].detach().float().cpu().item())
-            gn0 = float(loss_gn[1].detach().float().cpu().item())
             caption = f"{overlay}  vis_rank={vis_rank}  loss={loss0:.6f} grad_norm={gn0:.3f}"
             wandb.log(
                 {
