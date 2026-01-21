@@ -260,6 +260,18 @@ def main(argv: list[str] | None = None) -> None:
         "Use 4 to align with 1 latent ~= 4 frames.",
     )
     p.add_argument(
+        "--fixed_move_action_mode",
+        type=str,
+        default="single",
+        choices=["single", "4dir"],
+        help=(
+            "How to apply --fixed_move_action. "
+            "'single': all samples share the same fixed move action (legacy behavior). "
+            "'4dir': ignore --fixed_move_action and generate 4 samples with fixed move actions "
+            "[W,S,A,D] (front/back/left/right), keeping the rest identical."
+        ),
+    )
+    p.add_argument(
         "--fixed_move_action",
         type=str,
         default=None,
@@ -281,6 +293,11 @@ def main(argv: list[str] | None = None) -> None:
 
     manifest: list[dict] = []
     for i in range(args.num_samples):
+        fixed_move_action = args.fixed_move_action
+        if args.fixed_move_action_mode == "4dir":
+            # Deterministic 4-direction dataset: front/back/left/right -> W/S/A/D in world axes.
+            fixed_move_action = ["W", "S", "A", "D"][i % 4]
+
         sample_dir = split_dir / f"sample_{i:05d}"
         entry = generate_one_episode(
             sample_dir,
@@ -295,7 +312,7 @@ def main(argv: list[str] | None = None) -> None:
             pitch_step_deg=args.pitch_step_deg,
             macro_period=args.macro_period,
             hold_action_frames=args.hold_action_frames,
-            fixed_move_action=args.fixed_move_action,
+            fixed_move_action=fixed_move_action,
             fixed_view_action=args.fixed_view_action,
         )
         entry["id"] = f"{args.split}_{i:05d}"

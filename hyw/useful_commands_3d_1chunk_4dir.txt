@@ -1,0 +1,109 @@
+
+# =============================================================================
+# sythball 3D数据 (1chunk/13f) - 4dir 数据集完整训练流程
+#   与 simple 唯一差别：train set 生成 4 个样本（前后左右），对应 move_action = W/S/A/D
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0. 环境变量 (根据你的机器调整)
+# -----------------------------------------------------------------------------
+export MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5
+export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
+
+# -----------------------------------------------------------------------------
+# 1. 生成 sythball 3D 数据 (4dir, 4 samples, 13 frames each; == 1 AR chunk)
+# -----------------------------------------------------------------------------
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f_4dir \
+  --split train --num_samples 4 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0 \
+  --hold_action_frames 4 --fixed_move_action_mode 4dir --fixed_view_action ""
+
+# （可选）test set：用于 eval（和 simple 一样，用随机动作即可）
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f \
+  --split test --num_samples 16 --num_frames 13 --fps 25 --width 256 --height 256 --seed 1000 \
+  --hold_action_frames 4
+
+# -----------------------------------------------------------------------------
+# 2. 预计算 latents (VAE encode + prompt embeds)
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo/hyw
+
+# train (4dir)
+python train/precompute_latents.py \
+  --raw_manifest data/sythball_v1_13f_4dir/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --transformer_version 480p_i2v \
+  --out_root data/sythball_v1_13f_4dir_modelinput/latent_pt/train \
+  --max_samples 4
+
+# test (可选，用于 eval)
+python train/precompute_latents.py \
+  --raw_manifest data/sythball_v1_13f/manifest_raw_test.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --transformer_version 480p_i2v \
+  --out_root data/sythball_v1_13f_modelinput/latent_pt/test \
+  --max_samples 16
+
+# -----------------------------------------------------------------------------
+# 3. 生成训练 JSON (组合 latent_path + pose_path + action_path)
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo/hyw
+
+python train/make_training_json.py \
+  --raw_manifest data/sythball_v1_13f_4dir/manifest_raw_train.json \
+  --latent_root data/sythball_v1_13f_4dir_modelinput/latent_pt/train \
+  --out_json data/sythball_v1_13f_4dir_modelinput/sythball_v1_13f_4dir_train_for_hyworld.json \
+  --max_samples 4
+
+# -----------------------------------------------------------------------------
+# 4. 训练
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo/hyw
+
+TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_4dir_modelinput/sythball_v1_13f_4dir_train_for_hyworld.json \
+OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_4dir_small \
+WANDB_RUN_NAME=hyworld_sythball_13f_4dir_small \
+NUM_FRAMES=13 NUM_LATENT_T=4 WINDOW_FRAMES=4 \
+NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
+MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
+TRAIN_VIDEO_LOG_STEPS=25 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
+bash train/run_train_small.sh
+
+# -----------------------------------------------------------------------------
+# 5. 评估 (使用 eval/eval_sythcircle_test.py，它是通用的)
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo
+
+# Base model eval（用于对比“训练前 vs 训练后”）
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_13f_4dir/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --out_dir hyw/outputs/hyworld_sythball_13f_4dir_small/eval_base \
+  --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --flow_shift 3.0 \
+  --dtype bf16 \
+  --seed 42 \
+  --fps 25 \
+  --model_type bi
+
+# Finetuned ckpt eval（把 checkpoint-XXX 改成你想测的）
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_13f_4dir/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_4dir_small/checkpoint-500 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_4dir_small/eval_ckpt500-3.0shift-bi \
+  --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --flow_shift 3.0 \
+  --dtype bf16 \
+  --seed 42 \
+  --fps 25 \
+  --model_type bi
+
+

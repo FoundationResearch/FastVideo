@@ -112,11 +112,14 @@ cd ~/alex/FastVideo
 
 # Base model（不加载 finetuned_ckpt）做 eval：用于对比“训练前 vs 训练后”
 python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_13f/manifest_raw_train.json \
+  --raw_manifest hyw/data/sythball_v1_13f_simple/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --out_dir hyw/outputs/hyworld_sythball_13f_small/eval_base \
+  --out_dir hyw/outputs/hyworld_sythball_13f_simple_small/eval_base \
   --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --flow_shift 3.0 \
+  --model_type bi \
   --max_samples 1 \
   --seed 42
 
