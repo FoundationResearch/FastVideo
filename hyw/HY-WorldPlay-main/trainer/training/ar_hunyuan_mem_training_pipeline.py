@@ -358,14 +358,17 @@ class TrainingPipeline(LoRAPipeline, ABC):
         # NOTE: "random" but deterministic given (seed, step) so runs are reproducible.
         vis_rank = 0
         if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
+            # NCCL backend does not support CPU tensors for collectives.
+            # Use the local CUDA device for broadcast (small tensors only).
+            bcast_device = get_local_torch_device()
             if self.global_rank == 0:
                 g = torch.Generator(device="cpu")
                 base_seed = int(getattr(self.training_args, "seed", 0) or 0)
                 g.manual_seed(base_seed * 1_000_003 + int(step))
                 vis_rank = int(torch.randint(0, int(self.world_size), (1,), generator=g).item())
-                vis_rank_t = torch.tensor([vis_rank], dtype=torch.int64, device="cpu")
+                vis_rank_t = torch.tensor([vis_rank], dtype=torch.int64, device=bcast_device)
             else:
-                vis_rank_t = torch.zeros((1,), dtype=torch.int64, device="cpu")
+                vis_rank_t = torch.zeros((1,), dtype=torch.int64, device=bcast_device)
             dist.broadcast(vis_rank_t, src=0)
             vis_rank = int(vis_rank_t.item())
 
@@ -380,8 +383,9 @@ class TrainingPipeline(LoRAPipeline, ABC):
 
         # Gather small scalar stats from the chosen visualization rank so rank0 can caption correctly.
         # (Do NOT try to allgather videos; write MP4 once and let rank0 log from filesystem.)
-        loss_gn = torch.tensor([0.0, 0.0], dtype=torch.float32, device="cpu")
-        t_sigma = torch.tensor([float("nan"), float("nan")], dtype=torch.float32, device="cpu")
+        bcast_device = get_local_torch_device() if (dist.is_available() and dist.is_initialized()) else torch.device("cpu")
+        loss_gn = torch.tensor([0.0, 0.0], dtype=torch.float32, device=bcast_device)
+        t_sigma = torch.tensor([float("nan"), float("nan")], dtype=torch.float32, device=bcast_device)
         if self.global_rank == vis_rank:
             try:
                 loss_gn[0] = float(training_batch.total_loss)
@@ -480,8 +484,8 @@ class TrainingPipeline(LoRAPipeline, ABC):
         if self.global_rank == 0:
             # Rank0 logs exactly once to WandB (avoid duplicate panels).
             # Caption uses stats from the visualization rank.
-            t_mean = float(t_sigma[0].item())
-            s_mean = float(t_sigma[1].item())
+            t_mean = float(t_sigma[0].detach().float().cpu().item())
+            s_mean = float(t_sigma[1].detach().float().cpu().item())
             overlay_lines = [f"step={step}"]
             if not math.isnan(t_mean) and not math.isnan(s_mean):
                 overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
@@ -490,7 +494,9 @@ class TrainingPipeline(LoRAPipeline, ABC):
             elif not math.isnan(s_mean):
                 overlay_lines.append(f"σ={s_mean:.3f}")
             overlay = "  ".join(overlay_lines)
-            caption = f"{overlay}  vis_rank={vis_rank}  loss={loss_gn[0].item():.6f} grad_norm={loss_gn[1].item():.3f}"
+            loss0 = float(loss_gn[0].detach().float().cpu().item())
+            gn0 = float(loss_gn[1].detach().float().cpu().item())
+            caption = f"{overlay}  vis_rank={vis_rank}  loss={loss0:.6f} grad_norm={gn0:.3f}"
             wandb.log(
                 {
                     "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),

@@ -63,6 +63,10 @@ python train/make_training_json.py \
 # -----------------------------------------------------------------------------
 cd ~/alex/FastVideo/hyw
 
+# NOTE:
+# - 本 4dir train set 只有 4 条样本；当 NUM_GPUS=4 且 --train-batch-size=1 时，
+#   每个 step 实际会并行消耗 4 条样本（每张卡 1 条），因此会看到 “1 step = 1 epoch”。
+# - 这是正常的；想看到每个 epoch 多个 step，可以把 NUM_GPUS 改小（如 1）或增大 num_samples。
 TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_13f_4dir_modelinput/sythball_v1_13f_4dir_train_for_hyworld.json \
 OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_13f_4dir_small \
 WANDB_RUN_NAME=hyworld_sythball_13f_4dir_small \
