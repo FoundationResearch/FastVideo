@@ -104,6 +104,15 @@ def generate_one_episode(
     """
     rng = np.random.default_rng(seed)
 
+    # For fixed-direction debug datasets (e.g. 4dir), enlarge bounds automatically so motion
+    # won't get clamped (notably: default cam_z=-2.0 equals default min_z=-2.0, so 'S' can look static).
+    if fixed_move_action is not None:
+        min_x, max_x, min_z, max_z = world_bounds_xz
+        # Rough upper bound on total displacement over the episode (t>0 frames).
+        # Keep it small but sufficient for 13f/1chunk debug runs and beyond.
+        margin = float(move_step * max(1, (num_frames - 1)) + 0.25)
+        world_bounds_xz = (min_x - margin, max_x + margin, min_z - margin, max_z + margin)
+
     K = make_intrinsic(width=width, height=height, fov_deg=fov_deg)
     rays_cam = precompute_camera_rays_cam(width, height, K)
 
