@@ -975,8 +975,11 @@ class TrainingPipeline(LoRAPipeline, ABC):
                     },
                     step=step,
                 )
-                # Optional: log decoded train-time videos (gt/noisy/pred)
-                self._log_train_videos_to_wandb(training_batch, step)
+
+            # Optional: log decoded train-time videos (gt/noisy/pred).
+            # IMPORTANT: must run on ALL ranks so round-robin `vis_rank` can decode/save from its local batch.
+            # Rank0 will be the only one that logs to WandB; other ranks only write mp4 when selected.
+            self._log_train_videos_to_wandb(training_batch, step)
 
             if step % self.training_args.checkpointing_steps == 0:
                 save_checkpoint(self.transformer, self.global_rank,
