@@ -386,7 +386,9 @@ class TrainingPipeline(LoRAPipeline, ABC):
         noisy_vid = _to_uint8_video(noisy_frames)
         x0_hat_vid = _to_uint8_video(x0_hat_frames)
 
-        os.makedirs(self.training_args.output_dir, exist_ok=True)
+        # Keep training output dir tidy: write VAE-decoded previews under a dedicated subfolder.
+        vis_dir = os.path.join(self.training_args.output_dir, "vae_during_training")
+        os.makedirs(vis_dir, exist_ok=True)
         # Add timestep/sigma stats overlay for clarity.
         t_stats = None
         if training_batch.timesteps is not None:
@@ -431,7 +433,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
         noisy_vid = noisy_vid[:T]
         x0_hat_vid = x0_hat_vid[:T]
         triptych = np.concatenate([gt_vid, noisy_vid, x0_hat_vid], axis=2)
-        triptych_path = os.path.join(self.training_args.output_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
+        triptych_path = os.path.join(vis_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
         imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
         caption = f"{overlay.replace(chr(10), '  ')}  loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"

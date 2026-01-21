@@ -207,8 +207,15 @@ def sequence_parallel_attention(q, k, v,
         value = torch.cat([encoder_value, value], dim=1)
 
         # prepare causal mask for chunk-wise attention
-        latent_seq_length = 1560      # set for hunyuanvideo 1.5, which is for 480 * 832 resolution
-        chunk_seq_length = 1560 * 4
+        # NOTE: This must match the *actual* latent token grid (H*W) for the current resolution.
+        # The previous implementation hardcoded 1560 (=30*52 for 480x832 with /16 VAE spatial compression),
+        # which breaks variable-resolution training/eval (e.g. 256x256 => H=W=16 => H*W=256).
+        if attn_param is not None and "thw" in attn_param and len(attn_param["thw"]) >= 3:
+            latent_seq_length = int(attn_param["thw"][-1]) * int(attn_param["thw"][-2])
+        else:
+            # Fallback to the legacy constant (kept only for safety/backward compatibility).
+            latent_seq_length = 1560
+        chunk_seq_length = latent_seq_length * 4
         chunk_num = (vision_seq_length) // chunk_seq_length
         causal_mask = torch.zeros((total_seq_length, total_seq_length), device=query.device)
         causal_mask[:, :text_seq_length] = 1  # no attention for the rest

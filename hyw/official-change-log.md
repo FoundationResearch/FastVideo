@@ -31,6 +31,19 @@
     - else: compute \(x_0\_hat = \epsilon - (\epsilon - x_0)\_hat\)
   - Overlay sampled diffusion timestep/sigma statistics onto the training preview video (top-left) and include them in the WandB caption for easier debugging. Updated to a compact two-line HUD (`step` on line 1, `t_mean` and `sigma_mean` on line 2) to fit low-res previews.
 
+### 2026-01-20 — Fix trainer attention hardcode for variable-resolution training + tidy VAE preview outputs
+
+- **Files**:
+  - `hyw/HY-WorldPlay-main/trainer/models/hyvideo/models/transformers/modules/attention.py`
+  - `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+- **What**:
+  - Remove the `torch_causal` attention mask hardcode `latent_seq_length=1560` (which implicitly assumed 480×832 /16 → 30×52 tokens).
+  - Compute `latent_seq_length = thw[-2] * thw[-1]` from `attn_param["thw"]` so the chunk-wise causal mask works for **variable resolutions** (e.g. 256×256 → 16×16 tokens).
+  - Write train-time decoded VAE preview MP4s into `<output_dir>/vae_during_training/` instead of polluting `<output_dir>/`.
+- **Why**:
+  - The hardcoded 1560 caused immediate numerical divergence between training vs inference paths at the first transformer block when running non-480p settings.
+  - Keeping VAE previews under a dedicated folder makes experiments easier to manage.
+
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
 - **File**: `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`
