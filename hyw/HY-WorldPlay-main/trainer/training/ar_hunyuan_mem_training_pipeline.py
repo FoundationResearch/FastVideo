@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 import dataclasses
-import json
 import math
 import os
 import time
@@ -373,7 +372,6 @@ class TrainingPipeline(LoRAPipeline, ABC):
         vis_dir = os.path.join(self.training_args.output_dir, "vae_during_training")
         os.makedirs(vis_dir, exist_ok=True)
         triptych_path = os.path.join(vis_dir, f"train_step_{step:06d}_rank{vis_rank}_gt_noisy_x0hat.mp4")
-        stats_path = os.path.join(vis_dir, f"train_step_{step:06d}_rank{vis_rank}_stats.json")
 
         # Load VAE on every rank (cached) so that when it's a rank's turn it can decode immediately.
         # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
@@ -403,17 +401,6 @@ class TrainingPipeline(LoRAPipeline, ABC):
                 t_mean = float(training_batch.timesteps.detach().float().mean().cpu().item())
             if training_batch.sigmas is not None:
                 s_mean = float(training_batch.sigmas.detach().float().mean().cpu().item())
-            loss0 = float(getattr(training_batch, "total_loss", 0.0) or 0.0)
-            gn0 = float(getattr(training_batch, "grad_norm", 0.0) or 0.0)
-            try:
-                with open(stats_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        {"vis_rank": vis_rank, "t_mean": t_mean, "sigma_mean": s_mean, "loss": loss0, "grad_norm": gn0},
-                        f,
-                        indent=2,
-                    )
-            except Exception:
-                pass
 
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
                 gt_frames = _vae_decode_video_frames(vae, gt_latents)
@@ -469,26 +456,11 @@ class TrainingPipeline(LoRAPipeline, ABC):
 
         if self.global_rank == 0:
             # Rank0 logs exactly once to WandB (avoid duplicate panels).
-            # Caption uses stats written by vis_rank (sidecar JSON). Avoid collectives by polling filesystem.
-            t_mean = float("nan")
-            s_mean = float("nan")
-            loss0 = float("nan")
-            gn0 = float("nan")
-            # Wait up to ~120s for the mp4 (and stats) to appear.
+            # Avoid collectives by polling filesystem for the expected MP4.
             timeout_s = float(os.environ.get("TRAIN_VIDEO_LOG_TIMEOUT_S", "120"))
             t0 = time.time()
             while (not os.path.exists(triptych_path)) and (time.time() - t0 < timeout_s):
                 time.sleep(0.2)
-            # Stats is optional; try best-effort.
-            if os.path.exists(stats_path):
-                try:
-                    st = json.loads(open(stats_path, "r", encoding="utf-8").read())
-                    t_mean = float(st.get("t_mean", t_mean))
-                    s_mean = float(st.get("sigma_mean", s_mean))
-                    loss0 = float(st.get("loss", loss0))
-                    gn0 = float(st.get("grad_norm", gn0))
-                except Exception:
-                    pass
 
             if not os.path.exists(triptych_path):
                 logger.warning(
@@ -499,15 +471,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
                 )
                 return
 
-            overlay_lines = [f"step={step}"]
-            if not math.isnan(t_mean) and not math.isnan(s_mean):
-                overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
-            elif not math.isnan(t_mean):
-                overlay_lines.append(f"t={t_mean:.0f}")
-            elif not math.isnan(s_mean):
-                overlay_lines.append(f"σ={s_mean:.3f}")
-            overlay = "  ".join(overlay_lines)
-            caption = f"{overlay}  vis_rank={vis_rank}  loss={loss0:.6f} grad_norm={gn0:.3f}"
+            caption = f"step={step}  vis_rank={vis_rank}"
             wandb.log(
                 {
                     "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),

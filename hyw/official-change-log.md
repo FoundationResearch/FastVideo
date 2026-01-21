@@ -53,8 +53,7 @@
     - On each log event, choose `vis_rank = log_idx % world_size` (round-robin: first save rank0, second save rank1, ...).
     - Only `vis_rank` decodes its **local** batch and writes:
       - `train_step_XXXXXX_rankR_gt_noisy_x0hat.mp4`
-      - `train_step_XXXXXX_rankR_stats.json` (t/sigma/loss/grad_norm for caption)
-    - Rank0 logs to WandB exactly once by **polling the filesystem** for the expected MP4 (and reading the stats JSON), avoiding `dist.broadcast/barrier`.
+    - Rank0 logs to WandB exactly once by **polling the filesystem** for the expected MP4, avoiding `dist.broadcast/barrier`.
     - Optional env var: `TRAIN_VIDEO_LOG_TIMEOUT_S` (default 120s) to control rank0's wait time for the MP4.
   - Bugfix: ensure `_log_train_videos_to_wandb()` is invoked on **all ranks** (not only rank0), otherwise non-zero `vis_rank` would never write.
 - **Why**:
