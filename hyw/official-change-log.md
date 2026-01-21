@@ -44,6 +44,16 @@
   - The hardcoded 1560 caused immediate numerical divergence between training vs inference paths at the first transformer block when running non-480p settings.
   - Keeping VAE previews under a dedicated folder makes experiments easier to manage.
 
+### 2026-01-21 — Train-time VAE preview decode runs on a random GPU rank (rank0 logs only)
+
+- **File**: `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+- **What**:
+  - Change `_log_train_videos_to_wandb()` so VAE decode + MP4 writing is performed by a **deterministically-randomly selected `vis_rank` per step** (chosen on rank0 and broadcast).
+  - Rank0 waits (`dist.barrier()`) and logs the single MP4 to WandB to avoid duplicate videos.
+  - Caption stats (`loss/grad_norm/t_mean/sigma_mean`) are broadcast from `vis_rank` to rank0 so the caption matches the decoded video.
+- **Why**:
+  - Avoid concentrating decode overhead on GPU0; spread the visualization cost across GPUs without affecting training computation.
+
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
 - **File**: `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`

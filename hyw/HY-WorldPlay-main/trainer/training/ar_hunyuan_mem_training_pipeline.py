@@ -332,10 +332,11 @@ class TrainingPipeline(LoRAPipeline, ABC):
     @torch.no_grad()
     def _log_train_videos_to_wandb(self, training_batch: TrainingBatch, step: int) -> None:
         """
-        Log gt/noisy/pred decoded videos to wandb (rank0 only).
+        Log gt/noisy/pred decoded videos to wandb.
+
+        To avoid always decoding on GPU0, we pick a (deterministic) random visualization rank per step.
+        Only that rank runs VAE decode + writes the MP4. Rank0 then logs the MP4 to WandB.
         """
-        if self.global_rank != 0:
-            return
         if not self._should_log_train_videos(step):
             return
         if self.training_args.sp_size > 1:
@@ -351,98 +352,151 @@ class TrainingPipeline(LoRAPipeline, ABC):
         if training_batch.model_pred is None:
             return
 
+        # -----------------------------
+        # Choose a visualization rank.
+        # -----------------------------
+        # NOTE: "random" but deterministic given (seed, step) so runs are reproducible.
+        vis_rank = 0
+        if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
+            if self.global_rank == 0:
+                g = torch.Generator(device="cpu")
+                base_seed = int(getattr(self.training_args, "seed", 0) or 0)
+                g.manual_seed(base_seed * 1_000_003 + int(step))
+                vis_rank = int(torch.randint(0, int(self.world_size), (1,), generator=g).item())
+                vis_rank_t = torch.tensor([vis_rank], dtype=torch.int64, device="cpu")
+            else:
+                vis_rank_t = torch.zeros((1,), dtype=torch.int64, device="cpu")
+            dist.broadcast(vis_rank_t, src=0)
+            vis_rank = int(vis_rank_t.item())
+
         max_samples = int(getattr(self.training_args, "train_video_log_max_samples", 1) or 1)
         max_samples = max(1, max_samples)
         fps = int(getattr(self.training_args, "train_video_log_fps", 25) or 25)
 
-        device = get_local_torch_device()
-        # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
-        vae = self.get_module("vae", None) or self._get_train_vis_vae()
-
-        # Build x0_hat latents for visualization (does NOT affect training).
-        # - If precondition_outputs=True, `model_pred` is already transformed into x0_hat.
-        # - Else, training target is (noise - latents) = (epsilon - x0), so x0_hat = epsilon - v_hat.
-        if self.training_args.precondition_outputs:
-            x0_hat_latents = training_batch.model_pred
-        else:
-            x0_hat_latents = training_batch.noise - training_batch.model_pred
-
-        gt_latents = training_batch.latents[:max_samples].to(device)
-        noisy_latents = training_batch.noisy_model_input[:max_samples].to(device)
-        x0_hat_latents = x0_hat_latents[:max_samples].to(device)
-
-        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
-            gt_frames = _vae_decode_video_frames(vae, gt_latents)
-            noisy_frames = _vae_decode_video_frames(vae, noisy_latents)
-            x0_hat_frames = _vae_decode_video_frames(vae, x0_hat_latents)
-
-        def _to_uint8_video(frames01: torch.Tensor) -> np.ndarray:
-            # (B,3,T,H,W) -> (T,H,W,3) uint8 (only first sample)
-            x = frames01[0].detach().cpu()
-            x = (x * 255.0).clamp(0, 255).to(torch.uint8)
-            return x.permute(1, 2, 3, 0).numpy()
-
-        gt_vid = _to_uint8_video(gt_frames)
-        noisy_vid = _to_uint8_video(noisy_frames)
-        x0_hat_vid = _to_uint8_video(x0_hat_frames)
-
         # Keep training output dir tidy: write VAE-decoded previews under a dedicated subfolder.
         vis_dir = os.path.join(self.training_args.output_dir, "vae_during_training")
         os.makedirs(vis_dir, exist_ok=True)
-        # Add timestep/sigma stats overlay for clarity.
-        t_stats = None
-        if training_batch.timesteps is not None:
-            t = training_batch.timesteps.detach().float().cpu()
-            t_stats = (float(t.min().item()), float(t.mean().item()), float(t.max().item()))
-        s_stats = None
-        if training_batch.sigmas is not None:
-            s = training_batch.sigmas.detach().float().cpu()
-            s_stats = (float(s.min().item()), float(s.mean().item()), float(s.max().item()))
-        # Keep overlay short for low-res videos (e.g. 256x256). Prefer means only.
-        overlay_lines = [f"step={step}"]
-        if t_stats is not None and s_stats is not None:
-            overlay_lines.append(f"t={t_stats[1]:.0f}  σ={s_stats[1]:.3f}")
-        elif t_stats is not None:
-            overlay_lines.append(f"t={t_stats[1]:.0f}")
-        elif s_stats is not None:
-            overlay_lines.append(f"σ={s_stats[1]:.3f}")
-        overlay = "\n".join(overlay_lines)
-
-        def _draw_overlay(frames: np.ndarray) -> np.ndarray:
-            try:
-                font = ImageFont.load_default()
-            except Exception:
-                font = None
-            out = frames.copy()
-            for i in range(out.shape[0]):
-                im = Image.fromarray(out[i])
-                draw = ImageDraw.Draw(im)
-                # Two-line HUD: reserve enough height.
-                hud_h = 34
-                draw.rectangle([(0, 0), (im.size[0], hud_h)], fill=(0, 0, 0))
-                draw.multiline_text((4, 2), overlay, fill=(255, 255, 255), font=font, spacing=0)
-                out[i] = np.asarray(im)
-            return out
-
-        gt_vid = _draw_overlay(gt_vid)
-        noisy_vid = _draw_overlay(noisy_vid)
-        x0_hat_vid = _draw_overlay(x0_hat_vid)
-        # Combine into one side-by-side (GT | noisy | x0_hat) so wandb shows a single video panel.
-        T = min(gt_vid.shape[0], noisy_vid.shape[0], x0_hat_vid.shape[0])
-        gt_vid = gt_vid[:T]
-        noisy_vid = noisy_vid[:T]
-        x0_hat_vid = x0_hat_vid[:T]
-        triptych = np.concatenate([gt_vid, noisy_vid, x0_hat_vid], axis=2)
         triptych_path = os.path.join(vis_dir, f"train_step_{step:06d}_gt_noisy_x0hat.mp4")
-        imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
 
-        caption = f"{overlay.replace(chr(10), '  ')}  loss={training_batch.total_loss:.6f} grad_norm={training_batch.grad_norm}"
-        wandb.log(
-            {
-                "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),
-            },
-            step=step,
-        )
+        # Gather small scalar stats from the chosen visualization rank so rank0 can caption correctly.
+        # (Do NOT try to allgather videos; write MP4 once and let rank0 log from filesystem.)
+        loss_gn = torch.tensor([0.0, 0.0], dtype=torch.float32, device="cpu")
+        t_sigma = torch.tensor([float("nan"), float("nan")], dtype=torch.float32, device="cpu")
+        if self.global_rank == vis_rank:
+            try:
+                loss_gn[0] = float(training_batch.total_loss)
+            except Exception:
+                loss_gn[0] = 0.0
+            try:
+                loss_gn[1] = float(training_batch.grad_norm)
+            except Exception:
+                loss_gn[1] = 0.0
+            if training_batch.timesteps is not None:
+                t_sigma[0] = float(training_batch.timesteps.detach().float().mean().cpu().item())
+            if training_batch.sigmas is not None:
+                t_sigma[1] = float(training_batch.sigmas.detach().float().mean().cpu().item())
+        if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
+            dist.broadcast(loss_gn, src=vis_rank)
+            dist.broadcast(t_sigma, src=vis_rank)
+
+        # -----------------------------
+        # Decode only on the chosen rank.
+        # -----------------------------
+        if self.global_rank == vis_rank:
+            device = get_local_torch_device()
+            # NOTE: training pipeline does not necessarily load VAE; use a dedicated VAE for visualization.
+            vae = self.get_module("vae", None) or self._get_train_vis_vae()
+
+            # Build x0_hat latents for visualization (does NOT affect training).
+            # - If precondition_outputs=True, `model_pred` is already transformed into x0_hat.
+            # - Else, training target is (noise - latents) = (epsilon - x0), so x0_hat = epsilon - v_hat.
+            if self.training_args.precondition_outputs:
+                x0_hat_latents = training_batch.model_pred
+            else:
+                x0_hat_latents = training_batch.noise - training_batch.model_pred
+
+            gt_latents = training_batch.latents[:max_samples].to(device)
+            noisy_latents = training_batch.noisy_model_input[:max_samples].to(device)
+            x0_hat_latents = x0_hat_latents[:max_samples].to(device)
+
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True):
+                gt_frames = _vae_decode_video_frames(vae, gt_latents)
+                noisy_frames = _vae_decode_video_frames(vae, noisy_latents)
+                x0_hat_frames = _vae_decode_video_frames(vae, x0_hat_latents)
+
+            def _to_uint8_video(frames01: torch.Tensor) -> np.ndarray:
+                # (B,3,T,H,W) -> (T,H,W,3) uint8 (only first sample)
+                x = frames01[0].detach().cpu()
+                x = (x * 255.0).clamp(0, 255).to(torch.uint8)
+                return x.permute(1, 2, 3, 0).numpy()
+
+            gt_vid = _to_uint8_video(gt_frames)
+            noisy_vid = _to_uint8_video(noisy_frames)
+            x0_hat_vid = _to_uint8_video(x0_hat_frames)
+
+            # Add timestep/sigma overlay for clarity (compact for low-res videos).
+            overlay_lines = [f"step={step}"]
+            t_mean = float(t_sigma[0].item())
+            s_mean = float(t_sigma[1].item())
+            if not math.isnan(t_mean) and not math.isnan(s_mean):
+                overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
+            elif not math.isnan(t_mean):
+                overlay_lines.append(f"t={t_mean:.0f}")
+            elif not math.isnan(s_mean):
+                overlay_lines.append(f"σ={s_mean:.3f}")
+            overlay = "\n".join(overlay_lines)
+
+            def _draw_overlay(frames: np.ndarray) -> np.ndarray:
+                try:
+                    font = ImageFont.load_default()
+                except Exception:
+                    font = None
+                out = frames.copy()
+                for i in range(out.shape[0]):
+                    im = Image.fromarray(out[i])
+                    draw = ImageDraw.Draw(im)
+                    hud_h = 34
+                    draw.rectangle([(0, 0), (im.size[0], hud_h)], fill=(0, 0, 0))
+                    draw.multiline_text((4, 2), overlay, fill=(255, 255, 255), font=font, spacing=0)
+                    out[i] = np.asarray(im)
+                return out
+
+            gt_vid = _draw_overlay(gt_vid)
+            noisy_vid = _draw_overlay(noisy_vid)
+            x0_hat_vid = _draw_overlay(x0_hat_vid)
+
+            # Combine into one side-by-side (GT | noisy | x0_hat) so wandb shows a single video panel.
+            T = min(gt_vid.shape[0], noisy_vid.shape[0], x0_hat_vid.shape[0])
+            gt_vid = gt_vid[:T]
+            noisy_vid = noisy_vid[:T]
+            x0_hat_vid = x0_hat_vid[:T]
+            triptych = np.concatenate([gt_vid, noisy_vid, x0_hat_vid], axis=2)
+            imageio.mimsave(triptych_path, triptych, fps=fps, format="mp4")
+
+        # Ensure the chosen rank finished writing before rank0 logs.
+        if dist.is_available() and dist.is_initialized() and int(getattr(self, "world_size", 1) or 1) > 1:
+            dist.barrier()
+
+        if self.global_rank == 0:
+            # Rank0 logs exactly once to WandB (avoid duplicate panels).
+            # Caption uses stats from the visualization rank.
+            t_mean = float(t_sigma[0].item())
+            s_mean = float(t_sigma[1].item())
+            overlay_lines = [f"step={step}"]
+            if not math.isnan(t_mean) and not math.isnan(s_mean):
+                overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
+            elif not math.isnan(t_mean):
+                overlay_lines.append(f"t={t_mean:.0f}")
+            elif not math.isnan(s_mean):
+                overlay_lines.append(f"σ={s_mean:.3f}")
+            overlay = "  ".join(overlay_lines)
+            caption = f"{overlay}  vis_rank={vis_rank}  loss={loss_gn[0].item():.6f} grad_norm={loss_gn[1].item():.3f}"
+            wandb.log(
+                {
+                    "train_video_gt_noisy_x0hat": wandb.Video(triptych_path, caption=caption),
+                },
+                step=step,
+            )
 
     def _prepare_training(self, training_batch: TrainingBatch) -> TrainingBatch:
         self.transformer.train()
