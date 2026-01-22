@@ -316,6 +316,51 @@ if training_batch.select_window_out_flag == 1 and self.causal:
 
 ---
 
+### 4.5 噪声/时间步（timestep）在时间维度上的分配方式（in-window vs out-window）
+
+这里回答一个很容易困惑但非常关键的问题：**当 in-window 输入里包含多个 chunk 时，每个 chunk 的噪声时间步一样还是不一样？**
+
+结论（对照训练代码）：
+- **in-window**：timestep 是按 **chunk（4 个 latent）** 为单位分配的：**同一个 chunk 内 4 个 latent 的 timestep 相同**；不同 chunk 的 timestep 通常不同。
+- **out-window（memory）**：在上面的基础上，代码会把“历史部分（除最后一个 chunk 外）”的 timestep 强行改成**很大的噪声**（随机落在 500～985），而最后一个 chunk（当前要学的 chunk）保留原本采样出来的 timestep。
+
+对应实现都在 `_prepare_ar_dit_inputs`（注意 `chunk_latent_num=4`）：
+
+```575:623:hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py
+# add a parameter: chunk_latent_num means number of latent in one chunk
+chunk_latent_num = 4
+first_chunk_num = 4
+u = compute_density_for_timestep_sampling(
+    weighting_scheme=self.training_args.weighting_scheme,
+    batch_size=batch_size * ((latent_t - first_chunk_num) // chunk_latent_num + 1),
+    ...
+)
+u = u.reshape(batch_size, -1)
+...
+# 关键：把每个采样到的 u 重复 4 次 -> 一个 chunk 的 4 个 latent 共用一个 timestep
+u = u.unsqueeze(-1).repeat_interleave(chunk_latent_num, dim=-1).reshape(batch_size, -1).reshape(-1)
+indices = (u * self.noise_scheduler.config.num_train_timesteps).long()
+indices = (self.noise_scheduler.config.num_train_timesteps - self.timestep_transform(indices, self.train_time_shift)).long()
+
+# out-window（memory）额外处理：把除最后一个 chunk 外的 chunk timestep 改成高噪声
+if training_batch.select_window_out_flag == 1:
+    for i in range(0, indices.shape[0] - 4, 4):
+        rand_val = torch.randint(500, 985, (1, ), device=latents.device)
+        indices[i:i + 4] = rand_val
+
+timesteps = self.noise_scheduler.timesteps[indices].to(device=self.device)
+...
+noisy_model_input = (1.0 - sigmas) * training_batch.latents + sigmas * noise
+```
+
+用一个直观例子说明（假设 in-window 输入 `window_frames=16`，即 4 个 chunk）：
+- chunk0（latent 0..3）共享 timestep \(t_0\)
+- chunk1（latent 4..7）共享 timestep \(t_1\)
+- chunk2（latent 8..11）共享 timestep \(t_2\)
+- chunk3（latent 12..15）共享 timestep \(t_3\)
+
+而 out-window 时，代码会把 chunk0..chunk2 的 timestep 改成高噪声（500～985），只保留 chunk3（最后 4 个 latent）的原采样 timestep 用于“真正学习/监督”的那一段（并且 loss 也会被 mask 到最后 4 个 latent）。
+
 ### 5. 推理/生成如何处理不同长度视频？
 
 推理端关键是：
