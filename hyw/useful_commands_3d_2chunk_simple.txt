@@ -1,0 +1,172 @@
+
+# =============================================================================
+# sythball 3D数据：2-chunk（AR）训练流程（simple/debug）
+# =============================================================================
+#
+# 关键对齐（官方实现）：
+# - VAE 时间压缩比 temporal_compression_ratio=4
+# - latent 帧数 L = (F-1)//4 + 1
+# - HY-WorldPlay 的 AR rollout 按 latent 维度切 chunk：chunk_latent_frames=4
+# - 推理侧：chunk_num = latent_frames // chunk_latent_frames
+# - 训练侧：dataset 会把 latent 长度截到 4 的倍数：max_length = latent_length//4*4
+#
+# 因此，“2 个 chunk”最稳的设置是：
+#   L = 8  (== 2 * 4)
+#   F = 4*(L-1)+1 = 29
+#
+# 注意：如果你用 F=30/31/32，依然会 encode 成 L=8，但最后几帧会被 VAE/pose 对齐逻辑丢弃。
+
+
+# -----------------------------------------------------------------------------
+# 0. 环境变量 (根据你的机器调整)
+# -----------------------------------------------------------------------------
+export MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5
+export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
+
+
+# -----------------------------------------------------------------------------
+# 1. 生成 sythball 3D 数据（2 chunks）
+# -----------------------------------------------------------------------------
+# train set (debug: 1 sample; 29 frames -> latent_T=8 -> 2 chunks)
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_29f_2chunk_simple \
+  --split train --num_samples 1 --num_frames 29 --fps 25 --width 256 --height 256 --seed 0 \
+  --hold_action_frames 4 --fixed_move_action W --fixed_view_action ""
+
+# test set (可选，用于 eval；建议多一些样本看泛化)
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_29f_2chunk \
+  --split test --num_samples 16 --num_frames 29 --fps 25 --width 256 --height 256 --seed 1000 \
+  --hold_action_frames 4
+
+
+# -----------------------------------------------------------------------------
+# 2. 预计算 latents (VAE encode + prompt embeds)
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo/hyw
+
+# train
+python train/precompute_latents.py \
+  --raw_manifest data/sythball_v1_29f_2chunk_simple/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --transformer_version 480p_i2v \
+  --out_root data/sythball_v1_29f_2chunk_simple_modelinput/latent_pt/train \
+  --max_samples 32
+
+# test (可选)
+python train/precompute_latents.py \
+  --raw_manifest data/sythball_v1_29f_2chunk/manifest_raw_test.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --transformer_version 480p_i2v \
+  --out_root data/sythball_v1_29f_2chunk_modelinput/latent_pt/test \
+  --max_samples 16
+
+
+# -----------------------------------------------------------------------------
+# 3. 生成训练 JSON (组合 latent_path + pose_path + action_path)
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo/hyw
+
+# train
+python train/make_training_json.py \
+  --raw_manifest data/sythball_v1_29f_2chunk_simple/manifest_raw_train.json \
+  --latent_root data/sythball_v1_29f_2chunk_simple_modelinput/latent_pt/train \
+  --out_json data/sythball_v1_29f_2chunk_simple_modelinput/sythball_v1_29f_2chunk_train_for_hyworld.json \
+  --max_samples 32
+
+# test (可选)
+python train/make_training_json.py \
+  --raw_manifest data/sythball_v1_29f_2chunk/manifest_raw_test.json \
+  --latent_root data/sythball_v1_29f_2chunk_modelinput/latent_pt/test \
+  --out_json data/sythball_v1_29f_2chunk_modelinput/sythball_v1_29f_2chunk_test_for_hyworld.json \
+  --max_samples 16
+
+
+# -----------------------------------------------------------------------------
+# 4. 训练（AR, 2 chunks）
+# -----------------------------------------------------------------------------
+# 2 chunks 对应：
+#   NUM_LATENT_T=8
+#   NUM_FRAMES=29
+#   WINDOW_FRAMES=8   (window_frames 是 latent 维度长度；这里就是“窗口覆盖 2 chunks”)
+cd ~/alex/FastVideo/hyw
+
+TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_29f_2chunk_simple_modelinput/sythball_v1_29f_2chunk_train_for_hyworld.json \
+OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_29f_2chunk_simple_small \
+WANDB_RUN_NAME=hyworld_sythball_29f_2chunk_simple_small \
+NUM_FRAMES=29 NUM_LATENT_T=8 WINDOW_FRAMES=8 \
+NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
+MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
+TRAIN_VIDEO_LOG_STEPS=25 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
+bash train/run_train_small.sh
+
+# NOTE:
+# - 数据很小（1 sample）时用 1 GPU 更稳（避免 drop_last 导致 0 batch）。
+# - 2 chunks 的短序列不支持 “outside-window chunk” 采样（latent_T 太短），这是预期行为。
+
+
+# -----------------------------------------------------------------------------
+# 5. 从 checkpoint 恢复训练 (可选)
+# -----------------------------------------------------------------------------
+RESUME_CKPT=~/alex/FastVideo/hyw/outputs/hyworld_sythball_29f_2chunk_simple_small/checkpoint-500 \
+TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_29f_2chunk_simple_modelinput/sythball_v1_29f_2chunk_train_for_hyworld.json \
+OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_29f_2chunk_simple_small \
+WANDB_RUN_NAME=hyworld_sythball_29f_2chunk_simple_small_resumed \
+NUM_FRAMES=29 NUM_LATENT_T=8 WINDOW_FRAMES=8 \
+NUM_GPUS=1 CUDA_VISIBLE_DEVICES=0 \
+bash train/run_train_small.sh
+
+
+# -----------------------------------------------------------------------------
+# 6. 评估（通用脚本 eval/eval_sythcircle_test.py）
+# -----------------------------------------------------------------------------
+cd ~/alex/FastVideo
+
+# Base model（不加载 finetuned_ckpt）：用于对比“训练前 vs 训练后”
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_29f_2chunk_simple/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --out_dir hyw/outputs/hyworld_sythball_29f_2chunk_simple_small/eval_base \
+  --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --flow_shift 3.0 \
+  --model_type bi \
+  --max_samples 1 \
+  --seed 42
+
+# 用训练数据做 eval (overfit 检查)
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_29f_2chunk_simple/manifest_raw_train.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_29f_2chunk_simple_small/checkpoint-500 \
+  --out_dir hyw/outputs/hyworld_sythball_29f_2chunk_simple_small/eval_ckpt500-3.0shift-ar \
+  --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --max_samples 1 \
+  --flow_shift 3.0 \
+  --model_type ar \
+  --print_weight_delta \
+  --seed 42
+
+
+# -----------------------------------------------------------------------------
+# 6b. 诊断：用 trainer(transformer) 的 forward 跑完整 50-step denoising（对齐训练逻辑）
+# -----------------------------------------------------------------------------
+python -m hyw.eval.infer_with_trainer_transformer_50step \
+  --train_json hyw/data/sythball_v1_29f_2chunk_simple_modelinput/sythball_v1_29f_2chunk_train_for_hyworld.json \
+  --sample_idx 0 \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_29f_2chunk_simple_small/checkpoint-500 \
+  --out_dir hyw/outputs/hyworld_sythball_29f_2chunk_simple_small/infer_trainer_50step_ckpt500 \
+  --num_inference_steps 50 \
+  --flow_shift 3.0 \
+  --dtype bf16 \
+  --seed 42 \
+  --fps 25
+
+
