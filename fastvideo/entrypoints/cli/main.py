@@ -2,6 +2,7 @@
 # adapted from vllm: https://github.com/vllm-project/vllm/blob/v0.7.3/vllm/entrypoints/cli/main.py
 
 from fastvideo.entrypoints.cli.cli_types import CLISubcommand
+from fastvideo.entrypoints.cli.add_new_model import cmd_init as add_new_model_cmd_init
 from fastvideo.entrypoints.cli.add_new_model_like import (
     cmd_init as add_new_model_like_cmd_init,
 )
@@ -13,6 +14,7 @@ def cmd_init() -> list[CLISubcommand]:
     """Initialize all commands from separate modules"""
     commands = []
     commands.extend(generate_cmd_init())
+    commands.extend(add_new_model_cmd_init())
     commands.extend(add_new_model_like_cmd_init())
     return commands
 
