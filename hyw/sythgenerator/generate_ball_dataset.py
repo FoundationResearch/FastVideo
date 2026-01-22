@@ -90,7 +90,9 @@ def generate_one_episode(
     hold_action_frames: int = 4,
     fixed_move_action: str | None = None,
     fixed_view_action: str | None = None,
-    world_bounds_xz: tuple[float, float, float, float] = (-2.0, 2.0, -2.0, 3.0),
+    # (min_x, max_x, min_z, max_z) in world coordinates.
+    # Default enlarged 2x vs legacy (-2,2,-2,3) to reduce boundary clamping for short debug runs.
+    world_bounds_xz: tuple[float, float, float, float] = (-4.0, 4.0, -4.0, 6.0),
 ) -> dict:
     """
     Generates a simple 3D scene ("sythball"):
@@ -146,18 +148,19 @@ def generate_one_episode(
             cur_move_action = ""
             cur_view_action = ""
         else:
-            # Simple mode overrides: keep a fixed move/view action for the entire episode (t>0).
-            # This is useful for debugging/overfitting (reduce stochasticity).
-            if fixed_move_action is not None or fixed_view_action is not None:
-                cur_move_action = fixed_move_action or ""
-                cur_view_action = fixed_view_action or ""
-            else:
-                # Default: update actions only on block boundaries (e.g., t=4,8,12,... for hold_action_frames=4)
-                if (t % hold_action_frames) == 0:
-                    # Occasionally change the macro actions to avoid trivial straight lines
-                    if macro_period > 0 and (t % macro_period) == 0:
-                        macro_move, macro_view = _sample_episode_macro_actions(rng)
+            # Update actions only on block boundaries (e.g., t=4,8,12,... for hold_action_frames=4)
+            # to align with latent steps (1 latent ~= 4 frames).
+            if (t % hold_action_frames) == 0:
+                # Occasionally change the macro actions to avoid trivial straight lines
+                if macro_period > 0 and (t % macro_period) == 0:
+                    macro_move, macro_view = _sample_episode_macro_actions(rng)
 
+                # Allow fixing move/view independently:
+                # - fixed_view_action="" + fixed_move_action=None => "no view rotation + random move"
+                # - fixed_move_action="W" + fixed_view_action=None => "fixed move + random view"
+                if fixed_move_action is not None:
+                    cur_move_action = fixed_move_action or ""
+                else:
                     cur_move_action = _micro_action(
                         rng,
                         macro_move,
@@ -166,6 +169,10 @@ def generate_one_episode(
                         alt_prob=move_alt_prob,
                         alts=move_alts,
                     )
+
+                if fixed_view_action is not None:
+                    cur_view_action = fixed_view_action or ""
+                else:
                     cur_view_action = _micro_action(
                         rng,
                         macro_view,

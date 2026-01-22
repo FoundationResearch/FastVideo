@@ -20,9 +20,10 @@ python -m hyw.sythgenerator sythball \
 
 # （可选）test set：用于 eval（和 simple 一样，用随机动作即可）
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f \
-  --split test --num_samples 16 --num_frames 13 --fps 25 --width 256 --height 256 --seed 1000 \
-  --hold_action_frames 4
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f_noview \
+  --split test --num_samples 4 --num_frames 13 --fps 25 --width 256 --height 256 --seed 1000 \
+  --macro_period 4 \
+  --hold_action_frames 4 --fixed_view_action ""
 
 # -----------------------------------------------------------------------------
 # 2. 预计算 latents (VAE encode + prompt embeds)
@@ -90,26 +91,33 @@ python hyw/eval/eval_sythcircle_test.py \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
-  --dtype bf16 \
   --seed 42 \
-  --fps 25 \
-  --model_type bi \
-  --max_samples 1 \
+  --model_type ar \
+  --max_samples 4
 
 # Finetuned ckpt eval（把 checkpoint-XXX 改成你想测的）
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_13f_4dir/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_4dir_small/checkpoint-500 \
-  --out_dir hyw/outputs/hyworld_sythball_13f_4dir_small/eval_ckpt500-3.0shift-bi \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_4dir_small/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_4dir_small/eval_ckpt2000-3.0shift-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
-  --dtype bf16 \
   --seed 42 \
-  --fps 25 \
-  --model_type bi \
-  --max_samples 1 \
+  --model_type ar \
+  --max_samples 4
 
-
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_13f_noview/manifest_raw_test.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt $ACTION_CKPT \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_13f_4dir_small/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_13f_4dir_small/eval_ckpt2000-3.0shift-ar-noview-test \
+  --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --flow_shift 3.0 \
+  --seed 42 \
+  --model_type ar \
+  --max_samples 4
