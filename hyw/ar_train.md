@@ -147,6 +147,41 @@ dataset 每次会按概率选一种形态：
 - 用 `select_aligned_memory_frames(...)` 从历史里挑 memory
 - 最后把 **当前 chunk 的 4 个 latent**接到序列尾部
 
+下面用 **ASCII** 画一下两种模式。注意单位全都是 **latent index**，并且 `pred_latent_size=4` 表示 **1 chunk = 4 个 latent**：
+
+**B) in-window（概率 0.2）**：直接取开头一段连续 latent（长度 = `window_frames`）：
+
+```text
+原视频 latent 时间轴（latent_T 很长）:
+  [0 1 2 3][4 5 6 7][8 9 10 11][12 13 14 15][16 17 18 19] ...
+
+in-window 取法（window_frames=16 举例）:
+  取前 16 个 latent（=4 chunks）
+  -> 输入给模型的是:
+     [0 1 2 3][4 5 6 7][8 9 10 11][12 13 14 15]
+
+  这里要特别注意：
+  - pred_latent_size=4 只用于 out-window（表示“当前要预测的 1 个 chunk”）
+  - in-window 分支里 pred_latent_size = window_frames
+  - 所以当 window_frames=16 时，模型会对这 16 个 latent 都输出预测（shape 与 latents 相同），loss 也默认覆盖全部 16（不像 out-window 会 mask 只监督最后 4 个）。
+```
+
+**A) out-window / memory（概率 0.8）**：从窗口之后选一个 “当前 chunk 起点” `current_frame_idx`（chunk 对齐），再从历史里挑一些 memory latent，最后把当前 chunk 拼到末尾：
+
+```text
+原视频 latent 时间轴（chunk 对齐，每 4 个 latent 一块）:
+  [0 1 2 3][4 5 6 7][8 9 10 11] ... [t t+1 t+2 t+3] ... [T-4 T-3 T-2 T-1]
+                              ^ current_frame_idx = t (t 是 4 的倍数，且 t >= window_frames)
+
+out-window 最终喂给模型的序列（“被打包/重排”后的短序列）:
+  [0 1 2 3] + [若干历史 memory chunks / context（不一定连续）] + [t t+1 t+2 t+3]
+
+也就是说：
+  - 模型不会看到全部历史 0..t-1
+  - 而是看到：第一 chunk + 若干挑出来的历史片段 + 当前 chunk
+  - 训练监督一般只落在最后这个“当前 chunk”（见后面 i2v_mask 逻辑）
+```
+
 ```624:666:hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py
 if select_prob < 0.8:
     select_window_out_flag = 1
@@ -159,13 +194,63 @@ if select_prob < 0.8:
     latent = latent[:, selected_history_frame_id]
 ```
 
-**B) in-window（概率 0.2）**：直接取开头一段连续 latent：
-
 ```673:678:hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py
 else:
     pred_latent_size = self.window_frames
     latent = latent[:, :pred_latent_size, ...]
 ```
+
+#### 2.5 选出来的 memory 会“重新 apply 位置编码（positional encoding）”吗？
+这里有两个“位置/编码”概念要分开看：**(1) 时空 RoPE（t/h/w）** 和 **(2) 相机 pose 的 ProPE（camera rope）**。
+
+**(1) 时空 RoPE：会重新计算，但只基于“打包后的新序列形状”，不会保留原视频的绝对时间索引。**
+
+原因很直接：dataset 把 `latent` / `w2c_list` / `intrinsic_list` / `action_for_pe` 都按 `selected_history_frame_id` 做了子集 + 重排：
+
+```640:671:hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py
+selected_history_frame_id = select_aligned_memory_frames(...)
+selected_history_frame_id.extend(range(current_frame_idx, current_frame_idx + pred_latent_size))
+latent = latent[:, selected_history_frame_id]
+reset_w2c_list = w2c_list[selected_history_frame_id]
+w2c_list = reset_w2c_list
+reset_intrinsic_list = intrinsic_list[selected_history_frame_id]
+intrinsic_list = reset_intrinsic_list
+reset_action_for_pe = action_for_pe[selected_history_frame_id]
+action_for_pe = reset_action_for_pe
+```
+
+而 transformer 侧计算 RoPE 的方式是：从 **当前输入张量的形状**算出 `(tt, th, tw)`，再生成 `get_rotary_pos_embed((tt, th, tw))`。它完全不知道 “这些帧原本在长视频里对应哪个绝对时间 idx”：
+
+```783:792:hyw/HY-WorldPlay-main/trainer/models/hyvideo/models/transformers/ar_action_hunyuanvideo_1_5_transformer.py
+bs, _, ot, oh, ow = x.shape
+tt, th, tw = (
+    ot // self.patch_size[0],
+    oh // self.patch_size[1],
+    ow // self.patch_size[2],
+)
+self.attn_param['thw'] = [tt, th, tw]
+if freqs_cos is None and freqs_sin is None:
+    freqs_cos, freqs_sin = self.get_rotary_pos_embed((tt, th, tw))
+```
+
+所以：**被选出来的 memory 在时空 RoPE 上，会被当成一个“新的短视频序列”的第 0..tt-1 帧来编码**（按打包后的顺序）。这属于一个很重要的细节：它没有显式地传入原始时间戳/绝对帧号。
+
+**(2) 相机 pose 的 ProPE：会按你选择后的 `viewmats/Ks` 重新编码（这部分保留了“每帧真实相机位姿”信息）。**
+
+AR transformer 的注意力里会调用 `prope_qkv(viewmats=..., Ks=...)`，把相机位姿注入到 q/k/v（相当于一种 camera rope）：
+
+```174:181:hyw/HY-WorldPlay-main/trainer/models/hyvideo/models/transformers/ar_action_hunyuanvideo_1_5_transformer.py
+# 添加连续的camera pose，通过prope
+img_q_prope, img_k_prope, img_v_prope, apply_fn_o = prope_qkv(
+    img_q.permute(0, 2, 1, 3),
+    img_k.permute(0, 2, 1, 3),
+    img_v.permute(0, 2, 1, 3),
+    viewmats=viewmats,
+    Ks=Ks,
+)
+```
+
+因为 dataset 在 out-window 分支里同步重排了 `w2c_list`（训练里传给 transformer 的 `viewmats`）和 `intrinsic_list`（传给 transformer 的 `Ks`），所以 **memory 帧对应的相机位姿编码仍然是正确的**；只是“纯时间位置”的 RoPE 不再代表原视频的绝对时间顺序。
 
 > 这就是官方如何 “handle 不同长度视频” 的关键：  
 > **长视频不会导致一次 attention 覆盖 100 个 chunk**，因为 dataset 会把它采样成 “窗口长度” 或 “memory+当前 chunk” 这种短序列。
