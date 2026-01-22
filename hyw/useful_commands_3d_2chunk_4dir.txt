@@ -88,9 +88,10 @@ TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_29f_2chunk_4dir_modelinput/syth
 OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_29f_2chunk_4dir_small \
 WANDB_RUN_NAME=hyworld_sythball_29f_2chunk_4dir_small \
 NUM_FRAMES=29 NUM_LATENT_T=8 WINDOW_FRAMES=8 \
-NUM_GPUS=4 CUDA_VISIBLE_DEVICES=0,1,2,3 \
+NUM_GPUS=4 CUDA_VISIBLE_DEVICES=4,1,2,3 \
 MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
 TRAIN_VIDEO_LOG_STEPS=25 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
+MASTER_PORT=29612 \
 bash train/run_train_small.sh
 
 
