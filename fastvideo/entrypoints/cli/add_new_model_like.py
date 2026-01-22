@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,23 +26,11 @@ from fastvideo.utils import FlexibleArgumentParser
 logger = init_logger(__name__)
 
 
-_DEFAULT_LIKE_PIPELINE_CLASS: dict[str, str] = {
-    "wan": "WanPipeline",
-    "turbodiffusion": "TurboDiffusionPipeline",
-    "stepvideo": "StepVideoPipeline",
-    "hunyuan": "HunyuanVideoPipeline",
-    "hunyuan15": "HunyuanVideo15Pipeline",
-    "cosmos": "Cosmos2VideoToWorldPipeline",
-    "matrixgame": "MatrixGamePipeline",
-    "longcat": "LongCatPipeline",
-    "ltx2": "LTX2Pipeline",
-}
-
-
 @dataclass(frozen=True)
 class _PipelineClassLocation:
     module_relpath: str
     class_name: str
+    file_abs: Path
 
 
 def _to_pascal_case(s: str) -> str:
@@ -59,7 +48,9 @@ def _ensure_repo_root(repo_root: Path) -> None:
         )
 
 
-def _discover_pipeline_classes(arch_dir: Path) -> dict[str, _PipelineClassLocation]:
+def _discover_pipeline_classes_in_arch_dir(
+    arch_dir: Path,
+) -> dict[str, _PipelineClassLocation]:
     """
     Return mapping {PipelineClassName -> location} for a given
     fastvideo/pipelines/basic/<arch> directory.
@@ -78,9 +69,54 @@ def _discover_pipeline_classes(arch_dir: Path) -> dict[str, _PipelineClassLocati
                     _PipelineClassLocation(
                         module_relpath=str(py.relative_to(arch_dir.parent.parent)),
                         class_name=cls,
+                        file_abs=py,
                     ),
                 )
     return found
+
+
+def _discover_all_basic_pipelines(
+    repo_root: Path,
+) -> dict[str, dict[str, _PipelineClassLocation]]:
+    """
+    Return {arch -> {PipelineClassName -> location}} for fastvideo/pipelines/basic/*.
+    """
+    base_dir = repo_root / "fastvideo/pipelines/basic"
+    if not base_dir.is_dir():
+        raise ValueError(f"basic pipelines directory not found: {base_dir}")
+
+    out: dict[str, dict[str, _PipelineClassLocation]] = {}
+    for arch_dir in sorted(p for p in base_dir.iterdir() if p.is_dir()):
+        arch = arch_dir.name
+        out[arch] = _discover_pipeline_classes_in_arch_dir(arch_dir)
+    return out
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_choice(title: str, options: list[str]) -> str:
+    if not _is_interactive():
+        raise RuntimeError(
+            "Interactive selection requires a TTY. "
+            "Re-run with --like/--like-pipeline-class/--new-arch flags."
+        )
+    if not options:
+        raise ValueError("No options available for selection.")
+    print(title)
+    for i, opt in enumerate(options, start=1):
+        print(f"  [{i}] {opt}")
+    while True:
+        raw = input("Select an option: ").strip()
+        try:
+            idx = int(raw)
+        except ValueError:
+            print("Please enter a number.")
+            continue
+        if 1 <= idx <= len(options):
+            return options[idx - 1]
+        print(f"Please enter a number between 1 and {len(options)}.")
 
 
 def _update_pipeline_registry_mapping(
@@ -129,6 +165,11 @@ class AddNewModelLikeSubcommand(CLISubcommand):
             help="Scaffold a new pipeline architecture like an existing one",
         )
         p.add_argument(
+            "--list-like",
+            action="store_true",
+            help="List available --like architectures and pipeline classes, then exit.",
+        )
+        p.add_argument(
             "--repo-root",
             type=str,
             default=".",
@@ -137,7 +178,7 @@ class AddNewModelLikeSubcommand(CLISubcommand):
         p.add_argument(
             "--like",
             type=str,
-            required=True,
+            default="",
             help=(
                 "Existing pipeline architecture folder under "
                 "fastvideo/pipelines/basic/ (e.g. wan, turbodiffusion, stepvideo)"
@@ -146,7 +187,7 @@ class AddNewModelLikeSubcommand(CLISubcommand):
         p.add_argument(
             "--new-arch",
             type=str,
-            required=True,
+            default="",
             help=(
                 "New pipeline architecture folder name under "
                 "fastvideo/pipelines/basic/ (snake-case recommended)"
@@ -170,27 +211,68 @@ class AddNewModelLikeSubcommand(CLISubcommand):
                 "<NewArchPascalCase>Pipeline."
             ),
         )
+        p.add_argument(
+            "--template",
+            type=str,
+            choices=["inherit", "copy"],
+            default="inherit",
+            help=(
+                "How to scaffold the new pipeline implementation. "
+                "'inherit' creates a subclass of the base pipeline (reuse stages). "
+                "'copy' copies the base pipeline module text and renames the class."
+            ),
+        )
+        p.add_argument(
+            "--new-stages",
+            action="store_true",
+            help=(
+                "Generate stubs for initialize_pipeline/create_pipeline_stages "
+                "instead of reusing the base pipeline's stage wiring. "
+                "Best with --template=inherit."
+            ),
+        )
         return p
 
     def cmd(self, args: argparse.Namespace) -> None:
         repo_root = Path(args.repo_root).resolve()
         _ensure_repo_root(repo_root)
 
+        all_pipelines = _discover_all_basic_pipelines(repo_root)
+
+        if args.list_like:
+            for arch, cls_map in sorted(all_pipelines.items()):
+                if not cls_map:
+                    continue
+                print(f"{arch}:")
+                for cls in sorted(cls_map.keys()):
+                    print(f"  - {cls}")
+            return
+
         like_arch = str(args.like).strip()
         new_arch = str(args.new_arch).strip()
-        if not like_arch or not new_arch:
-            raise ValueError("--like and --new-arch must be non-empty")
+
+        # Interactive UX (transformers-cli style): if user doesn't provide inputs,
+        # prompt them.
+        if not like_arch:
+            like_arch = _prompt_choice(
+                "Pick a base pipeline architecture to copy from:",
+                [a for a, m in sorted(all_pipelines.items()) if m],
+            )
+        if not new_arch:
+            if not _is_interactive():
+                raise ValueError("--new-arch is required in non-interactive mode.")
+            new_arch = input("New architecture name (folder under fastvideo/pipelines/basic/): ").strip()
+            if not new_arch:
+                raise ValueError("--new-arch must be non-empty")
 
         like_dir = repo_root / "fastvideo/pipelines/basic" / like_arch
         new_dir = repo_root / "fastvideo/pipelines/basic" / new_arch
         if not like_dir.is_dir():
             raise ValueError(f"--like arch not found: {like_dir}")
         if new_dir.exists():
-            raise ValueError(
-                f"Refusing to overwrite existing directory: {new_dir}"
-            )
+            raise ValueError(f"Refusing to overwrite existing directory: {new_dir}")
 
-        available = _discover_pipeline_classes(like_dir)
+        available = all_pipelines.get(like_arch, {})
         if not available:
             raise ValueError(
                 f"No *Pipeline classes found under: {like_dir}. "
@@ -199,12 +281,14 @@ class AddNewModelLikeSubcommand(CLISubcommand):
 
         like_pipeline_class = str(args.like_pipeline_class).strip()
         if not like_pipeline_class:
-            like_pipeline_class = _DEFAULT_LIKE_PIPELINE_CLASS.get(like_arch, "")
-        if not like_pipeline_class:
-            raise ValueError(
-                "Could not infer --like-pipeline-class. Available pipeline "
-                f"classes in {like_arch}: {sorted(available.keys())}"
-            )
+            # If only one pipeline class exists for this arch, default to it.
+            if len(available) == 1:
+                like_pipeline_class = next(iter(available.keys()))
+            else:
+                like_pipeline_class = _prompt_choice(
+                    "Pick a base pipeline class:",
+                    sorted(available.keys()),
+                )
         if like_pipeline_class not in available:
             raise ValueError(
                 f"--like-pipeline-class={like_pipeline_class} not found. "
@@ -241,29 +325,64 @@ class AddNewModelLikeSubcommand(CLISubcommand):
         )
 
         # 2) pipeline module
-        (new_dir / f"{new_arch}_pipeline.py").write_text(
-            "# SPDX-License-Identifier: Apache-2.0\n"
-            "\n"
-            "from __future__ import annotations\n"
-            "\n"
-            f"from {module_path} import {like_pipeline_class}\n"
-            "\n"
-            "\n"
-            f"class {new_pipeline_class}({like_pipeline_class}):\n"
-            '    """\n'
-            f"    Scaffolded pipeline for {new_arch}.\n"
-            "\n"
-            f"    This was generated by `fastvideo {self.name}` and currently\n"
-            f"    inherits all behavior from `{like_pipeline_class}`.\n"
-            "    Override methods here as needed.\n"
-            '    """\n'
-            "\n"
-            "    pass\n"
-            "\n"
-            "\n"
-            f"EntryClass = {new_pipeline_class}\n",
-            encoding="utf-8",
-        )
+        pipeline_file = new_dir / f"{new_arch}_pipeline.py"
+        if args.template == "inherit":
+            body = (
+                "# SPDX-License-Identifier: Apache-2.0\n"
+                "\n"
+                "from __future__ import annotations\n"
+                "\n"
+                f"from {module_path} import {like_pipeline_class}\n"
+                "\n"
+                "\n"
+                f"class {new_pipeline_class}({like_pipeline_class}):\n"
+                '    """\n'
+                f"    Scaffolded pipeline for {new_arch}.\n"
+                "\n"
+                f"    Generated by `fastvideo {self.name}`.\n"
+                f"    Base: `{like_pipeline_class}`.\n"
+                '    """\n'
+            )
+            if args.new_stages:
+                body += (
+                    "\n"
+                    "    # NOTE: you opted into --new-stages, so this class does not\n"
+                    "    # reuse the base pipeline's stage wiring. Fill these in.\n"
+                    "    def initialize_pipeline(self, fastvideo_args):\n"
+                    "        raise NotImplementedError\n"
+                    "\n"
+                    "    def create_pipeline_stages(self, fastvideo_args):\n"
+                    "        raise NotImplementedError\n"
+                    "\n"
+                )
+            else:
+                body += "\n    pass\n\n"
+            body += f"\nEntryClass = {new_pipeline_class}\n"
+            pipeline_file.write_text(body, encoding="utf-8")
+        else:
+            # Copy the base module text and do minimal renames.
+            base_text = loc.file_abs.read_text(encoding="utf-8")
+            base_text = (
+                "# SPDX-License-Identifier: Apache-2.0\n"
+                "# NOTE: generated by `fastvideo add-new-model-like --template=copy`.\n"
+                + "\n"
+                + base_text
+            )
+            # Rename the base class declaration.
+            base_text = re.sub(
+                rf"^class\s+{re.escape(like_pipeline_class)}\s*\(",
+                f"class {new_pipeline_class}(",
+                base_text,
+                flags=re.M,
+            )
+            # Rename EntryClass assignments.
+            base_text = re.sub(
+                rf"^EntryClass\s*=\s*{re.escape(like_pipeline_class)}\s*$",
+                f"EntryClass = {new_pipeline_class}",
+                base_text,
+                flags=re.M,
+            )
+            pipeline_file.write_text(base_text, encoding="utf-8")
 
         # 3) Update runtime registry mapping (pipeline name -> arch folder)
         _update_pipeline_registry_mapping(
