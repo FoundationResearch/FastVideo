@@ -214,6 +214,10 @@ class TrainingBatch:
     select_window_out_flag: int = 0
     all_channel_latents: torch.Tensor | None = None
     selection_frame_id_list = None
+    # Dataset debug/visualization metadata (latent indices in the ORIGINAL sequence before repacking).
+    selected_history_frame_id: list[int] | None = None
+    current_frame_idx: int | None = None
+    temporal_context_size: int | None = None
 
     raw_latent_shape: torch.Tensor | None = None
     noise_latents: torch.Tensor | None = None

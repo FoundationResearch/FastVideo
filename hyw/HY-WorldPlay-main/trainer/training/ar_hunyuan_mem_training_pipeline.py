@@ -431,6 +431,29 @@ class TrainingPipeline(LoRAPipeline, ABC):
                 overlay_lines.append(f"latent_T={latent_T}")
             except Exception:
                 pass
+            if is_out_window:
+                # current_frame_idx is a latent start index in the ORIGINAL sequence (before repacking).
+                cfi = getattr(training_batch, "current_frame_idx", None)
+                sel = getattr(training_batch, "selected_history_frame_id", None)
+                try:
+                    if cfi is not None:
+                        cfi_int = int(cfi)
+                        overlay_lines.append(f"cur_latent={cfi_int}  cur_chunk={cfi_int // 4}")
+                    if sel:
+                        # Show which history chunks were included (exclude the current chunk indices).
+                        cur_start = int(cfi) if cfi is not None else None
+                        cur_set = set(range(cur_start, cur_start + 4)) if cur_start is not None else set()
+                        hist_chunks = sorted({int(i) // 4 for i in sel if int(i) not in cur_set})
+                        # Compact formatting; keep HUD short.
+                        if len(hist_chunks) <= 12:
+                            overlay_lines.append("ctx_chunks=" + ",".join(str(x) for x in hist_chunks))
+                        else:
+                            overlay_lines.append(
+                                "ctx_chunks=" + ",".join(str(x) for x in hist_chunks[:10]) + ",..."
+                            )
+                except Exception:
+                    # Never crash training due to HUD formatting.
+                    pass
             if not math.isnan(t_mean) and not math.isnan(s_mean):
                 overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
             elif not math.isnan(t_mean):
@@ -448,7 +471,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
                 for i in range(out.shape[0]):
                     im = Image.fromarray(out[i])
                     draw = ImageDraw.Draw(im)
-                    hud_h = 52
+                    hud_h = 86
                     draw.rectangle([(0, 0), (im.size[0], hud_h)], fill=(0, 0, 0))
                     draw.multiline_text((4, 2), overlay, fill=(255, 255, 255), font=font, spacing=0)
                     out[i] = np.asarray(im)
@@ -523,6 +546,9 @@ class TrainingPipeline(LoRAPipeline, ABC):
             byt5_text_mask = batch['byt5_text_mask']
             # add an indicator for memory training
             select_window_out_flag = batch['select_window_out_flag']
+            selected_history_frame_id = batch.get("selected_history_frame_id")
+            current_frame_idx = batch.get("current_frame_idx")
+            temporal_context_size = batch.get("temporal_context_size")
             i2v_mask = batch['i2v_mask']
         else:
             video_path = batch['path']
@@ -551,6 +577,20 @@ class TrainingPipeline(LoRAPipeline, ABC):
             training_batch.byt5_text_mask = byt5_text_mask.to(
                 get_local_torch_device(), dtype=torch.bfloat16)
             training_batch.select_window_out_flag = select_window_out_flag[0]
+            # Save selection metadata for train-time visualization/debug.
+            # Collate keeps these as python lists (length=batch_size) with per-sample values.
+            try:
+                training_batch.selected_history_frame_id = selected_history_frame_id[0]
+            except Exception:
+                training_batch.selected_history_frame_id = None
+            try:
+                training_batch.current_frame_idx = current_frame_idx[0]
+            except Exception:
+                training_batch.current_frame_idx = None
+            try:
+                training_batch.temporal_context_size = temporal_context_size[0]
+            except Exception:
+                training_batch.temporal_context_size = None
             training_batch.i2v_mask = i2v_mask.to(
                 get_local_torch_device(), dtype=torch.bfloat16)    # i2v mask only works for memory training
         else:

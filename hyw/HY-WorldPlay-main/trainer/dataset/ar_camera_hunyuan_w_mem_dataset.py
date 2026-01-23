@@ -623,6 +623,9 @@ class CameraJsonWMemDataset(Dataset):
 
                 select_window_out_flag = 0  # whether to select the latents with length > window_frames
                 select_prob = self.rng.random()
+                selected_history_frame_id = None
+                current_frame_idx = None
+                temporal_context_size = 12
 
                 if select_prob < 0.8:
                     select_window_out_flag = 1  # mean to select frames outside the window
@@ -657,7 +660,7 @@ class CameraJsonWMemDataset(Dataset):
                         selected_history_frame_id = select_aligned_memory_frames(w2c_list, 
                                                                                 current_frame_idx, 
                                                                                 memory_frames=self.memory_frames, 
-                                                                                temporal_context_size=12, 
+                                                                                temporal_context_size=temporal_context_size, 
                                                                                 pred_latent_size=pred_latent_size, 
                                                                                 points_local=self.points_local, 
                                                                                 device=self.device)   # align the training objective: refine the fov selection
@@ -689,6 +692,13 @@ class CameraJsonWMemDataset(Dataset):
                     "action_for_pe": action_for_pe,
                     "context_frames_list": None,  # selected context frames for each chunk
                     "select_window_out_flag": select_window_out_flag,  # select frames outside the window or not
+                    # Debug/visualization metadata (latent indices in the ORIGINAL sequence before repacking).
+                    # - in-window: both are None
+                    # - out-window: `selected_history_frame_id` includes history indices AND the current chunk indices
+                    #              appended at the end (range(current_frame_idx, current_frame_idx+4)).
+                    "selected_history_frame_id": selected_history_frame_id,
+                    "current_frame_idx": current_frame_idx,
+                    "temporal_context_size": temporal_context_size,
                     "video_path": json_data["pose_path"],
                     "max_length": max_frames,
 
@@ -729,6 +739,9 @@ def latent_collate_function(batch):
 
     context_frames_list = [b["context_frames_list"] for b in batch]
     select_window_out_flag = [b["select_window_out_flag"] for b in batch]
+    selected_history_frame_id = [b.get("selected_history_frame_id") for b in batch]
+    current_frame_idx = [b.get("current_frame_idx") for b in batch]
+    temporal_context_size = [b.get("temporal_context_size") for b in batch]
     video_path = [b["video_path"] for b in batch]
     max_length = [b["max_length"] for b in batch]
 
@@ -742,6 +755,9 @@ def latent_collate_function(batch):
         "video_path": video_path,
         "context_frames_list": context_frames_list,
         "select_window_out_flag": select_window_out_flag,
+        "selected_history_frame_id": selected_history_frame_id,
+        "current_frame_idx": current_frame_idx,
+        "temporal_context_size": temporal_context_size,
         "action_for_pe": action_for_pe,
         "max_length": max_length,
         "image_cond": image_cond,

@@ -61,14 +61,24 @@
 
 ### 2026-01-23 — Train-time VAE preview overlay marks in-window vs out-window (memory) and latent_T
 
-- **File**: `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+- **Files**:
+  - `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+  - `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`
+  - `hyw/HY-WorldPlay-main/trainer/pipelines/pipeline_batch_info.py`
 - **What**:
   - Extend the top-left HUD overlay in `vae_during_training/train_step_*.mp4` to include:
     - `mode=in-window` vs `mode=out-window` (based on `TrainingBatch.select_window_out_flag`)
     - `latent_T=<T>` for quick interpretation of re-packed out-window sequences
+    - When `mode=out-window`, also show:
+      - `cur_latent=<idx>` / `cur_chunk=<idx//4>` (current chunk start in original latent timeline)
+      - `ctx_chunks=...` (which history chunks were selected/packed as context+memory)
   - Increase HUD height to fit the extra lines.
+  - Plumb selection metadata through the training dataloader:
+    - Dataset now returns `selected_history_frame_id` / `current_frame_idx` / `temporal_context_size`
+    - Training pipeline stores these on `TrainingBatch` for visualization/debug
 - **Why**:
   - Train-time preview videos can be misleading when out-window sampling reorders frames (memory + current chunk). The overlay makes it immediately clear which sampling mode produced the visualization and how long the latent sequence is.
+  - Also makes it possible to verify whether the FOV-overlap selector is actually being exercised and which chunks are being retrieved.
 
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
