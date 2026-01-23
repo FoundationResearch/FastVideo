@@ -328,7 +328,13 @@ if training_batch.select_window_out_flag == 1 and self.causal:
 
 结论（对照训练代码）：
 - **in-window**：timestep 是按 **chunk（4 个 latent）** 为单位分配的：**同一个 chunk 内 4 个 latent 的 timestep 相同**；不同 chunk 的 timestep 通常不同。
-- **out-window（memory）**：在上面的基础上，代码会把“历史部分（除最后一个 chunk 外）”的 timestep 强行改成**很大的噪声**（随机落在 500～985），而最后一个 chunk（当前要学的 chunk）保留原本采样出来的 timestep。
+- **out-window（memory）**：在上面的基础上，代码会把“历史部分（除最后一个 chunk 外）”的 timestep **强行覆盖到一个固定的 index 区间**（`randint(500, 985)`），而最后一个 chunk（当前要学的 chunk）保留原本采样出来的 timestep。
+  - 重要更正：这里覆盖的是 **`indices`（用于索引 scheduler 的 `timesteps`）**，不是直接覆盖 “t 值”。
+  - 在你当前用的 `diffusers.FlowMatchEulerDiscreteScheduler`（`num_train_timesteps=1000`）下，`timesteps/sigmas` 序列是单调递减的：**index 越大 → t 越小 / σ 越小（越接近 clean）**。
+  - 因此 `indices∈[500,985]` 对应的噪声强度并不是“最大噪声”，而是大致落在：
+    - \(t \in [15, 500]\)
+    - \(\sigma \in [0.015, 0.5]\)
+    （这是我在你当前环境里直接 instantiate 同一个 scheduler 后得到的精确映射。）
 
 对应实现都在 `_prepare_ar_dit_inputs`（注意 `chunk_latent_num=4`）：
 
@@ -348,7 +354,7 @@ u = u.unsqueeze(-1).repeat_interleave(chunk_latent_num, dim=-1).reshape(batch_si
 indices = (u * self.noise_scheduler.config.num_train_timesteps).long()
 indices = (self.noise_scheduler.config.num_train_timesteps - self.timestep_transform(indices, self.train_time_shift)).long()
 
-# out-window（memory）额外处理：把除最后一个 chunk 外的 chunk timestep 改成高噪声
+# out-window（memory）额外处理：把除最后一个 chunk 外的 chunk timestep 覆盖到一个 indices 区间
 if training_batch.select_window_out_flag == 1:
     for i in range(0, indices.shape[0] - 4, 4):
         rand_val = torch.randint(500, 985, (1, ), device=latents.device)
@@ -365,7 +371,7 @@ noisy_model_input = (1.0 - sigmas) * training_batch.latents + sigmas * noise
 - chunk2（latent 8..11）共享 timestep \(t_2\)
 - chunk3（latent 12..15）共享 timestep \(t_3\)
 
-而 out-window 时，代码会把 chunk0..chunk2 的 timestep 改成高噪声（500～985），只保留 chunk3（最后 4 个 latent）的原采样 timestep 用于“真正学习/监督”的那一段（并且 loss 也会被 mask 到最后 4 个 latent）。
+而 out-window 时，代码会把 chunk0..chunk2 的 timestep 覆盖到 `indices∈[500,985]` 这个区间（在该 scheduler 下对应 \(\sigma\in[0.015, 0.5]\)），只保留 chunk3（最后 4 个 latent）的原采样 timestep 用于“真正学习/监督”的那一段（并且 loss 也会被 mask 到最后 4 个 latent）。
 
 ### 5. 推理/生成如何处理不同长度视频？
 
