@@ -123,8 +123,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-3.0shift-ar \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-1500 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt1500-3.0shift-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
