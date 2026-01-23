@@ -180,6 +180,12 @@ out-window 最终喂给模型的序列（“被打包/重排”后的短序列�
   - 模型不会看到全部历史 0..t-1
   - 而是看到：第一 chunk + 若干挑出来的历史片段 + 当前 chunk
   - 训练监督一般只落在最后这个“当前 chunk”（见后面 i2v_mask 逻辑）
+
+补充两个容易漏掉但很关键的细节：
+  1) out-window 的 memory 选择同时包含“近邻时间上下文” temporal_context_size：
+     - 代码里调用 `select_aligned_memory_frames(..., temporal_context_size=12, ...)`
+     - 这会强制把 `current_frame_idx` 之前最近的 12 个 latent（也就是最近 3 个 chunk）作为 context 加入集合；
+     - 再在更早的历史里（按 chunk 对齐）基于 FOV overlap 挑少量 chunk 来补齐 memory。
 ```
 
 ```624:666:hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py
