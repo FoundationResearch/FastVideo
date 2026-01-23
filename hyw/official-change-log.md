@@ -59,6 +59,17 @@
 - **Why**:
   - Maximize speed and simplicity when GPUs have ample memory: no inter-rank comm and easy per-rank qualitative inspection (e.g. different directions).
 
+### 2026-01-23 — Train-time VAE preview overlay marks in-window vs out-window (memory) and latent_T
+
+- **File**: `hyw/HY-WorldPlay-main/trainer/training/ar_hunyuan_mem_training_pipeline.py`
+- **What**:
+  - Extend the top-left HUD overlay in `vae_during_training/train_step_*.mp4` to include:
+    - `mode=in-window` vs `mode=out-window` (based on `TrainingBatch.select_window_out_flag`)
+    - `latent_T=<T>` for quick interpretation of re-packed out-window sequences
+  - Increase HUD height to fit the extra lines.
+- **Why**:
+  - Train-time preview videos can be misleading when out-window sampling reorders frames (memory + current chunk). The overlay makes it immediately clear which sampling mode produced the visualization and how long the latent sequence is.
+
 ### 2026-01-14 — Fix out-of-range `current_frame_idx` during training (synthetic 125f / latent_T=32)
 
 - **File**: `hyw/HY-WorldPlay-main/trainer/dataset/ar_camera_hunyuan_w_mem_dataset.py`

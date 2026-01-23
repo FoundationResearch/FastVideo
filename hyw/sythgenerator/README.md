@@ -99,7 +99,31 @@ python -m hyw.sythgenerator sythball \
 
 说明：
 - `--fixed_move_action`: 固定 `move_action`（例如 `W/A/S/D/WA/...`），对所有 `t>0` 生效（`t=0` 仍为 `""`，更贴合 latent 对齐逻辑）。
+- `--fixed_move_action_mode`：
+  - `single`：默认行为，所有样本使用同一个 `--fixed_move_action`
+  - `4dir`：忽略 `--fixed_move_action`，生成 4 个样本，分别固定为 `[W,S,A,D]`
+  - `4dirback`：忽略 `--fixed_move_action`，生成 4 个样本；每个样本前半段固定一个方向（W/S/A/D），后半段改为相反方向（S/W/D/A）以“尽量返回原点”（动作按 `hold_action_frames` 块对齐；若块数为奇数，会插入一个空动作块做平衡）
 - `--fixed_view_action`: 固定 `view_action`（例如 `""/LR/LL/LU/LD`）；用 `""` 表示相机朝向不变。
+
+4dir 示例（4 个样本，分别固定方向）：
+
+```bash
+conda activate alexfv
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_13f_4dir \
+  --split train --num_samples 4 --num_frames 13 --fps 25 --width 256 --height 256 --seed 0 \
+  --hold_action_frames 4 --fixed_move_action_mode 4dir --fixed_view_action ""
+```
+
+4dirback 示例（4 个样本，去程 + 回程）：
+
+```bash
+conda activate alexfv
+python -m hyw.sythgenerator sythball \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f_4dirback \
+  --split train --num_samples 4 --num_frames 125 --fps 25 --width 256 --height 256 --seed 0 \
+  --hold_action_frames 4 --fixed_move_action_mode 4dirback --fixed_view_action ""
+```
 
 或者直接调用模块：
 

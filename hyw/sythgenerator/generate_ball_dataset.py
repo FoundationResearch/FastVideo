@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import imageio
@@ -90,6 +91,7 @@ def generate_one_episode(
     hold_action_frames: int = 4,
     fixed_move_action: str | None = None,
     fixed_view_action: str | None = None,
+    fixed_move_action_fn: Callable[[int], str] | None = None,
     # (min_x, max_x, min_z, max_z) in world coordinates.
     # Default enlarged 2x vs legacy (-2,2,-2,3) to reduce boundary clamping for short debug runs.
     world_bounds_xz: tuple[float, float, float, float] = (-4.0, 4.0, -4.0, 6.0),
@@ -108,7 +110,7 @@ def generate_one_episode(
 
     # For fixed-direction debug datasets (e.g. 4dir), enlarge bounds automatically so motion
     # won't get clamped (notably: default cam_z=-2.0 equals default min_z=-2.0, so 'S' can look static).
-    if fixed_move_action is not None:
+    if fixed_move_action is not None or fixed_move_action_fn is not None:
         min_x, max_x, min_z, max_z = world_bounds_xz
         # Rough upper bound on total displacement over the episode (t>0 frames).
         # Keep it small but sufficient for 13f/1chunk debug runs and beyond.
@@ -158,7 +160,9 @@ def generate_one_episode(
                 # Allow fixing move/view independently:
                 # - fixed_view_action="" + fixed_move_action=None => "no view rotation + random move"
                 # - fixed_move_action="W" + fixed_view_action=None => "fixed move + random view"
-                if fixed_move_action is not None:
+                if fixed_move_action_fn is not None:
+                    cur_move_action = str(fixed_move_action_fn(t)) or ""
+                elif fixed_move_action is not None:
                     cur_move_action = fixed_move_action or ""
                 else:
                     cur_move_action = _micro_action(
@@ -279,12 +283,15 @@ def main(argv: list[str] | None = None) -> None:
         "--fixed_move_action_mode",
         type=str,
         default="single",
-        choices=["single", "4dir"],
+        choices=["single", "4dir", "4dirback"],
         help=(
             "How to apply --fixed_move_action. "
             "'single': all samples share the same fixed move action (legacy behavior). "
             "'4dir': ignore --fixed_move_action and generate 4 samples with fixed move actions "
-            "[W,S,A,D] (front/back/left/right), keeping the rest identical."
+            "[W,S,A,D] (front/back/left/right), keeping the rest identical. "
+            "'4dirback': ignore --fixed_move_action and generate 4 samples; each sample moves in a fixed direction "
+            "for the first half, then moves in the opposite direction for the second half (optionally inserting "
+            "one neutral block if the number of action blocks is odd) to approximately return to the origin."
         ),
     )
     p.add_argument(
@@ -308,11 +315,48 @@ def main(argv: list[str] | None = None) -> None:
     _ensure_dir(split_dir)
 
     manifest: list[dict] = []
+
+    def _make_4dirback_fn(base_dir: str, *, num_frames: int,
+                          hold_action_frames: int) -> Callable[[int], str]:
+        opposite = {"W": "S", "S": "W", "A": "D", "D": "A"}
+        if base_dir not in opposite:
+            raise ValueError(
+                f"4dirback expects base_dir in {list(opposite.keys())}, got: {base_dir}"
+            )
+        opp_dir = opposite[base_dir]
+
+        # Actions are updated only at t % hold_action_frames == 0 and t>0.
+        # Count how many such update blocks exist across the episode.
+        total_blocks = max(0, (num_frames - 1) // hold_action_frames)
+        forward_blocks = total_blocks // 2
+        middle_block = forward_blocks + 1 if (total_blocks % 2 == 1) else None
+
+        def _fn(t: int) -> str:
+            if t <= 0:
+                return ""
+            block_idx = t // hold_action_frames  # 1..total_blocks
+            if block_idx <= forward_blocks:
+                return base_dir
+            if middle_block is not None and block_idx == middle_block:
+                return ""  # neutral to balance when total_blocks is odd
+            return opp_dir
+
+        return _fn
+
     for i in range(args.num_samples):
         fixed_move_action = args.fixed_move_action
+        fixed_move_action_fn: Callable[[int], str] | None = None
         if args.fixed_move_action_mode == "4dir":
             # Deterministic 4-direction dataset: front/back/left/right -> W/S/A/D in world axes.
             fixed_move_action = ["W", "S", "A", "D"][i % 4]
+        elif args.fixed_move_action_mode == "4dirback":
+            base_dir = ["W", "S", "A", "D"][i % 4]
+            fixed_move_action = None
+            fixed_move_action_fn = _make_4dirback_fn(
+                base_dir,
+                num_frames=args.num_frames,
+                hold_action_frames=args.hold_action_frames,
+            )
 
         sample_dir = split_dir / f"sample_{i:05d}"
         entry = generate_one_episode(
@@ -330,6 +374,7 @@ def main(argv: list[str] | None = None) -> None:
             hold_action_frames=args.hold_action_frames,
             fixed_move_action=fixed_move_action,
             fixed_view_action=args.fixed_view_action,
+            fixed_move_action_fn=fixed_move_action_fn,
         )
         entry["id"] = f"{args.split}_{i:05d}"
         entry["split"] = args.split

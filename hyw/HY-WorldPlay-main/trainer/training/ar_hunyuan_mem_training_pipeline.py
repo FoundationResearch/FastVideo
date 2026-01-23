@@ -417,8 +417,20 @@ class TrainingPipeline(LoRAPipeline, ABC):
             noisy_vid = _to_uint8_video(noisy_frames)
             x0_hat_vid = _to_uint8_video(x0_hat_frames)
 
-            # Add timestep/sigma overlay for clarity (compact for low-res videos).
+            # Add overlay for clarity (compact for low-res videos).
             overlay_lines = [f"step={step}"]
+            # Mark in-window vs out-window(memory) sampling.
+            try:
+                is_out_window = int(getattr(training_batch, "select_window_out_flag", 0) or 0) == 1
+            except Exception:
+                is_out_window = False
+            overlay_lines.append("mode=out-window" if is_out_window else "mode=in-window")
+            # Helpful for interpreting out-window videos (they are re-packed sequences, not continuous time).
+            try:
+                latent_T = int(gt_latents.shape[2])
+                overlay_lines.append(f"latent_T={latent_T}")
+            except Exception:
+                pass
             if not math.isnan(t_mean) and not math.isnan(s_mean):
                 overlay_lines.append(f"t={t_mean:.0f}  σ={s_mean:.3f}")
             elif not math.isnan(t_mean):
@@ -436,7 +448,7 @@ class TrainingPipeline(LoRAPipeline, ABC):
                 for i in range(out.shape[0]):
                     im = Image.fromarray(out[i])
                     draw = ImageDraw.Draw(im)
-                    hud_h = 34
+                    hud_h = 52
                     draw.rectangle([(0, 0), (im.size[0], hud_h)], fill=(0, 0, 0))
                     draw.multiline_text((4, 2), overlay, fill=(255, 255, 255), font=font, spacing=0)
                     out[i] = np.asarray(im)
