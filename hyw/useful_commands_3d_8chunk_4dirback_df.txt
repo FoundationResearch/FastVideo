@@ -19,6 +19,7 @@
 # - WINDOW_FRAMES=16（=4 chunks）：既能进入 out-window，又能让 memory 选择生效
 #
 
+# 这里我们用了diffusion forcing（finetune本来就是diffusion forcing，所以我们直接load bidirectional_model）
 
 # -----------------------------------------------------------------------------
 # 0. 环境变量 (根据你的机器调整)
