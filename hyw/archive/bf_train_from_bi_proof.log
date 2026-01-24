@@ -1,0 +1,51 @@
+NFO 01-24 00:55:56 [component_loader.py:431] Loading model from HunyuanTransformer3DARActionModel, default_dtype: torch.bfloat16
+INFO 01-24 00:55:56 [fsdp_load.py:105] loading from: /mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5/transformer/480p_i2v
+INFO 01-24 00:55:56 [fsdp_load.py:109] model: <class 'trainer.models.hyvideo.models.transformers.ar_action_hunyuanvideo_1_5_transformer.ARHunyuanVideo_1_5_DiffusionTransformer'>
+INFO 01-24 00:57:15 [fsdp_load.py:128] loading from: /mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors
+INFO 01-24 00:57:26 [component_loader.py:458] Loaded model with 8.56B parameters
+INFO 01-24 00:57:26 [composed_pipeline_base.py:248] Loaded module transformer from /mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5/transformer/480p_i2v
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:205] Initializing training pipeline...
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247] optimizer: Muon (
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247] Parameter Group 0
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     adamw_betas: (0.9, 0.999)
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     adamw_eps: 1e-08
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     lr: 2e-05
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     momentum: 0.95
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     nesterov: True
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     ns_steps: 5
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247]     wd: 0.0001
+INFO 01-24 00:57:26 [ar_hunyuan_mem_training_pipeline.py:247] )
+WARNING 01-24 00:57:42 [logger.py:122]  is_local_main_process is set to True, logging only from the local main process.
+WARNING 01-24 00:57:42 [logger.py:122]  is_local_main_process is set to True, logging only from the local main process.
+WARNING 01-24 00:57:42 [logger.py:122]  is_local_main_process is set to True, logging only from the local main process.
+INFO 01-24 00:57:42 [__init__.py:86] ROCm platform is unavailable: No module named 'amdsmi'
+WARNING 01-24 00:57:42 [logger.py:122]  is_local_main_process is set to True, logging only from the local main process.
+INFO 01-24 00:57:42 [__init__.py:47] CUDA is available
+INFO 01-24 00:57:48 [ar_camera_hunyuan_w_mem_dataset.py:354] Dataset size for each sp group: 1
+INFO 01-24 00:57:48 [ar_hunyuan_mem_training_pipeline.py:910] rank: 2: start training
+INFO 01-24 00:57:48 [ar_hunyuan_mem_training_pipeline.py:910] rank: 1: start training
+INFO 01-24 00:57:48 [ar_hunyuan_mem_training_pipeline.py:910] rank: 3: start training
+wandb: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.
+wandb: Appending key for api.wandb.ai to your netrc file: /mnt/weka/home/hao.zhang/.netrc
+wandb: Currently logged in as: alexzms (alexzms-ucsd) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.24.0
+wandb: Run data is saved locally in /mnt/weka/home/hao.zhang/alex/FastVideo/hyw/HY-WorldPlay-main/wandb/run-20260124_005749-0yeb43gt
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run hyworld_sythball_125f_8chunk_4dirback_df
+wandb: ⭐️ View project at https://wandb.ai/alexzms-ucsd/hyw-official
+wandb: 🚀 View run at https://wandb.ai/alexzms-ucsd/hyw-official/runs/0yeb43gt
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:910] rank: 0: start training
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:916] Starting training with 8.558 B trainable parameters
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:926] Initialized random seeds with seed: 42
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1023] ***** Running training *****
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1024]   Num examples = 4
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1025]   Dataloader size = 1
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1026]   Num Epochs = 2000
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1027]   Resume training from step 0
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1029]   Instantaneous batch size per device = 1
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1031]   Total train batch size (w. data & sequence parallel, accumulation) = 4.0
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1034]   Gradient Accumulation steps = 1
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1036]   Total optimization steps = 2000
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1038]   Total training parameters per FSDP shard = 8.558 B
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1041]   Master weight dtype: torch.float32
+INFO 01-24 00:57:51 [ar_hunyuan_mem_training_pipeline.py:1045] GPU memory usage before train_one_step: 8164.74609375 MB
