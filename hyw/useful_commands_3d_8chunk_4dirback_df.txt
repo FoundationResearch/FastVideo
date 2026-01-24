@@ -24,7 +24,7 @@
 # 0. 环境变量 (根据你的机器调整)
 # -----------------------------------------------------------------------------
 export MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5
-export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
+export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors
 
 
 # -----------------------------------------------------------------------------
@@ -90,8 +90,8 @@ cd ~/alex/FastVideo/hyw
 #   WINDOW_FRAMES=16   (latent 维度；推荐 16 来体验 in-window/out-window + memory selection)
 #
 TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirback_modelinput/sythball_v1_125f_8chunk_4dirback_train_for_hyworld.json \
-OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small \
-WANDB_RUN_NAME=hyworld_sythball_125f_8chunk_4dirback_small \
+OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df \
+WANDB_RUN_NAME=hyworld_sythball_125f_8chunk_4dirback_df \
 NUM_FRAMES=125 NUM_LATENT_T=32 WINDOW_FRAMES=16 \
 NUM_GPUS=4 CUDA_VISIBLE_DEVICES=4,5,6,7 \
 MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
@@ -110,7 +110,7 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_base \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_base \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
@@ -123,8 +123,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-3.0shift-ar \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_ckpt2000-3.0shift-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
@@ -137,8 +137,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_noview/manifest_raw_test.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-3.0shift-ar-noview-test \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_ckpt2000-3.0shift-ar-noview-test \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \

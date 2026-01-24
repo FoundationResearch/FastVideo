@@ -18,7 +18,7 @@ Always use full 16 latent (4 chunk) do bidirectional noise cancel
 
 ------------------------------------------------------------
 
-out window
+out window (80%)
 First select a number after window size, smaller than full latent: {16,20,24}
 
 [  0  1  2  3 ][  4  5  6  7 ][  8  9 10 11 ][ 12 13 14 15 ][ 16 17 18 19 ][ 20 21 22 23 ][ 24 25 26 27 ][ 28 29 30 31 ]
