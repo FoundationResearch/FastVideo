@@ -6,6 +6,13 @@ Usage:
   python hyw/research/ar_bi_diff.py \
     --a /path/to/ar/diffusion_pytorch_model.safetensors \
     --b /path/to/bi/diffusion_pytorch_model.safetensors
+
+Extended:
+  python hyw/research/diff/ar_bi_diff.py --ar AR --bi BI --ref REF
+  # prints:
+  #   AR vs BI
+  #   AR vs REF
+  #   BI vs REF
 """
 
 from __future__ import annotations
@@ -238,18 +245,58 @@ def main() -> None:
         default="/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors",
         help="Path to model B safetensors (default: BI).",
     )
+    parser.add_argument(
+        "--ar",
+        type=str,
+        default=None,
+        help="Alias for --a (AR model). If provided, overrides --a.",
+    )
+    parser.add_argument(
+        "--bi",
+        type=str,
+        default=None,
+        help="Alias for --b (BI model). If provided, overrides --b.",
+    )
+    parser.add_argument(
+        "--ref",
+        type=str,
+        default="/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5/transformer/480p_i2v/diffusion_pytorch_model.safetensors",
+        help="Optional reference checkpoint to compare against (default: HunyuanVideo-1.5 480p_i2v).",
+    )
+    parser.add_argument(
+        "--skip_ar_bi",
+        action="store_true",
+        help="If set, do not print AR vs BI comparison (only compare against --ref).",
+    )
     parser.add_argument("--topk", type=int, default=50)
     args = parser.parse_args()
 
     try:
-        summary, top = compare_safetensors(args.a, args.b, topk=args.topk)
+        path_ar = args.ar or args.a
+        path_bi = args.bi or args.b
+
+        # 1) AR vs BI (original behavior)
+        if not args.skip_ar_bi:
+            summary, top = compare_safetensors(path_ar, path_bi, topk=args.topk)
+            _print_report(summary, top)
+            print("\n" + "=" * 80 + "\n")
+
+        # 2) AR vs REF
+        if args.ref:
+            summary, top = compare_safetensors(path_ar, args.ref, topk=args.topk)
+            _print_report(summary, top)
+            print("\n" + "=" * 80 + "\n")
+
+        # 3) BI vs REF
+        if args.ref:
+            summary, top = compare_safetensors(path_bi, args.ref, topk=args.topk)
+            _print_report(summary, top)
     except ModuleNotFoundError as e:
         if "safetensors" in str(e):
             raise SystemExit(
                 "Missing dependency 'safetensors'. Install with: pip install safetensors"
             ) from e
         raise
-    _print_report(summary, top)
 
 
 if __name__ == "__main__":
