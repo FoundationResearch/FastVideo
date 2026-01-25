@@ -17,10 +17,19 @@ HYWORLD_ROOT="${REPO_ROOT}/hyw/HY-WorldPlay-main"
 # --- Paths (defaults) ---
 # These defaults match the typical output printed by hyw/HY-WorldPlay-main/download_models.py
 : "${MODEL_PATH:=~/alex/weights/tencent/HunyuanVideo-1.5}"  # same as hyvideo/generate.py --model_path
-: "${ACTION_CKPT:=~/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors}"  # a .safetensors FILE
+: "${ACTION_CKPT:=~/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors}"  # a .safetensors FILE (optional)
 # Expand "~" manually since parameter expansion doesn't expand it.
 MODEL_PATH="${MODEL_PATH/#\~/$HOME}"
-ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
+
+# ACTION_CKPT is optional:
+# - If ACTION_CKPT is a valid .safetensors, we will load it with strict=True after adding action params.
+# - If ACTION_CKPT is empty / "none" / "null", we will RANDOM-INIT the action params (recommended when training from base).
+USE_ACTION_CKPT=true
+if [[ -z "${ACTION_CKPT}" || "${ACTION_CKPT}" == "none" || "${ACTION_CKPT}" == "null" ]]; then
+  USE_ACTION_CKPT=false
+else
+  ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
+fi
 
 # If you want to train the transformer from scratch (random init), set:
 #   TRANSFORMER_FROM_SCRATCH=true
@@ -38,7 +47,7 @@ ACTION_CKPT="${ACTION_CKPT/#\~/$HOME}"
 : "${WANDB_PROJECT:=hyw-official}"
 : "${WANDB_RUN_NAME:=hyworld_sythcircle_small}"  # feel free to override
 TRANSFORMER_DIR="${MODEL_PATH}/transformer/480p_i2v"      # transformer weights dir
-AR_ACTION_CKPT="${ACTION_CKPT}"                           # trainer expects a safetensors FILE here (it uses load_file())
+AR_ACTION_CKPT="${ACTION_CKPT}"                           # optional; trainer uses safetensors load_file() if provided
 
 # Train-time wandb video logging (official debug hook)
 # - Default: log every 100 steps (rank0 only), 1 sample, fps=25.
@@ -83,9 +92,12 @@ if [ ! -d "${MODEL_PATH}" ]; then
   echo "ERROR: MODEL_PATH does not exist: ${MODEL_PATH}" >&2
   exit 1
 fi
-if [ ! -f "${AR_ACTION_CKPT}" ]; then
-  echo "ERROR: ACTION_CKPT (safetensors) not found: ${AR_ACTION_CKPT}" >&2
-  exit 1
+if ${USE_ACTION_CKPT}; then
+  if [ ! -f "${AR_ACTION_CKPT}" ]; then
+    echo "ERROR: ACTION_CKPT (safetensors) not found: ${AR_ACTION_CKPT}" >&2
+    echo "Hint: set ACTION_CKPT=none to random-init action params." >&2
+    exit 1
+  fi
 fi
 if [ ! -d "${TRANSFORMER_DIR}" ]; then
   echo "ERROR: TRANSFORMER_DIR not found: ${TRANSFORMER_DIR}" >&2
@@ -112,6 +124,12 @@ if [[ -n "${RESUME_CKPT}" ]]; then
 fi
 
 cd "${HYWORLD_ROOT}"
+
+# Optional arg list for action ckpt
+AR_ACTION_LOAD_ARGS=()
+if ${USE_ACTION_CKPT}; then
+  AR_ACTION_LOAD_ARGS=(--ar-action-load-from-dir "${AR_ACTION_CKPT}")
+fi
 
 # NOTE: Do NOT insert comment-only lines inside a backslash-continued command.
 # In bash, a line that begins with '#' will end the continued command unless the
@@ -141,7 +159,7 @@ torchrun \
   --hsdp-shard-dim ${NUM_GPUS} \
   --cls-name "HunyuanTransformer3DARActionModel" \
   --load-from-dir "${TRANSFORMER_DIR}" \
-  --ar-action-load-from-dir "${AR_ACTION_CKPT}" \
+  "${AR_ACTION_LOAD_ARGS[@]}" \
   --transformer-from-scratch "${TRANSFORMER_FROM_SCRATCH}" \
   --model-path "${MODEL_PATH}" \
   --inference-mode False \

@@ -1,59 +1,53 @@
-
 # =============================================================================
-# sythball 3D数据 (8chunk/125f) - 4dirback 数据集完整训练流程
-#   4dirback: 前半程固定 W/S/A/D，后半程切换为相反方向 S/W/D/A（尽量回到原点）
-#   目标：让训练真正进入 out-window + memory selection（FOV overlap）分支
+# sythball 3D数据 (8chunk/125f) - 用 HunyuanVideo-1.5 base 直接训练成 AR（action 部分随机初始化）
+#
+# 关键点（已通过修改 hyw/train/run_train_small.sh 支持）：
+# - 训练时设置 ACTION_CKPT=none，则不会传 --ar-action-load-from-dir
+# - 训练侧模型会 add_discrete_action_parameters()，新增 action 参数保持 random init
+# - base transformer 权重仍从 MODEL_PATH/transformer/480p_i2v 加载
+#
+# 注意：
+# - precompute_latents.py / eval_sythcircle_test.py 创建 pipeline 时需要 action_ckpt 参数；
+#   这里建议继续用官方 HY-WorldPlay 提供的 action_ckpt（与 pipeline 侧结构匹配），
+#   与“训练时 action 随机初始化”不冲突。
 # =============================================================================
-#
-# 关键对齐（官方实现）：
-# - VAE 时间压缩比 r=4（对应 latent_T = (F-1)//4 + 1）
-# - 1 chunk = 4 个 latent（AR 的 chunk-wise causal / memory 选择均以 4 对齐）
-# - 8 chunks => latent_T = 8*4 = 32
-# - 对应原视频帧数：F = 4*(32-1)+1 = 125
-#
-# 为什么选 125 帧：
-# - latent_T=32 足够长：dataset 的 out-window 能采到 current_frame_idx ∈ {16,20,24,28}
-# - 且 current_frame_idx=24/28 > memory_frames(20)，会触发基于 FOV overlap 的“真正 memory 挑选”
-#
-# 建议训练参数：
-# - WINDOW_FRAMES=16（=4 chunks）：既能进入 out-window，又能让 memory 选择生效
-#
-
-# 这里我们用了diffusion forcing（finetune本来就是diffusion forcing，所以我们直接load bidirectional_model）
 
 # -----------------------------------------------------------------------------
 # 0. 环境变量 (根据你的机器调整)
 # -----------------------------------------------------------------------------
 export MODEL_PATH=/mnt/weka/home/hao.zhang/alex/weights/tencent/HunyuanVideo-1.5
-export ACTION_CKPT=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/bidirectional_model/diffusion_pytorch_model.safetensors
 
+# pipeline 侧 create_pipeline(action_ckpt=...) 需要一个能 strict load 的 safetensors
+# （用于 precompute_latents / eval）
+export ACTION_CKPT_PIPE=/mnt/weka/home/hao.zhang/alex/weights/tencent/HY-WorldPlay/ar_model/diffusion_pytorch_model.safetensors
 
 # -----------------------------------------------------------------------------
 # 1. 生成 sythball 3D 数据 (4dirback, 4 samples, 125 frames each; == 8 AR chunks)
 # -----------------------------------------------------------------------------
+cd /mnt/weka/home/hao.zhang/alex/FastVideo
+
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirback \
+  --out_root /mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirback \
   --split train --num_samples 4 --num_frames 125 --fps 25 --width 256 --height 256 --seed 0 \
   --hold_action_frames 4 --fixed_move_action_mode 4dirback --fixed_view_action ""
 
-# （可选）test set：用于 eval（禁用 view rotation，随机动作即可）
+# （可选）test set：用于 eval
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f_noview \
+  --out_root /mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_noview \
   --split test --num_samples 8 --num_frames 125 --fps 25 --width 256 --height 256 --seed 1000 \
   --macro_period 4 \
   --hold_action_frames 4 --fixed_view_action ""
 
-
 # -----------------------------------------------------------------------------
 # 2. 预计算 latents (VAE encode + prompt embeds)
 # -----------------------------------------------------------------------------
-cd ~/alex/FastVideo/hyw
+cd /mnt/weka/home/hao.zhang/alex/FastVideo/hyw
 
 # train (4dirback)
 python train/precompute_latents.py \
   --raw_manifest data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
-  --model_path $MODEL_PATH \
-  --action_ckpt $ACTION_CKPT \
+  --model_path "${MODEL_PATH}" \
+  --action_ckpt "${ACTION_CKPT_PIPE}" \
   --transformer_version 480p_i2v \
   --out_root data/sythball_v1_125f_8chunk_4dirback_modelinput/latent_pt/train \
   --max_samples 4
@@ -61,17 +55,16 @@ python train/precompute_latents.py \
 # test (可选)
 python train/precompute_latents.py \
   --raw_manifest data/sythball_v1_125f_noview/manifest_raw_test.json \
-  --model_path $MODEL_PATH \
-  --action_ckpt $ACTION_CKPT \
+  --model_path "${MODEL_PATH}" \
+  --action_ckpt "${ACTION_CKPT_PIPE}" \
   --transformer_version 480p_i2v \
   --out_root data/sythball_v1_125f_noview_modelinput/latent_pt/test \
   --max_samples 8
 
-
 # -----------------------------------------------------------------------------
 # 3. 生成训练 JSON (组合 latent_path + pose_path + action_path)
 # -----------------------------------------------------------------------------
-cd ~/alex/FastVideo/hyw
+cd /mnt/weka/home/hao.zhang/alex/FastVideo/hyw
 
 python train/make_training_json.py \
   --raw_manifest data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
@@ -79,39 +72,33 @@ python train/make_training_json.py \
   --out_json data/sythball_v1_125f_8chunk_4dirback_modelinput/sythball_v1_125f_8chunk_4dirback_train_for_hyworld.json \
   --max_samples 4
 
+# -----------------------------------------------------------------------------
+# 4. 训练（用 HunyuanVideo-1.5 base；action 随机初始化）
+# -----------------------------------------------------------------------------
+cd /mnt/weka/home/hao.zhang/alex/FastVideo/hyw
 
-# -----------------------------------------------------------------------------
-# 4. 训练（8chunk/125f, 4dirback）
-# -----------------------------------------------------------------------------
-cd ~/alex/FastVideo/hyw
-#
-# 8 chunks 对应：
-#   NUM_FRAMES=125
-#   NUM_LATENT_T=32
-#   WINDOW_FRAMES=16   (latent 维度；推荐 16 来体验 in-window/out-window + memory selection)
-#
-TRAIN_JSON=~/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirback_modelinput/sythball_v1_125f_8chunk_4dirback_train_for_hyworld.json \
-OUT_DIR=~/alex/FastVideo/hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df \
-WANDB_RUN_NAME=hyworld_sythball_125f_8chunk_4dirback_df \
+TRAIN_JSON=/mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirback_modelinput/sythball_v1_125f_8chunk_4dirback_train_for_hyworld.json \
+OUT_DIR=/mnt/weka/home/hao.zhang/alex/FastVideo/hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base \
+WANDB_RUN_NAME=hyworld_sythball_125f_8chunk_4dirback_df_base \
 NUM_FRAMES=125 NUM_LATENT_T=32 WINDOW_FRAMES=16 \
 NUM_GPUS=4 CUDA_VISIBLE_DEVICES=4,5,6,7 \
 MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
 TRAIN_VIDEO_LOG_STEPS=25 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
-MASTER_PORT=29612 \
+MASTER_PORT=29613 \
+MODEL_PATH="${MODEL_PATH}" ACTION_CKPT=none \
 bash train/run_train_small.sh
 
-
 # -----------------------------------------------------------------------------
-# 5. 评估（通用脚本 eval/eval_sythcircle_test.py）
+# 5. 评估（base vs finetuned）
 # -----------------------------------------------------------------------------
-cd ~/alex/FastVideo
+cd /mnt/weka/home/hao.zhang/alex/FastVideo
 
-# Base model eval（用于对比“训练前 vs 训练后”）
+# Base model eval（对比用）
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
-  --model_path $MODEL_PATH \
-  --action_ckpt $ACTION_CKPT \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_base \
+  --model_path "${MODEL_PATH}" \
+  --action_ckpt "${ACTION_CKPT_PIPE}" \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_base \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
@@ -122,29 +109,13 @@ python hyw/eval/eval_sythcircle_test.py \
 # Finetuned ckpt eval（把 checkpoint-XXX 改成你想测的）
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
-  --model_path $MODEL_PATH \
-  --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-1500 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_ckpt1500-3.0shift-ar \
+  --model_path "${MODEL_PATH}" \
+  --action_ckpt "${ACTION_CKPT_PIPE}" \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_ckpt2000-3.0shift-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
   --seed 42 \
   --model_type ar \
   --max_samples 4
-
-# （可选）no-view 测试集 eval（检验泛化；先跑第 1 步生成 test set）
-python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_125f_noview/manifest_raw_test.json \
-  --model_path $MODEL_PATH \
-  --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-2000 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_ckpt2000-3.0shift-ar-noview-test \
-  --num_inference_steps 50 \
-  --guidance_scale 1.0 \
-  --flow_shift 3.0 \
-  --seed 42 \
-  --model_type ar \
-  --max_samples 8
-
-
