@@ -134,7 +134,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw_manifest", type=str, required=True)
     parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--action_ckpt", type=str, required=True)
+    parser.add_argument(
+        "--action_ckpt",
+        type=str,
+        default=None,
+        help=(
+            "Optional action safetensors (used by HY-WorldPlay create_pipeline to strict-load action params). "
+            "Set to 'none' to RANDOM-INIT action params for evaluation."
+        ),
+    )
     parser.add_argument("--finetuned_ckpt", type=str, default=None, help="e.g. outputs/.../checkpoint-50")
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--num_inference_steps", type=int, default=20)
@@ -198,6 +206,10 @@ def main() -> None:
 
     manifest = json.loads(Path(args.raw_manifest).read_text())
 
+    action_ckpt = args.action_ckpt
+    if action_ckpt is not None and str(action_ckpt).strip().lower() in {"", "none", "null"}:
+        action_ckpt = None
+
     # Create pipeline from base MODEL_PATH.
     pipe = HunyuanVideo_1_5_Pipeline.create_pipeline(
         pretrained_model_name_or_path=args.model_path,
@@ -206,7 +218,7 @@ def main() -> None:
         enable_group_offloading=False,
         create_sr_pipeline=False,
         transformer_dtype=torch.bfloat16,
-        action_ckpt=args.action_ckpt,
+        action_ckpt=action_ckpt,
     )
 
     # Optionally load fine-tuned checkpoint weights into transformer.

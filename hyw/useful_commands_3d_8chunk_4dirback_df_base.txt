@@ -81,7 +81,7 @@ TRAIN_JSON=/mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_8ch
 OUT_DIR=/mnt/weka/home/hao.zhang/alex/FastVideo/hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base \
 WANDB_RUN_NAME=hyworld_sythball_125f_8chunk_4dirback_df_base \
 NUM_FRAMES=125 NUM_LATENT_T=32 WINDOW_FRAMES=16 \
-NUM_GPUS=4 CUDA_VISIBLE_DEVICES=4,5,6,7 \
+NUM_GPUS=4 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 MAX_TRAIN_STEPS=2000 CHECKPOINTING_STEPS=500 \
 TRAIN_VIDEO_LOG_STEPS=25 TRAIN_VIDEO_LOG_MAX_SAMPLES=1 TRAIN_VIDEO_LOG_FPS=25 \
 MASTER_PORT=29613 \
@@ -97,7 +97,7 @@ cd /mnt/weka/home/hao.zhang/alex/FastVideo
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path "${MODEL_PATH}" \
-  --action_ckpt "${ACTION_CKPT_PIPE}" \
+  --action_ckpt none \
   --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_base \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
@@ -110,7 +110,7 @@ python hyw/eval/eval_sythcircle_test.py \
 python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path "${MODEL_PATH}" \
-  --action_ckpt "${ACTION_CKPT_PIPE}" \
+  --action_ckpt none \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/checkpoint-2000 \
   --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_ckpt2000-3.0shift-ar \
   --num_inference_steps 50 \
