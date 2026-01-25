@@ -38,7 +38,7 @@ python -m hyw.sythgenerator sythball \
 
 # （可选）test set：用于 eval（禁用 view rotation，随机动作即可）
 python -m hyw.sythgenerator sythball \
-  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f_noview \
+  --out_root ~/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_noview \
   --split test --num_samples 8 --num_frames 125 --fps 25 --width 256 --height 256 --seed 1000 \
   --macro_period 4 \
   --hold_action_frames 4 --fixed_view_action ""
@@ -60,11 +60,11 @@ python train/precompute_latents.py \
 
 # test (可选)
 python train/precompute_latents.py \
-  --raw_manifest data/sythball_v1_125f_noview/manifest_raw_test.json \
+  --raw_manifest data/sythball_v1_125f_8chunk_noview/manifest_raw_test.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --transformer_version 480p_i2v \
-  --out_root data/sythball_v1_125f_noview_modelinput/latent_pt/test \
+  --out_root data/sythball_v1_125f_8chunk_noview_modelinput/latent_pt/test \
   --max_samples 8
 
 
@@ -124,8 +124,8 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-1500 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_ckpt1500-3.0shift-ar \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/eval_ckpt2000-3.0shift-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
@@ -135,7 +135,7 @@ python hyw/eval/eval_sythcircle_test.py \
 
 # （可选）no-view 测试集 eval（检验泛化；先跑第 1 步生成 test set）
 python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_125f_noview/manifest_raw_test.json \
+  --raw_manifest hyw/data/sythball_v1_125f_8chunk_noview/manifest_raw_test.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df/checkpoint-2000 \

@@ -134,7 +134,7 @@ python hyw/eval/eval_sythcircle_test.py \
 
 # （可选）no-view 测试集 eval（检验泛化；先跑第 1 步生成 test set）
 python hyw/eval/eval_sythcircle_test.py \
-  --raw_manifest hyw/data/sythball_v1_125f_noview/manifest_raw_test.json \
+  --raw_manifest hyw/data/sythball_v1_125f_8chunk_noview/manifest_raw_test.json \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
