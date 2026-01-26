@@ -111,11 +111,25 @@ python hyw/eval/eval_sythcircle_test.py \
   --raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirback/manifest_raw_train.json \
   --model_path "${MODEL_PATH}" \
   --action_ckpt none \
-  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/checkpoint-500 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_ckpt500-3.0shift-ar \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_ckpt2000-3.0shift-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
   --seed 42 \
   --model_type ar \
   --max_samples 4
+
+
+python hyw/eval/eval_sythcircle_test.py \
+  --raw_manifest hyw/data/sythball_v1_125f_8chunk_noview/manifest_raw_test.json \
+  --model_path $MODEL_PATH \
+  --action_ckpt none \
+  --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/checkpoint-2000 \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_df_base/eval_ckpt2000-3.0shift-ar-noview-test \
+  --num_inference_steps 50 \
+  --guidance_scale 1.0 \
+  --flow_shift 3.0 \
+  --seed 42 \
+  --model_type ar \
+  --max_samples 8
