@@ -42,6 +42,12 @@ python -m hyw.sythgenerator sythball \
   --macro_period 4 \
   --hold_action_frames 4 --fixed_view_action ""
 
+# 4dirdouble test
+python -m hyw.sythgenerator sythball \
+  --out_root /mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirdouble \
+  --split test --num_samples 16 --num_frames 125 --fps 25 --width 256 --height 256 --seed 1000 \
+  --macro_period 0 \
+  --hold_action_frames 4 --fixed_move_action_mode 4dirdouble --fixed_view_action ""
 
 # -----------------------------------------------------------------------------
 # 2. 预计算 latents (VAE encode + prompt embeds)
@@ -66,6 +72,14 @@ python train/precompute_latents.py \
   --out_root data/sythball_v1_125f_noview_modelinput/latent_pt/test \
   --max_samples 8
 
+# 4dirdouble test
+python train/precompute_latents.py \
+  --raw_manifest /mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirdouble/manifest_raw_test.json \
+  --model_path "${MODEL_PATH}" \
+  --action_ckpt "${ACTION_CKPT}" \
+  --transformer_version 480p_i2v \
+  --out_root /mnt/weka/home/hao.zhang/alex/FastVideo/hyw/data/sythball_v1_125f_8chunk_4dirdouble_modelinput/latent_pt/test \
+  --max_samples 16
 
 # -----------------------------------------------------------------------------
 # 3. 生成训练 JSON (组合 latent_path + pose_path + action_path)
@@ -124,7 +138,7 @@ python hyw/eval/eval_sythcircle_test.py \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-3.0shift-ar \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-ar \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
@@ -138,7 +152,7 @@ python hyw/eval/eval_sythcircle_test.py \
   --model_path $MODEL_PATH \
   --action_ckpt $ACTION_CKPT \
   --finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
-  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-3.0shift-ar-noview-test \
+  --out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-ar-noview-test \
   --num_inference_steps 50 \
   --guidance_scale 1.0 \
   --flow_shift 3.0 \
@@ -147,3 +161,16 @@ python hyw/eval/eval_sythcircle_test.py \
   --max_samples 8
 
 
+# 4dirdouble test
+python hyw/eval/eval_sythcircle_test.py \
+--raw_manifest hyw/data/sythball_v1_125f_8chunk_4dirdouble/manifest_raw_test.json \
+--model_path "${MODEL_PATH}" \
+--action_ckpt none \
+--finetuned_ckpt hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/checkpoint-2000 \
+--out_dir hyw/outputs/hyworld_sythball_125f_8chunk_4dirback_small/eval_ckpt2000-ar-4dirdouble-test \
+--num_inference_steps 50 \
+--guidance_scale 1.0 \
+--flow_shift 3.0 \
+--seed 42 \
+--model_type ar \
+--max_samples 16

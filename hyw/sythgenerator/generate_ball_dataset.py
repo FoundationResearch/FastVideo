@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> None:
         "--fixed_move_action_mode",
         type=str,
         default="single",
-        choices=["single", "4dir", "4dirback"],
+        choices=["single", "4dir", "4dirback", "4dirdouble"],
         help=(
             "How to apply --fixed_move_action. "
             "'single': all samples share the same fixed move action (legacy behavior). "
@@ -291,7 +291,10 @@ def main(argv: list[str] | None = None) -> None:
             "[W,S,A,D] (front/back/left/right), keeping the rest identical. "
             "'4dirback': ignore --fixed_move_action and generate 4 samples; each sample moves in a fixed direction "
             "for the first half, then moves in the opposite direction for the second half (optionally inserting "
-            "one neutral block if the number of action blocks is odd) to approximately return to the origin."
+            "one neutral block if the number of action blocks is odd) to approximately return to the origin. "
+            "'4dirdouble': enumerate ordered pairs from [W,A,S,D]x[W,A,S,D] per sample index "
+            "(W+W, W+A, W+S, W+D, A+W, ...), using the first half for the first dir and the second half for the "
+            "second dir (pairs repeat every 16 samples)."
         ),
     )
     p.add_argument(
@@ -343,6 +346,31 @@ def main(argv: list[str] | None = None) -> None:
 
         return _fn
 
+    def _make_4dirdouble_fn(
+        first_dir: str,
+        second_dir: str,
+        *,
+        num_frames: int,
+        hold_action_frames: int,
+    ) -> Callable[[int], str]:
+        valid = {"W", "A", "S", "D"}
+        if first_dir not in valid or second_dir not in valid:
+            raise ValueError(f"4dirdouble expects dirs in {sorted(valid)}, got: {first_dir}, {second_dir}")
+
+        # Actions are updated only at t % hold_action_frames == 0 and t>0.
+        total_blocks = max(0, (num_frames - 1) // hold_action_frames)
+        first_blocks = total_blocks // 2
+
+        def _fn(t: int) -> str:
+            if t <= 0:
+                return ""
+            block_idx = t // hold_action_frames  # 1..total_blocks
+            if block_idx <= first_blocks:
+                return first_dir
+            return second_dir
+
+        return _fn
+
     for i in range(args.num_samples):
         fixed_move_action = args.fixed_move_action
         fixed_move_action_fn: Callable[[int], str] | None = None
@@ -354,6 +382,20 @@ def main(argv: list[str] | None = None) -> None:
             fixed_move_action = None
             fixed_move_action_fn = _make_4dirback_fn(
                 base_dir,
+                num_frames=args.num_frames,
+                hold_action_frames=args.hold_action_frames,
+            )
+        elif args.fixed_move_action_mode == "4dirdouble":
+            # Deterministic two-phase motion by ordered enumeration:
+            # sample 0: W+W, 1: W+A, 2: W+S, 3: W+D, 4: A+W, ...
+            dirs = ["W", "A", "S", "D"]
+            pair_idx = i % (len(dirs) * len(dirs))  # repeat every 16
+            first_dir = dirs[pair_idx // len(dirs)]
+            second_dir = dirs[pair_idx % len(dirs)]
+            fixed_move_action = None
+            fixed_move_action_fn = _make_4dirdouble_fn(
+                first_dir,
+                second_dir,
                 num_frames=args.num_frames,
                 hold_action_frames=args.hold_action_frames,
             )

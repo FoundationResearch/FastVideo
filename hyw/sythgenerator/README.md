@@ -103,6 +103,7 @@ python -m hyw.sythgenerator sythball \
   - `single`：默认行为，所有样本使用同一个 `--fixed_move_action`
   - `4dir`：忽略 `--fixed_move_action`，生成 4 个样本，分别固定为 `[W,S,A,D]`
   - `4dirback`：忽略 `--fixed_move_action`，生成 4 个样本；每个样本前半段固定一个方向（W/S/A/D），后半段改为相反方向（S/W/D/A）以“尽量返回原点”（动作按 `hold_action_frames` 块对齐；若块数为奇数，会插入一个空动作块做平衡）
+  - `4dirdouble`：忽略 `--fixed_move_action`，每个样本分两段：前半段固定为一个方向、后半段固定为一个方向；并且按样本索引**顺序枚举** `[W,A,S,D]×[W,A,S,D]`（`W+W, W+A, W+S, W+D, A+W, ...`），每 16 个样本循环一次
 - `--fixed_view_action`: 固定 `view_action`（例如 `""/LR/LL/LU/LD`）；用 `""` 表示相机朝向不变。
 
 4dir 示例（4 个样本，分别固定方向）：
