@@ -68,13 +68,6 @@ def _frame_action_to_labels(action_json: Dict, latent_num: int) -> torch.Tensor:
         (0, 1, 0, 1): 8,
     }
 
-    move_map = {
-        "": (0, 0, 0, 0),
-        "W": (1, 0, 0, 0),
-        "S": (0, 1, 0, 0),
-        "D": (0, 0, 1, 0),
-        "A": (0, 0, 0, 1),
-    }
     rot_map = {
         "": (0, 0, 0, 0),
         "LR": (1, 0, 0, 0),  # yaw right
@@ -88,9 +81,23 @@ def _frame_action_to_labels(action_json: Dict, latent_num: int) -> torch.Tensor:
     for i in range(1, latent_num):
         frame_idx = i * 4
         entry = action_json.get(str(frame_idx), {"move_action": "", "view_action": ""})
-        move = entry.get("move_action", "")
-        view = entry.get("view_action", "")
-        trans_label = mapping[move_map.get(move, (0, 0, 0, 0))]
+        move = str(entry.get("move_action", "") or "")
+        view = str(entry.get("view_action", "") or "")
+
+        # Match official HY-WorldPlay dataset parsing:
+        # - Allow diagonal moves like "WA"/"WD"/"SA"/"SD"
+        # - Disallow contradictory moves like "WS" or "AD" (treated as no-move)
+        trans_one_hot = [0, 0, 0, 0]  # [W, S, D, A]
+        if ("W" in move) and ("S" not in move):
+            trans_one_hot[0] = 1
+        if ("S" in move) and ("W" not in move):
+            trans_one_hot[1] = 1
+        if ("D" in move) and ("A" not in move):
+            trans_one_hot[2] = 1
+        if ("A" in move) and ("D" not in move):
+            trans_one_hot[3] = 1
+
+        trans_label = mapping[tuple(trans_one_hot)]
         rot_label = mapping[rot_map.get(view, (0, 0, 0, 0))]
         labels.append(trans_label * 9 + rot_label)
     return torch.tensor(labels, dtype=torch.long)
