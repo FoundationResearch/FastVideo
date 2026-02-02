@@ -138,6 +138,8 @@ class WanActionSelfAttention(nn.Module):
             supported_attention_backends=(AttentionBackendEnum.FLASH_ATTN,
                                           AttentionBackendEnum.TORCH_SDPA))
 
+        # Output projections
+        self.to_out = ReplicatedLinear(dim, dim, bias=True)
         # PRoPE output projection (initialized via add_discrete_action_parameters)
         self.to_out_prope: nn.ModuleList | None = None
 
@@ -255,7 +257,19 @@ class WanActionSelfAttention(nn.Module):
         hidden_states_rope, hidden_states_prope = hidden_states_all.chunk(2, dim=0)
         hidden_states_prope = apply_fn_o(hidden_states_prope.transpose(1, 2)).transpose(1, 2)
 
-        return hidden_states_rope, hidden_states_prope
+        # Apply output projections
+        hidden_states_rope = hidden_states_rope.flatten(2)
+        hidden_states_rope = hidden_states_rope.type_as(q)
+        hidden_states_rope, _ = self.to_out(hidden_states_rope)
+
+        hidden_states_prope = hidden_states_prope.flatten(2)
+        hidden_states_prope = hidden_states_prope.type_as(q)
+        hidden_states_prope = self.to_out_prope[0](hidden_states_prope)
+
+        # Combine rope and prope outputs
+        hidden_states = hidden_states_rope + hidden_states_prope
+
+        return hidden_states
 
 
 class WanActionTransformerBlock(nn.Module):
@@ -286,7 +300,6 @@ class WanActionTransformerBlock(nn.Module):
         self.to_q = ReplicatedLinear(dim, dim, bias=True)
         self.to_k = ReplicatedLinear(dim, dim, bias=True)
         self.to_v = ReplicatedLinear(dim, dim, bias=True)
-        self.to_out = ReplicatedLinear(dim, dim, bias=True)
         
         self.attn1 = WanActionSelfAttention(
             dim,
@@ -332,9 +345,6 @@ class WanActionTransformerBlock(nn.Module):
         self.mlp_residual = ScaleResidual()
 
         self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
-
-        # PRoPE output projection (initialized via add_discrete_action_parameters on the model)
-        self.to_out_prope: nn.ModuleList | None = None
 
     def forward(
         self,
@@ -382,17 +392,12 @@ class WanActionTransformerBlock(nn.Module):
         value = value.squeeze(1).unflatten(2, (self.num_attention_heads, -1))
 
         # Self-attention with optional camera PRoPE
-        attn_output_rope, attn_output_prope = self.attn1(
+        attn_output = self.attn1(
             query, key, value, freqs_cis,
             kv_cache, current_start, cache_start, viewmats, Ks,
             is_cache=is_cache
         )
-        # Combine rope and prope outputs
-        attn_output_rope = attn_output_rope.flatten(2)
-        attn_output_rope, _ = self.to_out(attn_output_rope)
-        attn_output_prope = attn_output_prope.flatten(2)
-        attn_output_prope = self.to_out_prope[0](attn_output_prope)
-        attn_output = attn_output_rope.squeeze(1) + attn_output_prope.squeeze(1)
+        attn_output = attn_output.squeeze(1)
 
         # Self-attention residual + norm in float32
         null_shift = null_scale = torch.zeros(1, device=hidden_states.device, dtype=torch.float32)
@@ -434,7 +439,12 @@ class WanActionTransformer3DModel(BaseDiT):
     _fsdp_shard_conditions = WanVideoConfig()._fsdp_shard_conditions
     _compile_conditions = WanVideoConfig()._compile_conditions
     _supported_attention_backends = WanVideoConfig()._supported_attention_backends
-    param_names_mapping = WanVideoConfig().param_names_mapping
+    # Custom param_names_mapping: to_out is in attn1, not block level
+    param_names_mapping = {
+        **WanVideoConfig().param_names_mapping,
+        # Override: map to_out to attn1.to_out (not block.to_out)
+        r"^blocks\.(\d+)\.attn1\.to_out\.0\.(.*)$": r"blocks.\1.attn1.to_out.\2",
+    }
     reverse_param_names_mapping = WanVideoConfig().reverse_param_names_mapping
     lora_param_names_mapping = WanVideoConfig().lora_param_names_mapping
 
@@ -520,17 +530,14 @@ class WanActionTransformer3DModel(BaseDiT):
         if self.condition_embedder.action_embedder.fc_out.bias is not None:
             nn.init.zeros_(self.condition_embedder.action_embedder.fc_out.bias)
 
-        # PRoPE output projections for each block
+        # PRoPE output projections for each block's self-attention
         for block in self.blocks:
-            block.to_out_prope = nn.ModuleList([
+            block.attn1.to_out_prope = nn.ModuleList([
                 nn.Linear(self.inner_dim, self.inner_dim, bias=True),
             ])
-            nn.init.zeros_(block.to_out_prope[0].weight)
-            if block.to_out_prope[0].bias is not None:
-                nn.init.zeros_(block.to_out_prope[0].bias)
-
-            # Also set the PRoPE projection in the attention module
-            block.attn1.to_out_prope = block.to_out_prope
+            nn.init.zeros_(block.attn1.to_out_prope[0].weight)
+            if block.attn1.to_out_prope[0].bias is not None:
+                nn.init.zeros_(block.attn1.to_out_prope[0].bias)
 
     def forward(
         self,
