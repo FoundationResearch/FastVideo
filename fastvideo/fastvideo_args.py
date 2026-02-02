@@ -185,6 +185,7 @@ class FastVideoArgs:
     override_text_encoder_quant: QuantizationMethods = None
 
     override_transformer_cls_name: str | None = None
+    add_action_parameters: bool = False  # Whether to call add_discrete_action_parameters() after loading transformer (for WanAction models)
     init_weights_from_safetensors: str = ""  # path to safetensors file for initial weight loading
     init_weights_from_safetensors_2: str = ""  # path to safetensors file for initial weight loading for transformer_2
 
@@ -589,6 +590,12 @@ class FastVideoArgs:
             type=str,
             default=FastVideoArgs.override_transformer_cls_name,
             help="Override transformer cls name",
+        )
+        parser.add_argument(
+            "--add-action-parameters",
+            action="store_true",
+            default=FastVideoArgs.add_action_parameters,
+            help="Call add_discrete_action_parameters() after loading transformer (for WanAction models)",
         )
         parser.add_argument(
             "--override-pipeline-cls-name",

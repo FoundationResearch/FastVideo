@@ -837,6 +837,18 @@ class TransformerLoader(ComponentLoader):
 
         model = model.eval()
 
+        # Add discrete action parameters if requested (for WanAction models)
+        if fastvideo_args.add_action_parameters:
+            if hasattr(model, 'add_discrete_action_parameters'):
+                logger.info("Adding discrete action parameters to transformer")
+                model.add_discrete_action_parameters()
+            else:
+                logger.warning(
+                    "add_action_parameters=True but model %s does not have "
+                    "add_discrete_action_parameters method. Skipping.",
+                    cls_name
+                )
+
         if fastvideo_args.inference_mode and fastvideo_args.dit_layerwise_offload:
             # Check if model has nn.ModuleList for layerwise offload compatibility
             has_module_list = any(
