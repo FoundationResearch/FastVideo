@@ -31,11 +31,22 @@ import torch
 
 import fastvideo.envs as envs
 from fastvideo.logger import init_logger
+import os
 
 logger = init_logger(__name__)
 
 _GLOBAL_PROFILER: torch.profiler.profile | None = None
 _GLOBAL_CONTROLLER: TorchProfilerController | None = None
+
+os.environ["FASTVIDEO_TORCH_PROFILER_DIR"] = "/mnt/weka/home/hao.zhang/mhuo/FastVideo/profiling"
+os.environ["FASTVIDEO_TORCH_PROFILE_REGIONS"] = "profiler_region_inference_denoising_step"
+os.environ["FASTVIDEO_TORCH_PROFILER_RECORD_SHAPES"] = "0"
+os.environ["FASTVIDEO_TORCH_PROFILER_WITH_PROFILE_MEMORY"] = "0"
+os.environ["FASTVIDEO_TORCH_PROFILER_WITH_STACK"] = "0"
+os.environ["FASTVIDEO_TORCH_PROFILER_WITH_FLOPS"] = "0"
+os.environ["FASTVIDEO_TORCH_PROFILER_WAIT_STEPS"] = "0"
+os.environ["FASTVIDEO_TORCH_PROFILER_WARMUP_STEPS"] = "0"
+os.environ["FASTVIDEO_TORCH_PROFILER_ACTIVE_STEPS"] = "1"
 
 
 @dataclass(frozen=True)
@@ -140,6 +151,10 @@ register_profiler_region(
 #     description=
 #     "Post-processing after denoising (decoder, conditioning restores).",
 # )
+register_profiler_region(
+    name="profiler_region_inference_denoising_step",
+    description="Single denoising step (transformer forward pass).",
+)
 register_profiler_region(
     name="profiler_region_training_save_checkpoint",
     description="Training save checkpoint operations.",
@@ -395,6 +410,8 @@ class TorchProfilerController:
                         "PROFILER: Setting collection to False upon exiting region %s",
                         region)
                     self._set_collection(False)
+                    # Advance the profiler schedule to trigger trace export
+                    self._profiler.step()
 
     def start(self) -> None:
         """Start the profiler and pause collection until a region is entered."""

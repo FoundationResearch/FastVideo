@@ -20,6 +20,8 @@ from fastvideo.pipelines.stages.validators import VerificationResult
 from fastvideo.utils import dict_to_3d_list
 from fastvideo.models.dits.hyworld.retrieval_context import (
     generate_points_in_sphere, select_aligned_memory_frames)
+from fastvideo.profiler import get_or_create_profiler
+import fastvideo.envs as envs
 
 logger = init_logger(__name__)
 
@@ -167,206 +169,218 @@ class HYWorldDenoisingStage(DenoisingStage):
         trajectory_timesteps: list[torch.Tensor] = []
         trajectory_latents: list[torch.Tensor] = []
 
-        # Main chunk processing loop
-        for chunk_i in range(chunk_num):
-            if chunk_i > 0:
-                # Select context frames based on camera alignment
-                current_frame_idx = chunk_i * chunk_latent_frames
+        # Initialize and get profiler controller for denoising profiling
+        trace_dir = envs.FASTVIDEO_TORCH_PROFILER_DIR
+        profiler_controller = get_or_create_profiler(trace_dir)
 
-                selected_frame_indices = []
-                for chunk_start_idx in range(
-                        current_frame_idx,
-                        current_frame_idx + chunk_latent_frames,
-                        4,  # Process every 4 frames
-                ):
-                    selected_history_frame_id = select_aligned_memory_frames(
-                        viewmats[0].cpu().detach().numpy(),
-                        chunk_start_idx,
-                        memory_frames=20,
-                        temporal_context_size=12,
-                        pred_latent_size=4,
-                        points_local=points_local,
-                        device=device,
-                    )
-                    selected_frame_indices.extend(selected_history_frame_id)
+        # Wrap entire denoising loop with profiler
+        with profiler_controller.region("profiler_region_inference_denoising_step"):
+            # Main chunk processing loop
+            for chunk_i in range(chunk_num):
+                if chunk_i > 0:
+                    # Select context frames based on camera alignment
+                    current_frame_idx = chunk_i * chunk_latent_frames
 
-                selected_frame_indices = sorted(
-                    list(set(selected_frame_indices)))
-                # Remove current chunk frames from context
-                to_remove = list(
-                    range(current_frame_idx,
-                          current_frame_idx + chunk_latent_frames))
-                selected_frame_indices = [
-                    x for x in selected_frame_indices if x not in to_remove
-                ]
-
-                # Extract context frames
-                context_latents = latents[:, :, selected_frame_indices]
-                context_w2c = viewmats[:, selected_frame_indices]
-                context_Ks = Ks[:, selected_frame_indices]
-                context_action = action[:, selected_frame_indices]
-
-            self.scheduler.set_timesteps(num_inference_steps, device=device)
-
-            # Define chunk boundaries
-            start_idx = chunk_i * chunk_latent_frames
-            end_idx = chunk_i * chunk_latent_frames + chunk_latent_frames
-
-            # Denoising loop for this chunk
-            with self.progress_bar(total=num_inference_steps) as progress_bar:
-                for i, t in enumerate(timesteps):
-
-                    if chunk_i == 0:
-                        # First chunk: standard processing
-                        timestep_input = torch.full(
-                            (chunk_latent_frames, ),
-                            t.item(),
-                            device=device,
-                            dtype=timesteps.dtype,
-                        )
-                        latent_model_input = latents[:, :, :chunk_latent_frames]
-                        cond_latents_input = cond_latents[:, :, :
-                                                          chunk_latent_frames]
-                    else:
-                        # Subsequent chunks: use context frames with different timesteps
-                        t_now = torch.full(
-                            (chunk_latent_frames, ),
-                            t.item(),
-                            device=device,
-                            dtype=timesteps.dtype,
-                        )
-                        t_ctx = torch.full(
-                            (len(selected_frame_indices), ),
-                            stabilization_level - 1,
-                            device=device,
-                            dtype=timesteps.dtype,
-                        )
-                        timestep_input = torch.cat([t_ctx, t_now], dim=0)
-
-                        latents_model_now = latents[:, :, start_idx:end_idx]
-                        latent_model_input = torch.cat(
-                            [context_latents, latents_model_now], dim=2)
-                        cond_latents_input = cond_latents[:, :, :
-                                                          latent_model_input.
-                                                          shape[2]]
-
-                    # Prepare viewmats, Ks, action for current chunk
-                    viewmats_input = viewmats[:, start_idx:end_idx]
-                    Ks_input = Ks[:, start_idx:end_idx]
-                    action_input = action[:, start_idx:end_idx]
-
-                    if chunk_i > 0:
-                        viewmats_input = torch.cat(
-                            [context_w2c, viewmats_input], dim=1)
-                        Ks_input = torch.cat([context_Ks, Ks_input], dim=1)
-                        action_input = torch.cat([context_action, action_input],
-                                                 dim=1)
-
-                    # Prepare latent input (concatenate with cond_latents if needed)
-                    latents_concat = torch.concat(
-                        [latent_model_input, cond_latents_input], dim=1)
-
-                    # Note: Unlike some other pipelines, HYWorld runs CFG sequentially (two passes)
-                    # rather than batching pos/neg together, following the original implementation
-                    latents_concat = self.scheduler.scale_model_input(
-                        latents_concat, t)
-
-                    # Keep batch size 1 for sequential CFG
-                    t_expand_txt = t.unsqueeze(0)
-                    t_expand = timestep_input
-                    viewmats_input = viewmats_input.to(device)
-                    Ks_input = Ks_input.to(device)
-                    action_input = action_input.reshape(-1).to(device)
-
-                    with torch.autocast(
-                            device_type="cuda",
-                            dtype=target_dtype,
-                            enabled=autocast_enabled,
+                    selected_frame_indices = []
+                    for chunk_start_idx in range(
+                            current_frame_idx,
+                            current_frame_idx + chunk_latent_frames,
+                            4,  # Process every 4 frames
                     ):
-                        current_model = self.transformer
-                        batch.is_cfg_negative = False
+                        selected_history_frame_id = select_aligned_memory_frames(
+                            viewmats[0].cpu().detach().numpy(),
+                            chunk_start_idx,
+                            memory_frames=20,
+                            temporal_context_size=12,
+                            pred_latent_size=4,
+                            points_local=points_local,
+                            device=device,
+                        )
+                        selected_frame_indices.extend(selected_history_frame_id)
 
-                        # Prepare transformer kwargs with HYWorld-specific inputs
-                        # Note: batch size 1 for sequential CFG (matching original HY-WorldPlay)
-                        transformer_kwargs = {
-                            **image_kwargs,
-                            "timestep": t_expand,
-                            "timestep_txt": t_expand_txt,
-                            "viewmats": viewmats_input.to(target_dtype),
-                            "Ks": Ks_input.to(target_dtype),
-                            "action": action_input.to(target_dtype),
-                        }
+                    selected_frame_indices = sorted(
+                        list(set(selected_frame_indices)))
+                    # Remove current chunk frames from context
+                    to_remove = list(
+                        range(current_frame_idx,
+                              current_frame_idx + chunk_latent_frames))
+                    selected_frame_indices = [
+                        x for x in selected_frame_indices if x not in to_remove
+                    ]
 
-                        # Set encoder_attention_mask for positive/negative conditioning
-                        pos_transformer_kwargs = {
-                            **transformer_kwargs, "encoder_attention_mask":
-                            batch.prompt_attention_mask
-                        }
-                        neg_transformer_kwargs = {
-                            **transformer_kwargs, "encoder_attention_mask":
-                            batch.negative_attention_mask
-                        }
+                    # Extract context frames
+                    context_latents = latents[:, :, selected_frame_indices]
+                    context_w2c = viewmats[:, selected_frame_indices]
+                    context_Ks = Ks[:, selected_frame_indices]
+                    context_action = action[:, selected_frame_indices]
 
-                        with set_forward_context(
-                                current_timestep=i,
-                                attn_metadata=None,
-                                forward_batch=batch,
-                        ):
-                            noise_pred = current_model(
-                                latents_concat,
-                                prompt_embeds,
-                                **pos_transformer_kwargs,
+                    # with torch.cuda.nvtx.range("extract_context_frames"):
+                    #     context_latents = latents[:, :, selected_frame_indices]
+                    # with torch.cuda.nvtx.range("extract_context_w2c"):
+                    #     context_w2c = viewmats[:, selected_frame_indices]
+                    # with torch.cuda.nvtx.range("extract_context_Ks"):
+                    #     context_Ks = Ks[:, selected_frame_indices]
+                    # with torch.cuda.nvtx.range("extract_context_action"):
+                    #     context_action = action[:, selected_frame_indices]
+
+                self.scheduler.set_timesteps(num_inference_steps, device=device)
+                # Use scheduler's timesteps after set_timesteps() to respect num_inference_steps
+                chunk_timesteps = self.scheduler.timesteps
+
+                # Define chunk boundaries
+                start_idx = chunk_i * chunk_latent_frames
+                end_idx = chunk_i * chunk_latent_frames + chunk_latent_frames
+
+                # Denoising loop for this chunk
+                with self.progress_bar(total=num_inference_steps) as progress_bar:
+                    for i, t in enumerate(chunk_timesteps):
+
+                        if chunk_i == 0:
+                            # First chunk: standard processing
+                            timestep_input = torch.full(
+                                (chunk_latent_frames, ),
+                                t.item(),
+                                device=device,
+                                dtype=timesteps.dtype,
                             )
+                            latent_model_input = latents[:, :, :chunk_latent_frames]
+                            cond_latents_input = cond_latents[:, :, :chunk_latent_frames]
+                        else:
+                            # Subsequent chunks: use context frames with different timesteps
+                            t_now = torch.full(
+                                (chunk_latent_frames, ),
+                                t.item(),
+                                device=device,
+                                dtype=timesteps.dtype,
+                            )
+                            t_ctx = torch.full(
+                                (len(selected_frame_indices), ),
+                                stabilization_level - 1,
+                                device=device,
+                                dtype=timesteps.dtype,
+                            )
+                            timestep_input = torch.cat([t_ctx, t_now], dim=0)
 
-                        if batch.do_classifier_free_guidance:
-                            batch.is_cfg_negative = True
+                            latents_model_now = latents[:, :, start_idx:end_idx]
+                            latent_model_input = torch.cat(
+                                [context_latents, latents_model_now], dim=2)
+                            cond_latents_input = cond_latents[:, :, :latent_model_input.shape[2]]
+
+                        # Prepare viewmats, Ks, action for current chunk
+                        viewmats_input = viewmats[:, start_idx:end_idx]
+                        Ks_input = Ks[:, start_idx:end_idx]
+                        action_input = action[:, start_idx:end_idx]
+
+                        if chunk_i > 0:
+                            viewmats_input = torch.cat(
+                                [context_w2c, viewmats_input], dim=1)
+                            Ks_input = torch.cat([context_Ks, Ks_input], dim=1)
+                            action_input = torch.cat([context_action, action_input],
+                                                     dim=1)
+
+                        # Prepare latent input (concatenate with cond_latents if needed)
+                        latents_concat = torch.concat(
+                            [latent_model_input, cond_latents_input], dim=1)
+
+                        # Note: Unlike some other pipelines, HYWorld runs CFG sequentially (two passes)
+                        # rather than batching pos/neg together, following the original implementation
+                        latents_concat = self.scheduler.scale_model_input(
+                            latents_concat, t)
+
+                        # Keep batch size 1 for sequential CFG
+                        t_expand_txt = t.unsqueeze(0)
+                        t_expand = timestep_input
+                        viewmats_input = viewmats_input.to(device)
+                        Ks_input = Ks_input.to(device)
+                        action_input = action_input.reshape(-1).to(device)
+
+                        with torch.autocast(
+                                device_type="cuda",
+                                dtype=target_dtype,
+                                enabled=autocast_enabled,
+                        ):
+                            current_model = self.transformer
+                            batch.is_cfg_negative = False
+
+                            # Prepare transformer kwargs with HYWorld-specific inputs
+                            # Note: batch size 1 for sequential CFG (matching original HY-WorldPlay)
+                            transformer_kwargs = {
+                                **image_kwargs,
+                                "timestep": t_expand,
+                                "timestep_txt": t_expand_txt,
+                                "viewmats": viewmats_input.to(target_dtype),
+                                "Ks": Ks_input.to(target_dtype),
+                                "action": action_input.to(target_dtype),
+                            }
+
+                            # Set encoder_attention_mask for positive/negative conditioning
+                            pos_transformer_kwargs = {
+                                **transformer_kwargs, "encoder_attention_mask":
+                                batch.prompt_attention_mask
+                            }
+                            neg_transformer_kwargs = {
+                                **transformer_kwargs, "encoder_attention_mask":
+                                batch.negative_attention_mask
+                            }
+
                             with set_forward_context(
                                     current_timestep=i,
                                     attn_metadata=None,
                                     forward_batch=batch,
                             ):
-                                noise_pred_uncond = current_model(
+                                noise_pred = current_model(
                                     latents_concat,
-                                    neg_prompt_embeds,
-                                    **neg_transformer_kwargs,
+                                    prompt_embeds,
+                                    **pos_transformer_kwargs,
                                 )
 
-                            noise_pred_text = noise_pred
-                            noise_pred = noise_pred_uncond + batch.guidance_scale * (
-                                noise_pred_text - noise_pred_uncond)
+                            if batch.do_classifier_free_guidance:
+                                batch.is_cfg_negative = True
+                                with set_forward_context(
+                                        current_timestep=i,
+                                        attn_metadata=None,
+                                        forward_batch=batch,
+                                ):
+                                    noise_pred_uncond = current_model(
+                                        latents_concat,
+                                        neg_prompt_embeds,
+                                        **neg_transformer_kwargs,
+                                    )
 
-                            # Apply guidance rescale if needed
-                            if batch.guidance_rescale > 0.0:
-                                noise_pred = self.rescale_noise_cfg(
-                                    noise_pred,
-                                    noise_pred_text,
-                                    guidance_rescale=batch.guidance_rescale,
-                                )
+                                noise_pred_text = noise_pred
+                                noise_pred = noise_pred_uncond + batch.guidance_scale * (
+                                    noise_pred_text - noise_pred_uncond)
 
-                    # Step scheduler - update only the current chunk's latents
-                    latent_model_input = self.scheduler.step(
-                        noise_pred,
-                        t,
-                        latent_model_input,
-                        **extra_step_kwargs,
-                        return_dict=False)[0]
+                                # Apply guidance rescale if needed
+                                if batch.guidance_rescale > 0.0:
+                                    noise_pred = self.rescale_noise_cfg(
+                                        noise_pred,
+                                        noise_pred_text,
+                                        guidance_rescale=batch.guidance_rescale,
+                                    )
 
-                    # Update only the current chunk's latents
-                    latents[:, :, start_idx:
-                            end_idx] = latent_model_input[:, :,
-                                                          -chunk_latent_frames:]
+                        # Step scheduler - update only the current chunk's latents
+                        latent_model_input = self.scheduler.step(
+                            noise_pred,
+                            t,
+                            latent_model_input,
+                            **extra_step_kwargs,
+                            return_dict=False)[0]
 
-                    # Save trajectory latents if needed
-                    if batch.return_trajectory_latents:
-                        trajectory_timesteps.append(t)
-                        trajectory_latents.append(latents.clone())
+                        # Update only the current chunk's latents
+                        latents[:, :, start_idx:end_idx] = latent_model_input[:, :, -chunk_latent_frames:]
 
-                    # Update progress bar
-                    if i == len(timesteps) - 1 or (
-                        (i + 1) > num_warmup_steps and
-                        (i + 1) % self.scheduler.order == 0
-                            and progress_bar is not None):
-                        progress_bar.update()
+                        # Save trajectory latents if needed
+                        if batch.return_trajectory_latents:
+                            trajectory_timesteps.append(t)
+                            trajectory_latents.append(latents.clone())
+
+                        # Update progress bar
+                        if i == len(timesteps) - 1 or (
+                            (i + 1) > num_warmup_steps and
+                            (i + 1) % self.scheduler.order == 0
+                                and progress_bar is not None):
+                            progress_bar.update()
 
         # Handle trajectory output
         trajectory_tensor: torch.Tensor | None = None

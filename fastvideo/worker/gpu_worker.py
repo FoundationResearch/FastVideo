@@ -11,6 +11,7 @@ from fastvideo.distributed.parallel_state import get_local_torch_device
 from fastvideo.fastvideo_args import FastVideoArgs
 from fastvideo.logger import init_logger
 from fastvideo.pipelines import ForwardBatch, LoRAPipeline, build_pipeline
+from fastvideo.profiler import get_global_controller
 
 logger = init_logger(__name__)
 
@@ -82,13 +83,19 @@ class Worker:
 
     def shutdown(self) -> dict[str, Any]:
         """Gracefully shut down the worker process"""
+        # Guard against double shutdown
+        if getattr(self, '_shutdown_called', False):
+            return {"status": "shutdown_complete"}
+        self._shutdown_called = True
+
         logger.info("Worker %d shutting down...",
                     self.rank,
                     local_main_process_only=False)
-        # Clean up resources
-        if hasattr(self, 'pipeline') and self.pipeline is not None:
-            # Clean up pipeline resources if needed
-            pass
+        # Clean up resources - stop the profiler to export traces
+        profiler_controller = get_global_controller()
+        if profiler_controller is not None and profiler_controller.has_profiler:
+            logger.info("Stopping profiler and exporting traces...")
+            profiler_controller.stop()
 
         # Destroy the distributed environment
         cleanup_dist_env_and_memory(shutdown_ray=False)

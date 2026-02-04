@@ -163,14 +163,15 @@ DEFAULT_IMAGE = 'https://raw.githubusercontent.com/Tencent-Hunyuan/HY-WorldPlay/
 def main():
     import argparse
 
-    # pose: (a, w, s, d) - (15, 31)
-    # num_frames: (61, 125)
+    # pose: (a, w, s, d) - latent_count (e.g., w-31 for 5sec, w-367 for 1min)
+    # num_frames formula: (latent_count) * 4 + 1 (e.g., 31*4+1=125 for 5sec, 367*4+1=1469 for 1min)
+    # Time calculation: num_frames / fps (e.g., 125/24=5.2sec, 1469/24=61.2sec)
     parser = argparse.ArgumentParser(description="HYWorld video generation with FastVideo")
     parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT, help="Text prompt for video generation")
     parser.add_argument("--image", type=str, default=DEFAULT_IMAGE, help="Path or URL to input image")
-    parser.add_argument("--pose", type=str, default='w-31', help="Pose string (e.g., 'a-31', 'w-31', 's-31', 'd-31')")
+    parser.add_argument("--pose", type=str, default='w-63', help="Pose string (e.g., 'w-31'=5sec, 'w-63'=10sec, 'w-367'=1min)")
     parser.add_argument("--output_path", type=str, default='video_samples_hyworld', help="Output video path")
-    parser.add_argument("--num-frames", type=int, default=125, help="Number of frames")
+    parser.add_argument("--num-frames", type=int, default=253, help="Number of frames. 125=5sec, 253=10sec, 1469=1min")
     parser.add_argument("--seed", type=int, default=1, help="Random seed")
     parser.add_argument("--resolution", type=str, default="480p", help="Only support 480p for now")
     args = parser.parse_args()
@@ -212,6 +213,7 @@ def main():
         width=WIDTH,
         seed=args.seed,
         pose=args.pose,
+        num_inference_steps=1,
     )
     elapsed = time.time() - start_time
 
