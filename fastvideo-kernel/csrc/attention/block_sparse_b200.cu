@@ -285,7 +285,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
 }  // namespace
 
-#include "pyutils/torch_helpers.cuh"
+#include "pyutils/torchutils.cuh"
 
 std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
     torch::Tensor q,
