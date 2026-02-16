@@ -113,6 +113,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     __shared__ kittens::semaphore v_smem_arrived[2];
     __shared__ kittens::semaphore score_done;
     __shared__ kittens::semaphore pv_done;
+    __shared__ kittens::semaphore p_smem_ready;
     __shared__ uint32_t tmem_addr;
     __shared__ kittens::semaphore tmem_provisioned;
 
@@ -143,6 +144,8 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         init_semaphore(score_done, 0, 1);
         init_semaphore(pv_done, 0, 1);
         init_semaphore(tmem_provisioned, 0, 1);
+        // 4 warps each arrive once after writing their P subtile to shared.
+        init_semaphore(p_smem_ready, 4, 0);
     }
     __syncthreads();
 
@@ -196,17 +199,12 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         const int ring = (kv_idx & 1);
         const int phase = ((kv_idx >> 1) & 1);
 
-        // Wait for K/V tile for this kv_idx to arrive in the ring buffer.
-        wait(k_smem_arrived[ring], phase);
-        wait(v_smem_arrived[ring], phase);
-
-        // Prefetch the next KV block (kv_idx+1) into the other ring buffer to
-        // overlap TMA with compute and never overwrite the current ring.
+        // Prefetch the next KV block (kv_idx+1) into the other ring buffer as
+        // early as possible (safe: never overwrites current ring).
         if (threadIdx.x == 0 && (kv_idx + 1) < kv_blocks) {
             const int next_ring = ring ^ 1;
             const int32_t kv_block_index_next =
                 q2k_block_sparse_index_ptr[kv_idx + 1];
-            (void)kv_block_index_next;
 
             tma::expect_bytes(k_smem_arrived[next_ring], sizeof(k_tile));
             coord<k_tile> k_tile_idx_next = {blockIdx.z, kv_head_idx,
@@ -221,8 +219,11 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                             v_smem_arrived[next_ring]);
         }
 
+        // Wait for K/V tile for this kv_idx to arrive in the ring buffer.
+        wait(k_smem_arrived[ring], phase);
+        wait(v_smem_arrived[ring], phase);
+
         // ---- tcgen05: score_tm = Q * K^T (64x64 fp32) ----
-        __syncthreads();
         if (warp_id == 0 && warp::elect_leader()) {
             // overwrite score_tm each iteration
             mm_ABt(score_tm, q_smem[0], k_smem[ring], score_done);
@@ -275,7 +276,11 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
 
         // ---- tcgen05: pv_tm = P * V (64xD fp32) ----
-        __syncthreads();
+        // Wait until all 4 warps have written their P subtile to shared.
+        arrive(p_smem_ready);
+        if (warp_id == 0 && laneid() == 0) {
+            wait(p_smem_ready, (kv_idx & 1));
+        }
         if (warp_id == 0 && warp::elect_leader()) {
             mm_AB(pv_tm, p_smem[0], v_smem[ring], pv_done);
         }
