@@ -46,15 +46,15 @@ if [[ "${GPU_BACKEND}" == "CUDA" ]]; then
             ;;
         b200)
             # SM100 (B200) kernels (new TK)
-            : "${TORCH_CUDA_ARCH_LIST:=10.0}"
+            : "${TORCH_CUDA_ARCH_LIST:=10.0a}"
             export TORCH_CUDA_ARCH_LIST
-            export CMAKE_ARGS="${CMAKE_ARGS:-} -DFASTVIDEO_KERNEL_BUILD_TK=OFF -DFASTVIDEO_KERNEL_BUILD_TK_SM100=ON -DCMAKE_CUDA_ARCHITECTURES=100"
+            export CMAKE_ARGS="${CMAKE_ARGS:-} -DFASTVIDEO_KERNEL_BUILD_TK=OFF -DFASTVIDEO_KERNEL_BUILD_TK_SM100=ON -DCMAKE_CUDA_ARCHITECTURES=100a"
             ;;
         both)
             # Build both SM90a and SM100 kernels into one extension.
-            : "${TORCH_CUDA_ARCH_LIST:=9.0a;10.0}"
+            : "${TORCH_CUDA_ARCH_LIST:=9.0a;10.0a}"
             export TORCH_CUDA_ARCH_LIST
-            export CMAKE_ARGS="${CMAKE_ARGS:-} -DFASTVIDEO_KERNEL_BUILD_TK=ON -DFASTVIDEO_KERNEL_BUILD_TK_SM100=ON -DCMAKE_CUDA_ARCHITECTURES=90a;100"
+            export CMAKE_ARGS="${CMAKE_ARGS:-} -DFASTVIDEO_KERNEL_BUILD_TK=ON -DFASTVIDEO_KERNEL_BUILD_TK_SM100=ON -DCMAKE_CUDA_ARCHITECTURES=90a;100a"
             ;;
         auto)
             # Let CMake decide (AUTO), but do not override user env.

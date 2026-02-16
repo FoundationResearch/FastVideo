@@ -84,10 +84,12 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     using k_tile = st_bf<64, K::tile_width>;
     using v_tile = st_bf<64, K::tile_width>;
     using o_tile = st_bf<64, K::tile_width>;
+    using p_tile = st_bf<64, 64>;
 
     q_tile (&q_smem)[1] = al.allocate<q_tile, 1>();
     k_tile (&k_smem)[1] = al.allocate<k_tile, 1>();
     v_tile (&v_smem)[1] = al.allocate<v_tile, 1>();
+    p_tile (&p_smem)[1] = al.allocate<p_tile, 1>();
     // Reuse Q shared memory region for O to reduce shared memory footprint.
     // This is safe because we fully materialize Q into registers before
     // writing O back to shared.
@@ -109,6 +111,8 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     __shared__ kittens::semaphore qsmem_semaphore;
     __shared__ kittens::semaphore k_smem_arrived;
     __shared__ kittens::semaphore v_smem_arrived;
+    __shared__ kittens::semaphore score_done;
+    __shared__ kittens::semaphore pv_done;
 
     if (threadIdx.x == 0) {
         const int32_t kv_block_index = q2k_block_sparse_index_ptr[0];
@@ -130,6 +134,10 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         tma::expect_bytes(v_smem_arrived, sizeof(v_tile));
         coord<v_tile> v_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index, 0};
         tma::load_async(v_smem[0], g.v, v_tile_idx, v_smem_arrived);
+
+        // TCGEN05 barriers (phase toggles each iteration)
+        init_semaphore(score_done, 0, 1);
+        init_semaphore(pv_done, 0, 1);
     }
     __syncthreads();
 
@@ -138,6 +146,17 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
     const int warp_id = kittens::warpid();
     const bool active_warp = (warp_id < 4);
+
+    // Allocate tensor memory tiles for tcgen05 matmul outputs.
+    // - score_tm: 64x64 fp32 (QK^T)
+    // - pv_tm:    64xD  fp32 (P*V), reused each kv block
+    using score_tt = half_tt_fl<64>;
+    using pv_tt = half_tt_fl<K::tile_width>;
+    tensor_allocator<1, 1> tm_alloc{};
+    score_tt score_tm = tm_alloc.template allocate<score_tt>(0, 0);
+    pv_tt pv_tm = tm_alloc.template allocate<pv_tt>(0, 128);
+    int score_phase = 0;
+    int pv_phase = 0;
 
     // Per-warp Q tile: (16, D)
     rt_bf<16, K::tile_width> q_reg;
@@ -164,23 +183,20 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         wait(k_smem_arrived, kv_idx % 2);
         wait(v_smem_arrived, kv_idx % 2);
 
+        // ---- tcgen05: score_tm = Q * K^T (64x64 fp32) ----
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            // overwrite score_tm each iteration
+            mm_ABt(score_tm, q_smem[0], k_smem[0], score_done);
+        }
+        wait(score_done, score_phase);
+        score_phase ^= 1;
+        // Load score_tm into per-warp registers (16x64 each warp)
+        rt_fl<16, 64> att_block;
+        warpgroup::load_async(att_block, score_tm);
+        tensor_load_wait();
+
         if (active_warp) {
-            // Materialize attention scores (16x64) in 4 subtiles of 16 columns.
-            rt_fl<16, 64> att_block;
-            #pragma unroll
-            for (int j = 0; j < 4; j++) {
-                rt_bf<16, K::tile_width> k_reg;
-                auto k_sub = k_smem[0].template subtile<16, K::tile_width>(
-                    int2{j, 0});
-                warp::load(k_reg, k_sub);
-
-                // Compute a 16x16 score block and write it into the j-th subtile.
-                rt_fl<16, 16> att_sub;
-                warp::zero(att_sub);
-                warp::mma_ABt(att_sub, q_reg, k_reg, att_sub);
-                att_block.tiles[0][j] = att_sub.tiles[0][0];
-            }
-
             warp::copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64) {
                 warp::mul(max_vec_last_scaled, max_vec_last_scaled,
@@ -211,21 +227,29 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             warp::row_sum(norm_vec, att_block, norm_vec);
             warp::add(att_block, att_block, 0.f);
 
-            rt_bf<16, 64> att_block_mma;
-            warp::copy(att_block_mma, att_block);
             warp::mul_row(o_reg, o_reg, max_vec_last_scaled);
 
-            // O += P * V (split by 4 x 16-token blocks)
-            #pragma unroll
-            for (int j = 0; j < 4; j++) {
-                rt_bf<16, 16> p_sub;
-                p_sub.tiles[0][0] = att_block_mma.tiles[0][j];
-                rt_bf<16, K::tile_width, col_l> v_reg;
-                auto v_sub = v_smem[0].template subtile<16, K::tile_width>(
-                    int2{j, 0});
-                warp::load(v_reg, v_sub);
-                warp::mma_AB(o_reg, p_sub, v_reg, o_reg);
-            }
+            // Write P (bf16) to shared so tcgen05 can consume it.
+            rt_bf<16, 64> p_reg_bf;
+            warp::copy(p_reg_bf, att_block);
+            auto p_sub = p_smem[0].template subtile<16, 64>(int2{warp_id, 0});
+            warp::store(p_sub, p_reg_bf);
+        }
+
+        // ---- tcgen05: pv_tm = P * V (64xD fp32) ----
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            mm_AB(pv_tm, p_smem[0], v_smem[0], pv_done);
+        }
+        wait(pv_done, pv_phase);
+        pv_phase ^= 1;
+
+        rt_fl<16, K::tile_width> pv_reg;
+        warpgroup::load_async(pv_reg, pv_tm);
+        tensor_load_wait();
+
+        if (active_warp) {
+            warp::add(o_reg, o_reg, pv_reg);
         }
 
         // Kick next K/V loads (single buffer) after all warps finished consuming.
@@ -381,7 +405,7 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
         // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
         constexpr int mem_size =
             int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
-                sizeof(typename globals::v_tile) + 4096);
+                sizeof(typename globals::v_tile) + sizeof(st_bf<64, 64>) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<64>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
@@ -435,7 +459,7 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
         // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
         constexpr int mem_size =
             int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
-                sizeof(typename globals::v_tile) + 4096);
+                sizeof(typename globals::v_tile) + sizeof(st_bf<64, 64>) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<128>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);

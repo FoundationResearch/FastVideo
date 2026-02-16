@@ -116,7 +116,8 @@ if(FASTVIDEO_KERNEL_BUILD_TK_SM100 STREQUAL "ON")
 elseif(FASTVIDEO_KERNEL_BUILD_TK_SM100 STREQUAL "OFF")
     set(ENABLE_TK_SM100 OFF)
 else()
-    _fastvideo_has_arch("(^|[; ,])((10\\.0)|(100)|(sm_100))([; ,]|$)" _HAS_100)
+    # Accept common spellings: 10.0a/100a/sm_100a (tcgen05) and 10.0/100/sm_100.
+    _fastvideo_has_arch("(^|[; ,])((10\\.0a)|(100a)|(sm_100a)|(10\\.0)|(100)|(sm_100))([; ,]|$)" _HAS_100)
     if(_HAS_100)
         set(ENABLE_TK_SM100 ON)
     endif()
@@ -221,7 +222,8 @@ if(BUILD_CXX_KERNELS)
         add_library(fastvideo_kernel_tk_sm100_objs OBJECT
             csrc/attention/block_sparse_b200.cu
         )
-        set_property(TARGET fastvideo_kernel_tk_sm100_objs PROPERTY CUDA_ARCHITECTURES "100")
+        # tcgen05 instructions require SM100a.
+        set_property(TARGET fastvideo_kernel_tk_sm100_objs PROPERTY CUDA_ARCHITECTURES "100a")
         target_include_directories(fastvideo_kernel_tk_sm100_objs PRIVATE
             ${CMAKE_SOURCE_DIR}/include
             ${CMAKE_SOURCE_DIR}/include/cutlass/include
