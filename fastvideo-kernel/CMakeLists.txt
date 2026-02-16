@@ -233,6 +233,7 @@ if(BUILD_CXX_KERNELS)
         )
         target_compile_definitions(fastvideo_kernel_tk_sm100_objs PRIVATE
             TORCH_EXTENSION_NAME=fastvideo_kernel_ops
+            KITTENS_BLACKWELL
             TK_COMPILE_BLOCK_SPARSE_SM100
         )
         target_compile_options(fastvideo_kernel_tk_sm100_objs PRIVATE
