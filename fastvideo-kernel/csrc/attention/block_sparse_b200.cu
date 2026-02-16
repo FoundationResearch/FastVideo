@@ -87,8 +87,8 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     using p_tile = st_bf<64, 64>;
 
     q_tile (&q_smem)[1] = al.allocate<q_tile, 1>();
-    k_tile (&k_smem)[1] = al.allocate<k_tile, 1>();
-    v_tile (&v_smem)[1] = al.allocate<v_tile, 1>();
+    k_tile (&k_smem)[2] = al.allocate<k_tile, 2>();
+    v_tile (&v_smem)[2] = al.allocate<v_tile, 2>();
     p_tile (&p_smem)[1] = al.allocate<p_tile, 1>();
     // Reuse Q shared memory region for O to reduce shared memory footprint.
     // This is safe because we fully materialize Q into registers before
@@ -109,8 +109,8 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     const int32_t kv_blocks = q2k_block_sparse_num_ptr[0];
 
     __shared__ kittens::semaphore qsmem_semaphore;
-    __shared__ kittens::semaphore k_smem_arrived;
-    __shared__ kittens::semaphore v_smem_arrived;
+    __shared__ kittens::semaphore k_smem_arrived[2];
+    __shared__ kittens::semaphore v_smem_arrived[2];
     __shared__ kittens::semaphore score_done;
     __shared__ kittens::semaphore pv_done;
     __shared__ uint32_t tmem_addr;
@@ -120,22 +120,24 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         const int32_t kv_block_index = q2k_block_sparse_index_ptr[0];
 
         init_semaphore(qsmem_semaphore, 0, 1);
-        init_semaphore(k_smem_arrived, 0, 1);
-        init_semaphore(v_smem_arrived, 0, 1);
+        init_semaphore(k_smem_arrived[0], 0, 1);
+        init_semaphore(k_smem_arrived[1], 0, 1);
+        init_semaphore(v_smem_arrived[0], 0, 1);
+        init_semaphore(v_smem_arrived[1], 0, 1);
 
         // preload q block
         coord<q_tile> q_tile_idx = {blockIdx.z, blockIdx.y, seq_idx, 0};
         tma::expect_bytes(qsmem_semaphore, sizeof(q_smem));
         tma::load_async(q_smem[0], g.q, q_tile_idx, qsmem_semaphore);
 
-        // preload the zeroth block of kv
-        tma::expect_bytes(k_smem_arrived, sizeof(k_tile));
-        coord<k_tile> k_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index, 0};
-        tma::load_async(k_smem[0], g.k, k_tile_idx, k_smem_arrived);
+        // preload the first KV block into ring buffer 0
+        tma::expect_bytes(k_smem_arrived[0], sizeof(k_tile));
+        coord<k_tile> k_tile_idx0 = {blockIdx.z, kv_head_idx, kv_block_index, 0};
+        tma::load_async(k_smem[0], g.k, k_tile_idx0, k_smem_arrived[0]);
 
-        tma::expect_bytes(v_smem_arrived, sizeof(v_tile));
-        coord<v_tile> v_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index, 0};
-        tma::load_async(v_smem[0], g.v, v_tile_idx, v_smem_arrived);
+        tma::expect_bytes(v_smem_arrived[0], sizeof(v_tile));
+        coord<v_tile> v_tile_idx0 = {blockIdx.z, kv_head_idx, kv_block_index, 0};
+        tma::load_async(v_smem[0], g.v, v_tile_idx0, v_smem_arrived[0]);
 
         // TCGEN05 barriers (phase toggles each iteration)
         init_semaphore(score_done, 0, 1);
@@ -191,15 +193,39 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
     // main loop: pipeline loads next KV block while computing current.
     for (int kv_idx = 0; kv_idx < kv_blocks; kv_idx++) {
-        // Load K/V tile for this kv_idx
-        wait(k_smem_arrived, kv_idx % 2);
-        wait(v_smem_arrived, kv_idx % 2);
+        const int ring = (kv_idx & 1);
+        const int phase = ((kv_idx >> 1) & 1);
+
+        // Wait for K/V tile for this kv_idx to arrive in the ring buffer.
+        wait(k_smem_arrived[ring], phase);
+        wait(v_smem_arrived[ring], phase);
+
+        // Prefetch the next KV block (kv_idx+1) into the other ring buffer to
+        // overlap TMA with compute and never overwrite the current ring.
+        if (threadIdx.x == 0 && (kv_idx + 1) < kv_blocks) {
+            const int next_ring = ring ^ 1;
+            const int32_t kv_block_index_next =
+                q2k_block_sparse_index_ptr[kv_idx + 1];
+            (void)kv_block_index_next;
+
+            tma::expect_bytes(k_smem_arrived[next_ring], sizeof(k_tile));
+            coord<k_tile> k_tile_idx_next = {blockIdx.z, kv_head_idx,
+                                             kv_block_index_next, 0};
+            tma::load_async(k_smem[next_ring], g.k, k_tile_idx_next,
+                            k_smem_arrived[next_ring]);
+
+            tma::expect_bytes(v_smem_arrived[next_ring], sizeof(v_tile));
+            coord<v_tile> v_tile_idx_next = {blockIdx.z, kv_head_idx,
+                                             kv_block_index_next, 0};
+            tma::load_async(v_smem[next_ring], g.v, v_tile_idx_next,
+                            v_smem_arrived[next_ring]);
+        }
 
         // ---- tcgen05: score_tm = Q * K^T (64x64 fp32) ----
         __syncthreads();
         if (warp_id == 0 && warp::elect_leader()) {
             // overwrite score_tm each iteration
-            mm_ABt(score_tm, q_smem[0], k_smem[0], score_done);
+            mm_ABt(score_tm, q_smem[0], k_smem[ring], score_done);
         }
         wait(score_done, score_phase);
         score_phase ^= 1;
@@ -251,7 +277,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         // ---- tcgen05: pv_tm = P * V (64xD fp32) ----
         __syncthreads();
         if (warp_id == 0 && warp::elect_leader()) {
-            mm_AB(pv_tm, p_smem[0], v_smem[0], pv_done);
+            mm_AB(pv_tm, p_smem[0], v_smem[ring], pv_done);
         }
         wait(pv_done, pv_phase);
         pv_phase ^= 1;
@@ -264,22 +290,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             warp::add(o_reg, o_reg, pv_reg);
         }
 
-        // Kick next K/V loads (single buffer) after all warps finished consuming.
-        __syncthreads();
-        if (threadIdx.x == 0 && (kv_idx + 1) < kv_blocks) {
-            const int32_t kv_block_index =
-                q2k_block_sparse_index_ptr[kv_idx + 1];
-            tma::expect_bytes(k_smem_arrived, sizeof(k_tile));
-            coord<k_tile> k_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index,
-                                        0};
-            tma::load_async(k_smem[0], g.k, k_tile_idx, k_smem_arrived);
-
-            tma::expect_bytes(v_smem_arrived, sizeof(v_tile));
-            coord<v_tile> v_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index,
-                                        0};
-            tma::load_async(v_smem[0], g.v, v_tile_idx, v_smem_arrived);
-        }
-        __syncthreads();
+        // Next KV blocks are prefetched into the ring buffers above.
     }
 
     if (active_warp) {
@@ -422,8 +433,10 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
 
         // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
         constexpr int mem_size =
-            int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
-                sizeof(typename globals::v_tile) + sizeof(st_bf<64, 64>) + 4096);
+            int(sizeof(typename globals::q_tile) +
+                2 * sizeof(typename globals::k_tile) +
+                2 * sizeof(typename globals::v_tile) +
+                sizeof(st_bf<64, 64>) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<64>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
@@ -476,8 +489,10 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
 
         // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
         constexpr int mem_size =
-            int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
-                sizeof(typename globals::v_tile) + sizeof(st_bf<64, 64>) + 4096);
+            int(sizeof(typename globals::q_tile) +
+                2 * sizeof(typename globals::k_tile) +
+                2 * sizeof(typename globals::v_tile) +
+                sizeof(st_bf<64, 64>) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<128>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
