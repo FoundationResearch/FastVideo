@@ -163,32 +163,11 @@ def main() -> None:
 
         fwd_ms = bench_ms(_fwd, warmup=args.warmup, rep=args.rep)
 
-        # Backward benchmark (wrapper autograd). We build the graph once, then repeatedly run backward
-        # on the retained graph so bwd timing excludes the forward compute.
-        q_ = q.detach().requires_grad_(True)
-        k_ = k.detach().requires_grad_(True)
-        v_ = v.detach().requires_grad_(True)
-        o_, _aux_ = block_sparse_attn(q_, k_, v_, block_map, variable_block_sizes)
-        og = torch.randn_like(o_)
-        loss = (o_ * og).sum()
-
-        for _ in range(max(1, args.warmup // 2)):
-            torch.autograd.grad(loss, (q_, k_, v_), retain_graph=True)
-        torch.cuda.synchronize()
-
-        bwd_ms = bench_ms(
-            lambda: torch.autograd.grad(loss, (q_, k_, v_), retain_graph=True),
-            warmup=0,
-            rep=max(5, args.rep // 2),
-        )
-
         flops = flops_sparse_attention(bs, h, d, q_len, topk, BLOCK_N)
         fwd_tflops = flops / fwd_ms * 1e-12 * 1e3
-        # Rough backward multiplier (attention backward typically ~2-3x forward)
-        bwd_tflops = (2.5 * flops) / bwd_ms * 1e-12 * 1e3
 
         print(f"fwd(wrapper): {fwd_ms:.3f} ms  | {fwd_tflops:.2f} TFLOPs (approx)")
-        print(f"bwd(wrapper): {bwd_ms:.3f} ms  | {bwd_tflops:.2f} TFLOPs (approx)")
+        print("bwd(wrapper): skipped (SM100 backward not implemented)")
 
 
 if __name__ == "__main__":

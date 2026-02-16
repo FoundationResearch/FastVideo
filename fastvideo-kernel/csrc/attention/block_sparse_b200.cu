@@ -88,7 +88,10 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     q_tile (&q_smem)[1] = al.allocate<q_tile, 1>();
     k_tile (&k_smem)[1] = al.allocate<k_tile, 1>();
     v_tile (&v_smem)[1] = al.allocate<v_tile, 1>();
-    o_tile (&o_smem)[1] = al.allocate<o_tile, 1>();
+    // Reuse Q shared memory region for O to reduce shared memory footprint.
+    // This is safe because we fully materialize Q into registers before
+    // writing O back to shared.
+    auto (*o_smem) = reinterpret_cast<o_tile(*)>(q_smem);
 
     const int kv_head_idx = blockIdx.y / g.hr;
     const int seq_idx = blockIdx.x;
@@ -134,24 +137,26 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     wait(qsmem_semaphore, 0);
 
     const int warp_id = kittens::warpid();
-    if (warp_id >= 4) {
-        return;
-    }
+    const bool active_warp = (warp_id < 4);
 
     // Per-warp Q tile: (16, D)
     rt_bf<16, K::tile_width> q_reg;
-    {
+    if (active_warp) {
         auto q_sub = q_smem[0].template subtile<16, K::tile_width>(
             int2{warp_id, 0});
         warp::load(q_reg, q_sub);
     }
 
     rt_fl<16, K::tile_width> o_reg;
-    warp::zero(o_reg);
+    if (active_warp) {
+        warp::zero(o_reg);
+    }
 
     col_vec<rt_fl<16, 64>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
-    warp::neg_infty(max_vec);
-    warp::zero(norm_vec);
+    if (active_warp) {
+        warp::neg_infty(max_vec);
+        warp::zero(norm_vec);
+    }
 
     // main loop: pipeline loads next KV block while computing current.
     for (int kv_idx = 0; kv_idx < kv_blocks; kv_idx++) {
@@ -159,68 +164,68 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         wait(k_smem_arrived, kv_idx % 2);
         wait(v_smem_arrived, kv_idx % 2);
 
-        // Materialize attention scores (16x64) in 4 subtiles of 16 columns.
-        rt_fl<16, 64> att_block;
-        #pragma unroll
-        for (int j = 0; j < 4; j++) {
-            rt_bf<16, K::tile_width> k_reg;
-            auto k_sub = k_smem[0].template subtile<16, K::tile_width>(
-                int2{j, 0});
-            warp::load(k_reg, k_sub);
+        if (active_warp) {
+            // Materialize attention scores (16x64) in 4 subtiles of 16 columns.
+            rt_fl<16, 64> att_block;
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                rt_bf<16, K::tile_width> k_reg;
+                auto k_sub = k_smem[0].template subtile<16, K::tile_width>(
+                    int2{j, 0});
+                warp::load(k_reg, k_sub);
 
-            // Compute a 16x16 score block and write it into the j-th subtile.
-            // Avoid type-punning `att_block.tiles[0][j]` as a full rt to prevent
-            // UB/illegal memory accesses on Blackwell.
-            rt_fl<16, 16> att_sub;
-            warp::zero(att_sub);
-            warp::mma_ABt(att_sub, q_reg, k_reg, att_sub);
-            att_block.tiles[0][j] = att_sub.tiles[0][0];
-        }
+                // Compute a 16x16 score block and write it into the j-th subtile.
+                rt_fl<16, 16> att_sub;
+                warp::zero(att_sub);
+                warp::mma_ABt(att_sub, q_reg, k_reg, att_sub);
+                att_block.tiles[0][j] = att_sub.tiles[0][0];
+            }
 
-        warp::copy(max_vec_last_scaled, max_vec);
-        if constexpr (D == 64) {
-            warp::mul(max_vec_last_scaled, max_vec_last_scaled,
-                      1.44269504089f * 0.125f);
-        } else {
-            warp::mul(max_vec_last_scaled, max_vec_last_scaled,
-                      1.44269504089f * 0.08838834764f);
-        }
+            warp::copy(max_vec_last_scaled, max_vec);
+            if constexpr (D == 64) {
+                warp::mul(max_vec_last_scaled, max_vec_last_scaled,
+                          1.44269504089f * 0.125f);
+            } else {
+                warp::mul(max_vec_last_scaled, max_vec_last_scaled,
+                          1.44269504089f * 0.08838834764f);
+            }
 
-        warp::right_fill(att_block, att_block,
-                         g.block_size[q2k_block_sparse_index_ptr[kv_idx]],
-                         base_types::constants<float>::neg_infty());
-        warp::row_max(max_vec, att_block, max_vec);
+            warp::right_fill(att_block, att_block,
+                             g.block_size[q2k_block_sparse_index_ptr[kv_idx]],
+                             base_types::constants<float>::neg_infty());
+            warp::row_max(max_vec, att_block, max_vec);
 
-        if constexpr (D == 64) {
-            warp::mul(att_block, att_block, 1.44269504089f * 0.125f);
-            warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.125f);
-        } else {
-            warp::mul(att_block, att_block, 1.44269504089f * 0.08838834764f);
-            warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.08838834764f);
-        }
+            if constexpr (D == 64) {
+                warp::mul(att_block, att_block, 1.44269504089f * 0.125f);
+                warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.125f);
+            } else {
+                warp::mul(att_block, att_block, 1.44269504089f * 0.08838834764f);
+                warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.08838834764f);
+            }
 
-        warp::sub_row(att_block, att_block, max_vec_scaled);
-        warp::exp2(att_block, att_block);
-        warp::sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
-        warp::exp2(max_vec_last_scaled, max_vec_last_scaled);
-        warp::mul(norm_vec, norm_vec, max_vec_last_scaled);
-        warp::row_sum(norm_vec, att_block, norm_vec);
-        warp::add(att_block, att_block, 0.f);
+            warp::sub_row(att_block, att_block, max_vec_scaled);
+            warp::exp2(att_block, att_block);
+            warp::sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
+            warp::exp2(max_vec_last_scaled, max_vec_last_scaled);
+            warp::mul(norm_vec, norm_vec, max_vec_last_scaled);
+            warp::row_sum(norm_vec, att_block, norm_vec);
+            warp::add(att_block, att_block, 0.f);
 
-        rt_bf<16, 64> att_block_mma;
-        warp::copy(att_block_mma, att_block);
-        warp::mul_row(o_reg, o_reg, max_vec_last_scaled);
+            rt_bf<16, 64> att_block_mma;
+            warp::copy(att_block_mma, att_block);
+            warp::mul_row(o_reg, o_reg, max_vec_last_scaled);
 
-        // O += P * V (split by 4 x 16-token blocks)
-        #pragma unroll
-        for (int j = 0; j < 4; j++) {
-            rt_bf<16, 16> p_sub;
-            p_sub.tiles[0][0] = att_block_mma.tiles[0][j];
-            rt_bf<16, K::tile_width, col_l> v_reg;
-            auto v_sub = v_smem[0].template subtile<16, K::tile_width>(
-                int2{j, 0});
-            warp::load(v_reg, v_sub);
-            warp::mma_AB(o_reg, p_sub, v_reg, o_reg);
+            // O += P * V (split by 4 x 16-token blocks)
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                rt_bf<16, 16> p_sub;
+                p_sub.tiles[0][0] = att_block_mma.tiles[0][j];
+                rt_bf<16, K::tile_width, col_l> v_reg;
+                auto v_sub = v_smem[0].template subtile<16, K::tile_width>(
+                    int2{j, 0});
+                warp::load(v_reg, v_sub);
+                warp::mma_AB(o_reg, p_sub, v_reg, o_reg);
+            }
         }
 
         // Kick next K/V loads (single buffer) after all warps finished consuming.
@@ -241,10 +246,10 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         __syncthreads();
     }
 
-    warp::div_row(o_reg, o_reg, norm_vec);
+    if (active_warp) {
+        warp::div_row(o_reg, o_reg, norm_vec);
 
-    // Store (16,D) into shared output tile, then a single warp TMA-stores to GMEM.
-    {
+        // Store (16,D) into shared output tile, then a single warp TMA-stores to GMEM.
         auto o_sub = o_smem[0].template subtile<16, K::tile_width>(
             int2{warp_id, 0});
         warp::store(o_sub, o_reg);
@@ -329,9 +334,6 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
 
     const int threads = 128;
-    // Keep dynamic shared memory reasonably sized to avoid killing occupancy.
-    // (This kernel uses far less than MAX_SHARED_MEMORY.)
-    constexpr int mem_size = 54000;
     dim3 grid(q_seq_len / BLOCK_M, qo_heads, batch);
 
     if (head_dim == 64) {
@@ -376,6 +378,10 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
                   reinterpret_cast<int32_t*>(q2k_block_sparse_num.data_ptr()),
                   reinterpret_cast<int32_t*>(kv_block_size.data_ptr())};
 
+        // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
+        constexpr int mem_size =
+            int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
+                sizeof(typename globals::v_tile) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<64>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
@@ -426,6 +432,10 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
                   reinterpret_cast<int32_t*>(q2k_block_sparse_num.data_ptr()),
                   reinterpret_cast<int32_t*>(kv_block_size.data_ptr())};
 
+        // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
+        constexpr int mem_size =
+            int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
+                sizeof(typename globals::v_tile) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<128>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
