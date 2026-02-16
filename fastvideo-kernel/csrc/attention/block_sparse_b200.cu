@@ -113,6 +113,8 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     __shared__ kittens::semaphore v_smem_arrived;
     __shared__ kittens::semaphore score_done;
     __shared__ kittens::semaphore pv_done;
+    __shared__ uint32_t tmem_addr;
+    __shared__ kittens::semaphore tmem_provisioned;
 
     if (threadIdx.x == 0) {
         const int32_t kv_block_index = q2k_block_sparse_index_ptr[0];
@@ -138,6 +140,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         // TCGEN05 barriers (phase toggles each iteration)
         init_semaphore(score_done, 0, 1);
         init_semaphore(pv_done, 0, 1);
+        init_semaphore(tmem_provisioned, 0, 1);
     }
     __syncthreads();
 
@@ -147,12 +150,21 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     const int warp_id = kittens::warpid();
     const bool active_warp = (warp_id < 4);
 
+    // Tensor memory (tmem): unmanaged explicit provision / set_addr / deprovision
+    // NOTE: tensor_allocator::provision/deprovision must be called by one full warp.
+    tensor_allocator<1, 1, false> tm_alloc{};
+    if (warp_id == 0) {
+        tm_alloc.provision(tmem_addr);
+        if (laneid() == 0) warp::arrive(tmem_provisioned);
+    }
+    wait(tmem_provisioned, 0);
+    tm_alloc.set_addr(tmem_addr);
+
     // Allocate tensor memory tiles for tcgen05 matmul outputs.
-    // - score_tm: 64x64 fp32 (QK^T)
-    // - pv_tm:    64xD  fp32 (P*V), reused each kv block
+    // - score_tm: 64x64 fp32 (QK^T) per kv block (overwritten)
+    // - pv_tm:    64xD  fp32 (P*V) per kv block (overwritten)
     using score_tt = half_tt_fl<64>;
     using pv_tt = half_tt_fl<K::tile_width>;
-    tensor_allocator<1, 1> tm_alloc{};
     score_tt score_tm = tm_alloc.template allocate<score_tt>(0, 0);
     pv_tt pv_tm = tm_alloc.template allocate<pv_tt>(0, 128);
     int score_phase = 0;
@@ -185,7 +197,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         // ---- tcgen05: score_tm = Q * K^T (64x64 fp32) ----
         __syncthreads();
-        if (threadIdx.x == 0) {
+        if (warp_id == 0 && warp::elect_leader()) {
             // overwrite score_tm each iteration
             mm_ABt(score_tm, q_smem[0], k_smem[0], score_done);
         }
@@ -238,7 +250,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         // ---- tcgen05: pv_tm = P * V (64xD fp32) ----
         __syncthreads();
-        if (threadIdx.x == 0) {
+        if (warp_id == 0 && warp::elect_leader()) {
             mm_AB(pv_tm, p_smem[0], v_smem[0], pv_done);
         }
         wait(pv_done, pv_phase);
@@ -284,6 +296,12 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         coord<o_tile> o_tile_idx = {blockIdx.z, blockIdx.y, seq_idx, 0};
         tma::store_async(g.o, o_smem[0], o_tile_idx);
         tma::store_async_wait();
+    }
+
+    // Release tensor memory allocation.
+    __syncthreads();
+    if (warp_id == 0) {
+        tm_alloc.deprovision();
     }
 }
 
