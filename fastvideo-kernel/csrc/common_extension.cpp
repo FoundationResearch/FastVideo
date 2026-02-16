@@ -22,6 +22,17 @@ extern std::vector<torch::Tensor> block_sparse_attention_backward(
 );
 #endif
 
+#ifdef TK_COMPILE_BLOCK_SPARSE_SM100
+extern std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
+    torch::Tensor q, torch::Tensor k, torch::Tensor v,
+    torch::Tensor q2k_block_sparse_index, torch::Tensor q2k_block_sparse_num, torch::Tensor block_size
+);
+extern std::vector<torch::Tensor> block_sparse_attention_backward_sm100(
+    torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor o, torch::Tensor l_vec, torch::Tensor og,
+    torch::Tensor k2q_block_sparse_index, torch::Tensor k2q_block_sparse_num, torch::Tensor block_size
+);
+#endif
+
 // TurboDiffusion kernels
 void register_quant(pybind11::module_ &);
 void register_rms_norm(pybind11::module_ &);
@@ -38,6 +49,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #ifdef TK_COMPILE_BLOCK_SPARSE
     m.def("block_sparse_fwd", torch::wrap_pybind_function(block_sparse_attention_forward), "block sparse attention forward (Hopper)");
     m.def("block_sparse_bwd", torch::wrap_pybind_function(block_sparse_attention_backward), "block sparse attention backward (Hopper)");
+#endif
+
+#ifdef TK_COMPILE_BLOCK_SPARSE_SM100
+    m.def("block_sparse_fwd_sm100", torch::wrap_pybind_function(block_sparse_attention_forward_sm100), "block sparse attention forward (SM100/B200)");
+    m.def("block_sparse_bwd_sm100", torch::wrap_pybind_function(block_sparse_attention_backward_sm100), "block sparse attention backward (SM100/B200)");
 #endif
 
     // TurboDiffusion

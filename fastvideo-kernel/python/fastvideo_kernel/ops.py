@@ -11,10 +11,14 @@ try:
     sta_fwd = getattr(fastvideo_kernel_ops, "sta_fwd", None)
     block_sparse_fwd = getattr(fastvideo_kernel_ops, "block_sparse_fwd", None)
     block_sparse_bwd = getattr(fastvideo_kernel_ops, "block_sparse_bwd", None)
+    block_sparse_fwd_sm100 = getattr(fastvideo_kernel_ops, "block_sparse_fwd_sm100", None)
+    block_sparse_bwd_sm100 = getattr(fastvideo_kernel_ops, "block_sparse_bwd_sm100", None)
 except ImportError:
     sta_fwd = None
     block_sparse_fwd = None
     block_sparse_bwd = None
+    block_sparse_fwd_sm100 = None
+    block_sparse_bwd_sm100 = None
 
 def sliding_tile_attention(
     q: torch.Tensor,
@@ -137,7 +141,10 @@ def video_sparse_attn(
 
     idx, num = map_to_index(mask)
     
-    if block_sparse_fwd is not None:
+    has_compiled_bs = (block_sparse_fwd is not None and block_sparse_bwd is not None) or (
+        block_sparse_fwd_sm100 is not None and block_sparse_bwd_sm100 is not None
+    )
+    if has_compiled_bs:
         # Use autograd-enabled wrapper so backward works (and still uses SM90 kernel when available)
         out_s = block_sparse_attn(q, k, v, mask, variable_block_sizes)[0]
     else:

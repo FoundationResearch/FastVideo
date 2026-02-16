@@ -16,12 +16,28 @@ def _get_sm90_ops():
         getattr(fastvideo_kernel_ops, "block_sparse_bwd", None),
     )
 
+def _get_sm100_ops():
+    try:
+        from fastvideo_kernel._C import fastvideo_kernel_ops  # type: ignore
+    except Exception:
+        return None, None
+    return (
+        getattr(fastvideo_kernel_ops, "block_sparse_fwd_sm100", None),
+        getattr(fastvideo_kernel_ops, "block_sparse_bwd_sm100", None),
+    )
+
 
 def _is_sm90() -> bool:
     if not torch.cuda.is_available():
         return False
     major, minor = torch.cuda.get_device_capability(0)
     return major == 9 and minor == 0
+
+def _is_sm100() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    major, minor = torch.cuda.get_device_capability(0)
+    return major == 10 and minor == 0
 
 
 def _force_triton() -> bool:
@@ -271,6 +287,127 @@ def _setup_context_sm90(ctx, inputs, output):
 
 block_sparse_attn_sm90.register_autograd(_backward_sm90, setup_context=_setup_context_sm90)
 
+@torch.library.custom_op(
+    "fastvideo_kernel::block_sparse_attn_sm100",
+    mutates_args=(),
+    device_types="cuda",
+)
+def block_sparse_attn_sm100(
+    q_padded: torch.Tensor,
+    k_padded: torch.Tensor,
+    v_padded: torch.Tensor,
+    block_map: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    block_sparse_fwd, _ = _get_sm100_ops()
+    if block_sparse_fwd is None:
+        raise ImportError("fastvideo_kernel_ops.block_sparse_fwd_sm100 is not available")
+
+    q_padded = q_padded.contiguous()
+    k_padded = k_padded.contiguous()
+    v_padded = v_padded.contiguous()
+    block_map = block_map.to(torch.bool)
+    q2k_idx, q2k_num = _map_to_index(block_map)
+
+    o_padded, lse_padded = block_sparse_fwd(
+        q_padded, k_padded, v_padded, q2k_idx, q2k_num, variable_block_sizes.int()
+    )
+    return o_padded, lse_padded
+
+
+@torch.library.register_fake("fastvideo_kernel::block_sparse_attn_sm100")
+def _block_sparse_attn_sm100_fake(
+    q_padded: torch.Tensor,
+    k_padded: torch.Tensor,
+    v_padded: torch.Tensor,
+    block_map: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    o = torch.empty_like(q_padded)
+    lse = torch.empty(
+        (q_padded.shape[0], q_padded.shape[1], q_padded.shape[2], 1),
+        device=q_padded.device,
+        dtype=torch.float32,
+    )
+    return o, lse
+
+
+@torch.library.custom_op(
+    "fastvideo_kernel::block_sparse_attn_backward_sm100",
+    mutates_args=(),
+    device_types="cuda",
+)
+def block_sparse_attn_backward_sm100(
+    grad_output_padded: torch.Tensor,
+    q_padded: torch.Tensor,
+    k_padded: torch.Tensor,
+    v_padded: torch.Tensor,
+    o_padded: torch.Tensor,
+    lse_padded: torch.Tensor,
+    block_map: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    _, block_sparse_bwd = _get_sm100_ops()
+    if block_sparse_bwd is None:
+        raise ImportError("fastvideo_kernel_ops.block_sparse_bwd_sm100 is not available")
+
+    grad_output_padded = grad_output_padded.contiguous()
+    block_map = block_map.to(torch.bool)
+    k2q_idx, k2q_num = _map_to_index(block_map.transpose(-1, -2).contiguous())
+
+    dq, dk, dv = block_sparse_bwd(
+        q_padded,
+        k_padded,
+        v_padded,
+        o_padded,
+        lse_padded,
+        grad_output_padded,
+        k2q_idx,
+        k2q_num,
+        variable_block_sizes.int(),
+    )
+    return (
+        dq.to(grad_output_padded.dtype),
+        dk.to(grad_output_padded.dtype),
+        dv.to(grad_output_padded.dtype),
+    )
+
+
+@torch.library.register_fake("fastvideo_kernel::block_sparse_attn_backward_sm100")
+def _block_sparse_attn_backward_sm100_fake(
+    grad_output_padded: torch.Tensor,
+    q_padded: torch.Tensor,
+    k_padded: torch.Tensor,
+    v_padded: torch.Tensor,
+    o_padded: torch.Tensor,
+    lse_padded: torch.Tensor,
+    block_map: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    dq = torch.empty_like(q_padded)
+    dk = torch.empty_like(k_padded)
+    dv = torch.empty_like(v_padded)
+    return dq, dk, dv
+
+
+def _backward_sm100(ctx, grad_o, grad_lse):
+    q, k, v, o, lse, block_map, variable_block_sizes = ctx.saved_tensors
+    dq, dk, dv = block_sparse_attn_backward_sm100(
+        grad_o, q, k, v, o, lse, block_map, variable_block_sizes
+    )
+    return dq, dk, dv, None, None
+
+
+def _setup_context_sm100(ctx, inputs, output):
+    q, k, v, block_map, variable_block_sizes = inputs
+    o, lse = output
+    ctx.save_for_backward(q, k, v, o, lse, block_map, variable_block_sizes)
+
+
+block_sparse_attn_sm100.register_autograd(
+    _backward_sm100, setup_context=_setup_context_sm100
+)
+
 
 def block_sparse_attn(
     q: torch.Tensor,
@@ -284,9 +421,14 @@ def block_sparse_attn(
     - On SM90 with compiled extension present: uses fastvideo_kernel_ops.block_sparse_fwd/bwd.
     - Otherwise: uses Triton implementation (requires q/k/v to have same padded length today).
     """
-    block_sparse_fwd, block_sparse_bwd = _get_sm90_ops()
-    if (not _force_triton()) and _is_sm90() and (block_sparse_fwd is not None) and (block_sparse_bwd is not None):
-        return block_sparse_attn_sm90(q, k, v, block_map, variable_block_sizes)
+    sm100_fwd, sm100_bwd = _get_sm100_ops()
+    sm90_fwd, sm90_bwd = _get_sm90_ops()
+    if not _force_triton():
+        # Prefer newest arch first (B200/SM100), then fall back to H100/SM90.
+        if _is_sm100() and (sm100_fwd is not None) and (sm100_bwd is not None):
+            return block_sparse_attn_sm100(q, k, v, block_map, variable_block_sizes)
+        if _is_sm90() and (sm90_fwd is not None) and (sm90_bwd is not None):
+            return block_sparse_attn_sm90(q, k, v, block_map, variable_block_sizes)
     # Triton path: supports q_seq_len != kv_seq_len as long as both are padded
     # to a multiple of the block size (64 tokens).
     return block_sparse_attn_triton(q, k, v, block_map, variable_block_sizes)

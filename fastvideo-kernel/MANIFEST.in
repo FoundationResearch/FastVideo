@@ -4,3 +4,4 @@ include pyproject.toml
 recursive-include python/fastvideo_kernel *.py
 recursive-include csrc *.cu *.cuh *.cpp *.h
 recursive-include include/tk *.cu *.cuh *.cpp *.h *.src
+recursive-include include/tk_b200 *.cu *.cuh *.cpp *.h *.src
