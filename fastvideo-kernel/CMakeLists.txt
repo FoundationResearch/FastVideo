@@ -34,21 +34,31 @@ find_package(Torch REQUIRED)
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/include/cutlass/include
-    ${CMAKE_SOURCE_DIR}/include/tk/include
-    ${CMAKE_SOURCE_DIR}/include/tk/prototype
     ${CMAKE_SOURCE_DIR}/csrc
     ${CMAKE_SOURCE_DIR}/csrc/turbodiffusion
     ${TORCH_INCLUDE_DIRS}
 )
 
-# ---------------------------
-# ThunderKittens (TK) toggles
-# ---------------------------
-# AUTO: enable TK only when we can confidently target Hopper (sm_90a).
-# ON:   force-enable TK kernels (intended for release wheels/images; does NOT require a GPU).
-# OFF:  never build TK kernels.
-set(FASTVIDEO_KERNEL_BUILD_TK "AUTO" CACHE STRING "Build ThunderKittens kernels: AUTO/ON/OFF")
+# ------------------------------------
+# ThunderKittens (TK) per-arch toggles
+# ------------------------------------
+# We support *two* TK versions side-by-side:
+# - SM90/H100 kernels: include/tk (existing pinned TK)
+# - SM100/B200 kernels: include/tk_b200 (newer TK needed by B200)
+#
+# IMPORTANT: do NOT add both TK include paths to the same compilation unit.
+# We use per-arch object libraries to isolate include paths + arch flags.
+#
+# SM90 uses the existing FASTVIDEO_KERNEL_BUILD_TK switch (backward compatible).
+# SM100 is controlled by FASTVIDEO_KERNEL_BUILD_TK_SM100.
+#
+# AUTO behavior:
+# - SM90: enables if TORCH_CUDA_ARCH_LIST contains 9.0a/90a/sm_90a
+# - SM100: enables if TORCH_CUDA_ARCH_LIST contains 10.0/100/sm_100
+set(FASTVIDEO_KERNEL_BUILD_TK "AUTO" CACHE STRING "Build ThunderKittens SM90 kernels: AUTO/ON/OFF (backward compatible)")
 set_property(CACHE FASTVIDEO_KERNEL_BUILD_TK PROPERTY STRINGS AUTO ON OFF)
+set(FASTVIDEO_KERNEL_BUILD_TK_SM100 "OFF" CACHE STRING "Build ThunderKittens SM100 kernels (B200): AUTO/ON/OFF")
+set_property(CACHE FASTVIDEO_KERNEL_BUILD_TK_SM100 PROPERTY STRINGS AUTO ON OFF)
 
 # Prefer environment variable (used by CI) if CMake var is not explicitly set.
 if(NOT DEFINED TORCH_CUDA_ARCH_LIST AND DEFINED ENV{TORCH_CUDA_ARCH_LIST})
@@ -56,20 +66,35 @@ if(NOT DEFINED TORCH_CUDA_ARCH_LIST AND DEFINED ENV{TORCH_CUDA_ARCH_LIST})
 endif()
 
 message(STATUS "TORCH_CUDA_ARCH_LIST (cmake/env): ${TORCH_CUDA_ARCH_LIST}")
-message(STATUS "FASTVIDEO_KERNEL_BUILD_TK: ${FASTVIDEO_KERNEL_BUILD_TK}")
+message(STATUS "FASTVIDEO_KERNEL_BUILD_TK (SM90): ${FASTVIDEO_KERNEL_BUILD_TK}")
+message(STATUS "FASTVIDEO_KERNEL_BUILD_TK_SM100: ${FASTVIDEO_KERNEL_BUILD_TK_SM100}")
 
-set(ENABLE_TK_KERNELS OFF)
+set(ENABLE_TK_SM90 OFF)
+set(ENABLE_TK_SM100 OFF)
+
+# Helper: detect arch presence in TORCH_CUDA_ARCH_LIST
+function(_fastvideo_has_arch _regex _outvar)
+    set(${_outvar} OFF PARENT_SCOPE)
+    if(TORCH_CUDA_ARCH_LIST)
+        string(REGEX MATCH "${_regex}" _HAS "${TORCH_CUDA_ARCH_LIST}")
+        if(_HAS)
+            set(${_outvar} ON PARENT_SCOPE)
+        endif()
+    endif()
+endfunction()
+
+# ---- SM90 (H100 / sm_90a) ----
 if(FASTVIDEO_KERNEL_BUILD_TK STREQUAL "ON")
-    set(ENABLE_TK_KERNELS ON)
+    set(ENABLE_TK_SM90 ON)
 elseif(FASTVIDEO_KERNEL_BUILD_TK STREQUAL "OFF")
-    set(ENABLE_TK_KERNELS OFF)
+    set(ENABLE_TK_SM90 OFF)
 else()
     # AUTO: detect Hopper if possible.
     if(TORCH_CUDA_ARCH_LIST)
         # Accept common spellings: 9.0a, 90a, sm_90a.
         string(REGEX MATCH "(^|[; ,])((9\\.0a)|(90a)|(sm_90a))([; ,]|$)" _HAS_90A "${TORCH_CUDA_ARCH_LIST}")
         if(_HAS_90A)
-            set(ENABLE_TK_KERNELS ON)
+            set(ENABLE_TK_SM90 ON)
         endif()
     else()
         # Best-effort local detection (works when a CUDA device is visible).
@@ -80,15 +105,32 @@ else()
             ERROR_QUIET
         )
         if(_LOCAL_HAS_HOPPER STREQUAL "1")
-            set(ENABLE_TK_KERNELS ON)
+            set(ENABLE_TK_SM90 ON)
         endif()
     endif()
 endif()
 
-if(ENABLE_TK_KERNELS)
-    message(STATUS "ThunderKittens kernels: ENABLED")
+# ---- SM100 (B200 / assume compute capability 10.0) ----
+if(FASTVIDEO_KERNEL_BUILD_TK_SM100 STREQUAL "ON")
+    set(ENABLE_TK_SM100 ON)
+elseif(FASTVIDEO_KERNEL_BUILD_TK_SM100 STREQUAL "OFF")
+    set(ENABLE_TK_SM100 OFF)
 else()
-    message(STATUS "ThunderKittens kernels: DISABLED (will use Triton fallbacks at runtime)")
+    _fastvideo_has_arch("(^|[; ,])((10\\.0)|(100)|(sm_100))([; ,]|$)" _HAS_100)
+    if(_HAS_100)
+        set(ENABLE_TK_SM100 ON)
+    endif()
+endif()
+
+if(ENABLE_TK_SM90)
+    message(STATUS "ThunderKittens SM90 kernels: ENABLED")
+else()
+    message(STATUS "ThunderKittens SM90 kernels: DISABLED (will use Triton fallbacks at runtime)")
+endif()
+if(ENABLE_TK_SM100)
+    message(STATUS "ThunderKittens SM100 kernels: ENABLED")
+else()
+    message(STATUS "ThunderKittens SM100 kernels: DISABLED (will use Triton fallbacks at runtime)")
 endif()
 
 # Always try to build the extension if CUDA is available, but conditionally add sources/flags
@@ -110,14 +152,7 @@ set(CUDA_FLAGS
     "-Xptxas=--warn-on-spills"
 )
 
-# If TK is enabled, ensure we target Hopper. This is required even on GPU-less builders (CI).
-if(ENABLE_TK_KERNELS)
-    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-        set(CMAKE_CUDA_ARCHITECTURES "90a" CACHE STRING "CUDA architectures" FORCE)
-    endif()
-    list(APPEND CUDA_FLAGS "-DKITTENS_HOPPER")
-    message(STATUS "CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
-endif()
+message(STATUS "CMAKE_CUDA_ARCHITECTURES (global): ${CMAKE_CUDA_ARCHITECTURES}")
 
 if(BUILD_CXX_KERNELS)
     # Source files
@@ -129,14 +164,6 @@ if(BUILD_CXX_KERNELS)
         csrc/turbodiffusion/quant/quant.cu
     )
     
-    # Conditionally add TK kernels
-    if(ENABLE_TK_KERNELS)
-        list(APPEND EXTENSION_SOURCES
-            csrc/attention/st_attn_h100.cu
-            csrc/attention/block_sparse_h100.cu
-        )
-    endif()
-
     # Combined FastVideo Extension
     # Using name 'fastvideo_kernel_ops' to distinguish from the python package namespace
     Python_add_library(fastvideo_kernel_ops MODULE USE_SABI ${SKBUILD_SABI_VERSION} WITH_SOABI
@@ -145,15 +172,73 @@ if(BUILD_CXX_KERNELS)
 
     # Build compile definitions list
     set(COMPILE_DEFS TORCH_EXTENSION_NAME=fastvideo_kernel_ops)
-    if(ENABLE_TK_KERNELS)
-        list(APPEND COMPILE_DEFS TK_COMPILE_ST_ATTN TK_COMPILE_BLOCK_SPARSE)
-    endif()
-
     target_compile_definitions(fastvideo_kernel_ops PRIVATE ${COMPILE_DEFS})
 
     target_compile_options(fastvideo_kernel_ops PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>
     )
+
+    # -------------------------------
+    # TK kernels built as object libs
+    # -------------------------------
+    if(ENABLE_TK_SM90)
+        if(NOT EXISTS "${CMAKE_SOURCE_DIR}/include/tk/include/kittens.cuh")
+            message(FATAL_ERROR "SM90 TK enabled but include/tk submodule is missing. Run: git submodule update --init --recursive")
+        endif()
+
+        add_library(fastvideo_kernel_tk_sm90_objs OBJECT
+            csrc/attention/st_attn_h100.cu
+            csrc/attention/block_sparse_h100.cu
+        )
+        set_property(TARGET fastvideo_kernel_tk_sm90_objs PROPERTY CUDA_ARCHITECTURES "90a")
+        target_include_directories(fastvideo_kernel_tk_sm90_objs PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/include/cutlass/include
+            ${CMAKE_SOURCE_DIR}/include/tk/include
+            ${CMAKE_SOURCE_DIR}/include/tk/prototype
+            ${CMAKE_SOURCE_DIR}/csrc
+            ${TORCH_INCLUDE_DIRS}
+        )
+        target_compile_definitions(fastvideo_kernel_tk_sm90_objs PRIVATE
+            TORCH_EXTENSION_NAME=fastvideo_kernel_ops
+            KITTENS_HOPPER
+            TK_COMPILE_ST_ATTN
+            TK_COMPILE_BLOCK_SPARSE
+        )
+        target_compile_options(fastvideo_kernel_tk_sm90_objs PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>
+        )
+        target_sources(fastvideo_kernel_ops PRIVATE $<TARGET_OBJECTS:fastvideo_kernel_tk_sm90_objs>)
+        target_compile_definitions(fastvideo_kernel_ops PRIVATE TK_COMPILE_ST_ATTN TK_COMPILE_BLOCK_SPARSE)
+    endif()
+
+    if(ENABLE_TK_SM100)
+        if(NOT EXISTS "${CMAKE_SOURCE_DIR}/include/tk_b200/include/kittens.cuh")
+            message(FATAL_ERROR "SM100 TK enabled but include/tk_b200 submodule is missing. Create it as a separate ThunderKittens submodule at fastvideo-kernel/include/tk_b200 and run: git submodule update --init --recursive")
+        endif()
+
+        add_library(fastvideo_kernel_tk_sm100_objs OBJECT
+            csrc/attention/block_sparse_b200.cu
+        )
+        set_property(TARGET fastvideo_kernel_tk_sm100_objs PROPERTY CUDA_ARCHITECTURES "100")
+        target_include_directories(fastvideo_kernel_tk_sm100_objs PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/include/cutlass/include
+            ${CMAKE_SOURCE_DIR}/include/tk_b200/include
+            ${CMAKE_SOURCE_DIR}/include/tk_b200/prototype
+            ${CMAKE_SOURCE_DIR}/csrc
+            ${TORCH_INCLUDE_DIRS}
+        )
+        target_compile_definitions(fastvideo_kernel_tk_sm100_objs PRIVATE
+            TORCH_EXTENSION_NAME=fastvideo_kernel_ops
+            TK_COMPILE_BLOCK_SPARSE_SM100
+        )
+        target_compile_options(fastvideo_kernel_tk_sm100_objs PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>
+        )
+        target_sources(fastvideo_kernel_ops PRIVATE $<TARGET_OBJECTS:fastvideo_kernel_tk_sm100_objs>)
+        target_compile_definitions(fastvideo_kernel_ops PRIVATE TK_COMPILE_BLOCK_SPARSE_SM100)
+    endif()
 
     # Link against Torch libraries to avoid undefined symbols at import time
     # (e.g., torch::autograd vtables) when loading the extension module.
