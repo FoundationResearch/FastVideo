@@ -77,6 +77,41 @@ def flops_sparse_attention(bs: int, h: int, d: int, q_len: int, topk_blocks: int
 def bench_ms(fn: Callable[[], object], warmup: int, rep: int) -> float:
     return do_bench(fn, warmup=warmup, rep=rep, quantiles=None)
 
+def _detect_vsa_dispatch_path() -> str:
+    """
+    Best-effort dispatch introspection for the VSA wrapper.
+
+    This mirrors the logic in fastvideo_kernel.block_sparse_attn.block_sparse_attn:
+    - If FASTVIDEO_KERNEL_VSA_FORCE_TRITON=1: Triton
+    - Else prefer SM100 ops on SM100, then SM90 ops on SM90, else Triton.
+    """
+    if os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1":
+        return "Triton (forced via FASTVIDEO_KERNEL_VSA_FORCE_TRITON=1)"
+    if not torch.cuda.is_available():
+        return "CPU/No CUDA (unexpected for this benchmark)"
+
+    major, minor = torch.cuda.get_device_capability(0)
+    try:
+        from fastvideo_kernel._C import fastvideo_kernel_ops  # type: ignore
+    except Exception:
+        fastvideo_kernel_ops = None
+
+    sm90_ok = False
+    sm100_ok = False
+    if fastvideo_kernel_ops is not None:
+        sm90_ok = hasattr(fastvideo_kernel_ops, "block_sparse_fwd") and hasattr(
+            fastvideo_kernel_ops, "block_sparse_bwd"
+        )
+        sm100_ok = hasattr(fastvideo_kernel_ops, "block_sparse_fwd_sm100") and hasattr(
+            fastvideo_kernel_ops, "block_sparse_bwd_sm100"
+        )
+
+    if (major, minor) == (10, 0) and sm100_ok:
+        return "C++/CUDA (SM100/B200) via fastvideo_kernel_ops.block_sparse_*_sm100"
+    if (major, minor) == (9, 0) and sm90_ok:
+        return "C++/CUDA (SM90/H100) via fastvideo_kernel_ops.block_sparse_fwd/bwd"
+    return "Triton (fallback)"
+
 
 def main() -> None:
     args = parse_arguments()
@@ -98,13 +133,11 @@ def main() -> None:
 
     print("VSA Block-Sparse Attention Benchmark (WRAPPER)")
     print(f"device: {torch.cuda.get_device_name(0)}")
+    print(f"capability: {torch.cuda.get_device_capability(0)}")
     print(f"batch={bs}, heads={h}, head_dim={d}, dtype={args.dtype}")
     print(f"BLOCK_M={BLOCK_M}, BLOCK_N={BLOCK_N}")
     print("NOTE: timings include wrapper overhead (map->index + dispatch).")
-    if args.force_triton:
-        print("dispatch: forced Triton (FASTVIDEO_KERNEL_VSA_FORCE_TRITON=1)")
-    else:
-        print("dispatch: SM90 if available, else Triton")
+    print(f"dispatch (expected): {_detect_vsa_dispatch_path()}")
 
     for q_len, kv_len in zip(args.q_seq_lens, kv_seq_lens):
         if q_len % BLOCK_M != 0 or kv_len % BLOCK_N != 0:
