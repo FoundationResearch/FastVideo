@@ -198,6 +198,7 @@ if(BUILD_CXX_KERNELS)
             ${CMAKE_SOURCE_DIR}/include/tk/prototype
             ${CMAKE_SOURCE_DIR}/csrc
             ${TORCH_INCLUDE_DIRS}
+            ${Python_INCLUDE_DIRS}
         )
         target_compile_definitions(fastvideo_kernel_tk_sm90_objs PRIVATE
             TORCH_EXTENSION_NAME=fastvideo_kernel_ops
@@ -228,6 +229,7 @@ if(BUILD_CXX_KERNELS)
             ${CMAKE_SOURCE_DIR}/include/tk_b200/prototype
             ${CMAKE_SOURCE_DIR}/csrc
             ${TORCH_INCLUDE_DIRS}
+            ${Python_INCLUDE_DIRS}
         )
         target_compile_definitions(fastvideo_kernel_tk_sm100_objs PRIVATE
             TORCH_EXTENSION_NAME=fastvideo_kernel_ops
