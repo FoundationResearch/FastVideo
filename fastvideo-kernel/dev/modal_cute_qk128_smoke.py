@@ -24,6 +24,7 @@ DEFAULT_BRANCH = "128vsa"
 DEFAULT_REPO_DIR = "/cache/FastVideo"
 DEFAULT_VOLUME_NAME = "fastvideo-repo-cache"
 DEFAULT_SECRET_NAME = "FR-FV"
+DEFAULT_FLASH_ATTN_WHEEL = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp310-cp310-linux_x86_64.whl"
 
 
 def _resolve_image_tag() -> str:
@@ -42,6 +43,9 @@ app = modal.App(APP_NAME)
 REPO_URL = os.environ.get("MODAL_SMOKE_REPO_URL", DEFAULT_REPO_URL)
 REPO_BRANCH = os.environ.get("MODAL_SMOKE_REPO_BRANCH", DEFAULT_BRANCH)
 REPO_DIR = os.environ.get("MODAL_SMOKE_REPO_DIR", DEFAULT_REPO_DIR)
+FLASH_ATTN_WHEEL = os.environ.get(
+    "MODAL_SMOKE_FLASH_ATTN_WHEEL", DEFAULT_FLASH_ATTN_WHEEL
+)
 REPO_VOLUME = modal.Volume.from_name(
     os.environ.get("MODAL_SMOKE_VOLUME_NAME", DEFAULT_VOLUME_NAME),
     create_if_missing=True,
@@ -101,6 +105,7 @@ def run_remote_smoke() -> dict:
           echo "ERROR: missing fastvideo-kernel/dev/test_cute_qk128_smoke.py"
           exit 2
         fi
+        python -m pip install --upgrade "${FLASH_ATTN_WHEEL}"
         python -m pip install -e "${REPO_DIR}/fastvideo-kernel/include/flash-attention/flash_attn/cute"
         python "${REPO_DIR}/fastvideo-kernel/dev/test_cute_qk128_smoke.py"
         """
@@ -112,6 +117,7 @@ def run_remote_smoke() -> dict:
             "REPO_URL": REPO_URL,
             "REPO_BRANCH": REPO_BRANCH,
             "REPO_DIR": REPO_DIR,
+            "FLASH_ATTN_WHEEL": FLASH_ATTN_WHEEL,
         }
     )
     proc = subprocess.run(
@@ -132,6 +138,7 @@ def run_remote_smoke() -> dict:
         "repo_url": REPO_URL,
         "repo_branch": REPO_BRANCH,
         "repo_dir": REPO_DIR,
+        "flash_attn_wheel": FLASH_ATTN_WHEEL,
         "volume_name": os.environ.get(
             "MODAL_SMOKE_VOLUME_NAME", DEFAULT_VOLUME_NAME
         ),
@@ -148,6 +155,7 @@ def main() -> None:
     print(f"repo url: {result['repo_url']}")
     print(f"repo branch: {result['repo_branch']}")
     print(f"repo dir: {result['repo_dir']}")
+    print(f"flash-attn wheel: {result['flash_attn_wheel']}")
     print(f"volume: {result['volume_name']}")
     print(f"returncode: {result['returncode']}")
     print("----- stdout -----")
