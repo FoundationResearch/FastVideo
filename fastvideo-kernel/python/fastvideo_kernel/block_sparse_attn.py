@@ -4,6 +4,9 @@ import os
 from typing import Tuple
 
 import torch
+from .block_sparse_attn_cute_fwd import block_sparse_attn_cute_fwd
+
+_DISPATCH_PRINTED = False
 
 
 def _get_sm90_ops():
@@ -28,6 +31,24 @@ def _force_triton() -> bool:
     # Force Triton even on SM90 and even if the compiled extension is available.
     # Useful for CI / debugging / parity testing.
     return os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1"
+
+
+def _disable_cute_fwd() -> bool:
+    # Default dispatch uses CuTe forward path.
+    # Set FASTVIDEO_KERNEL_VSA_DISABLE_CUTE_FWD=1 to fall back to legacy routes.
+    return os.environ.get("FASTVIDEO_KERNEL_VSA_DISABLE_CUTE_FWD", "0") == "1"
+
+
+def _should_print_dispatch() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_WRAPPER_PRINT", "0") == "1"
+
+
+def _print_dispatch_once(msg: str) -> None:
+    global _DISPATCH_PRINTED
+    if _DISPATCH_PRINTED or not _should_print_dispatch():
+        return
+    print(f"[fastvideo_kernel.block_sparse_attn] dispatch: {msg}")
+    _DISPATCH_PRINTED = True
 
 
 def _map_to_index(block_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -284,11 +305,23 @@ def block_sparse_attn(
     - On SM90 with compiled extension present: uses fastvideo_kernel_ops.block_sparse_fwd/bwd.
     - Otherwise: uses Triton implementation (requires q/k/v to have same padded length today).
     """
+    if not _disable_cute_fwd():
+        try:
+            out = block_sparse_attn_cute_fwd(q, k, v, block_map, variable_block_sizes)
+            _print_dispatch_once("cute_fwd")
+            return out
+        except Exception as e:
+            _print_dispatch_once(f"cute_fwd -> fallback ({type(e).__name__})")
+            # Keep legacy kernels as fallback for unsupported shapes/environments.
+            pass
+
     block_sparse_fwd, block_sparse_bwd = _get_sm90_ops()
     if (not _force_triton()) and _is_sm90() and (block_sparse_fwd is not None) and (block_sparse_bwd is not None):
+        _print_dispatch_once("sm90_extension")
         return block_sparse_attn_sm90(q, k, v, block_map, variable_block_sizes)
     # Triton path: supports q_seq_len != kv_seq_len as long as both are padded
     # to a multiple of the block size (64 tokens).
+    _print_dispatch_once("triton")
     return block_sparse_attn_triton(q, k, v, block_map, variable_block_sizes)
 
 

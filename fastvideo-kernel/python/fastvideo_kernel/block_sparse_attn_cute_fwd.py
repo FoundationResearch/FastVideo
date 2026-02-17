@@ -21,6 +21,13 @@ def _ensure_flash_attn_importable() -> None:
     repo_str = str(flash_attn_repo)
     if repo_str not in sys.path:
         sys.path.insert(0, repo_str)
+    loaded = sys.modules.get("flash_attn")
+    if loaded is not None:
+        loaded_file = getattr(loaded, "__file__", "") or ""
+        if repo_str not in loaded_file:
+            for mod_name in list(sys.modules.keys()):
+                if mod_name == "flash_attn" or mod_name.startswith("flash_attn."):
+                    del sys.modules[mod_name]
 
 
 def _map_to_index(block_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
