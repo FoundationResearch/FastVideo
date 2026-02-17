@@ -168,7 +168,7 @@ def block_sparse_attn_cute_fwd(
     block_map = block_map.to(torch.bool)
     if block_map.dim() == 3:
         block_map = block_map.unsqueeze(0)
-    q_sparse_block_size = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+    q_sparse_block_size = _choose_q_sparse_block_size(q.shape[2], m_block_size=BLOCK_M)
     sparse_map = _aggregate_q_block_map(block_map, q_sparse_block_size=q_sparse_block_size)
     mask_block_idx, mask_block_cnt = _map_to_index(sparse_map)
     mask_block_idx = mask_block_idx.to(torch.int32).contiguous()
@@ -192,7 +192,7 @@ def block_sparse_attn_cute_fwd(
         q_cute,
         k_cute,
         v_cute,
-        m_block_size=128,
+        m_block_size=BLOCK_M,
         n_block_size=BLOCK_N,
         mask_mod=_get_vsa_mask_mod(),
         block_sparse_tensors=sparse_tensors,
