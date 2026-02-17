@@ -4,6 +4,7 @@ __pycache__
 UCF-101/
 results/
 fastvideo-kernel/.cache
+fastvideo-kernel/build-b200
 wandb/
 *.ipynb
 *.jpg

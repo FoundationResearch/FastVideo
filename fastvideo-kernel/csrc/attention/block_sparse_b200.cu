@@ -75,6 +75,7 @@ struct fwd_globals {
 template <int D>
 __global__ __launch_bounds__(128, 4) void
 fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
+    constexpr bool kUseTcgenPv = false;  // Debug switch: isolate QK tcgen path.
     extern __shared__ int __shm[];
     tma_swizzle_allocator al((int*)&__shm[0]);
 
@@ -138,6 +139,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     // wait for q block
     wait(qsmem_semaphore, 0);
 
+    const int warp_id = kittens::warpid();
     rt_fl<16, K::tile_width> o_reg;
     warp::zero(o_reg);
 
@@ -158,6 +160,7 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         wait(k_smem_arrived, kv_idx % 2);
         // QK^T on tcgen05 path: (64,D) x (64,D)^T -> (64,64) in tensor memory.
         warpgroup::mm_ABt(qk_tmem, q_smem[0], k_smem[0]);
+        tensor_store_wait();
         rt_fl<16, 64> att_block;
         warpgroup::load_async(att_block, qk_tmem);
         tensor_load_wait();
@@ -207,12 +210,27 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         wait(v_smem_arrived, kv_idx % 2);
 
-        // PV on tcgen05 path: (64,64) x (64,D) -> (64,D) in tensor memory.
-        warpgroup::mm_AB(pv_tmem, p_smem[0], v_smem[0]);
-        rt_fl<16, K::tile_width> pv_reg;
-        warpgroup::load_async(pv_reg, pv_tmem);
-        tensor_load_wait();
-        warp::add(o_reg, o_reg, pv_reg);
+        if constexpr (kUseTcgenPv) {
+            // PV on tcgen05 path: (64,64) x (64,D) -> (64,D) in tensor memory.
+            warpgroup::mm_AB(pv_tmem, p_smem[0], v_smem[0]);
+            tensor_store_wait();
+            rt_fl<16, K::tile_width> pv_reg;
+            warpgroup::load_async(pv_reg, pv_tmem);
+            tensor_load_wait();
+            warp::add(o_reg, o_reg, pv_reg);
+        } else {
+            // Fallback PV path for debug: keep old warp-level accumulation.
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                rt_bf<16, 16> p_sub;
+                p_sub.tiles[0][0] = att_block_mma.tiles[0][j];
+                rt_bf<16, K::tile_width, col_l> v_reg;
+                auto v_sub = v_smem[0].template subtile<16, K::tile_width>(
+                    int2{j, 0});
+                warp::load(v_reg, v_sub);
+                warp::mma_AB(o_reg, p_sub, v_reg, o_reg);
+            }
+        }
 
         if (threadIdx.x == 0 && (kv_idx + 1) < kv_blocks) {
             const int32_t next_kv_block_index = q2k_block_sparse_index_ptr[kv_idx + 1];
@@ -224,7 +242,8 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     }
 
     warp::div_row(o_reg, o_reg, norm_vec);
-    warpgroup::store(o_smem[0], o_reg);
+    auto o_sub = o_smem[0].template subtile<16, K::tile_width>(int2{warp_id, 0});
+    warp::store(o_sub, o_reg);
     __syncthreads();
 
     if (threadIdx.x / 32 == 0) {
