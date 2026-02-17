@@ -22,6 +22,7 @@ APP_NAME = "fastvideo-cute-qk128-smoke"
 DEFAULT_IMAGE = "ghcr.io/hao-ai-lab/fastvideo/fastvideo-dev:latest"
 GPU_SPEC = "B200:1"
 DEFAULT_REPO_URL = "https://github.com/hao-ai-lab/FastVideo.git"
+DEFAULT_FLASH_ATTN_REPO = "https://github.com/FoundationResearch/flash-attention.git"
 
 
 def _resolve_image_tag() -> str:
@@ -38,6 +39,10 @@ def _resolve_image_tag() -> str:
 IMAGE_TAG = _resolve_image_tag()
 REPO_URL = os.environ.get("MODAL_SMOKE_REPO_URL", DEFAULT_REPO_URL)
 REPO_COMMIT = os.environ.get("MODAL_SMOKE_COMMIT", "main")
+FLASH_ATTN_REPO = os.environ.get(
+    "MODAL_SMOKE_FLASH_ATTN_REPO",
+    DEFAULT_FLASH_ATTN_REPO,
+)
 
 app = modal.App(APP_NAME)
 
@@ -60,6 +65,11 @@ def run_remote_smoke() -> dict:
         git checkout "{REPO_COMMIT}"
         git submodule sync --recursive
         git submodule update --init --recursive
+        if [ ! -d /FastVideo/fastvideo-kernel/include/flash-attention/flash_attn/cute ]; then
+          echo "flash-attention submodule missing, cloning fallback repo..."
+          rm -rf /FastVideo/fastvideo-kernel/include/flash-attention
+          git clone "{FLASH_ATTN_REPO}" /FastVideo/fastvideo-kernel/include/flash-attention
+        fi
         python -m pip install -U pip setuptools wheel
         python -m pip install -e /FastVideo/fastvideo-kernel/include/flash-attention/flash_attn/cute
         python /FastVideo/fastvideo-kernel/dev/test_cute_qk128_smoke.py
@@ -80,6 +90,7 @@ def run_remote_smoke() -> dict:
         "gpu": GPU_SPEC,
         "repo_url": REPO_URL,
         "repo_commit": REPO_COMMIT,
+        "flash_attn_repo": FLASH_ATTN_REPO,
     }
 
 
@@ -91,6 +102,7 @@ def main() -> None:
     print(f"gpu: {result['gpu']}")
     print(f"repo: {result['repo_url']}")
     print(f"commit: {result['repo_commit']}")
+    print(f"flash-attn repo: {result['flash_attn_repo']}")
     print(f"returncode: {result['returncode']}")
     print("----- stdout -----")
     print(result["stdout"] or "<empty>")
