@@ -49,6 +49,7 @@ def parse_arguments() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     p.add_argument("--force_triton", action="store_true", help="Force wrapper to use Triton path (if supported by shapes).")
+    p.add_argument("--skip_backward", action="store_true", help="Benchmark forward only and skip backward timing.")
     return p.parse_args()
 
 
@@ -130,6 +131,14 @@ def main() -> None:
 
         fwd_ms = bench_ms(_fwd, warmup=args.warmup, rep=args.rep)
 
+        flops = flops_sparse_attention(bs, h, d, q_len, topk, BLOCK_N)
+        fwd_tflops = flops / fwd_ms * 1e-12 * 1e3
+
+        print(f"fwd(wrapper): {fwd_ms:.3f} ms  | {fwd_tflops:.2f} TFLOPs (approx)")
+        if args.skip_backward:
+            print("bwd(wrapper): skipped (--skip_backward)")
+            continue
+
         # Backward benchmark (wrapper autograd). We build the graph once, then repeatedly run backward
         # on the retained graph so bwd timing excludes the forward compute.
         q_ = q.detach().requires_grad_(True)
@@ -148,13 +157,8 @@ def main() -> None:
             warmup=0,
             rep=max(5, args.rep // 2),
         )
-
-        flops = flops_sparse_attention(bs, h, d, q_len, topk, BLOCK_N)
-        fwd_tflops = flops / fwd_ms * 1e-12 * 1e3
         # Rough backward multiplier (attention backward typically ~2-3x forward)
         bwd_tflops = (2.5 * flops) / bwd_ms * 1e-12 * 1e3
-
-        print(f"fwd(wrapper): {fwd_ms:.3f} ms  | {fwd_tflops:.2f} TFLOPs (approx)")
         print(f"bwd(wrapper): {bwd_ms:.3f} ms  | {bwd_tflops:.2f} TFLOPs (approx)")
 
 

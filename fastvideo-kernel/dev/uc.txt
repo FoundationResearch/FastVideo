@@ -13,4 +13,7 @@ dependencies = [
 python -m pip install -U pip setuptools wheel
 python -m pip install -e fastvideo-kernel/include/flash-attention/flash_attn/cute
 
+PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH \
+python /root/FastVideo/fastvideo-kernel/dev/bench_cute_vsa_bs64.py
+
 PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRAPPER_PRINT=1 python -m pytest tests/test_vsa_forward.py -vs
