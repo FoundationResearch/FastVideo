@@ -3,6 +3,7 @@ __pycache__
 *.pth
 UCF-101/
 results/
+fastvideo-kernel/.cache
 wandb/
 *.ipynb
 *.jpg
