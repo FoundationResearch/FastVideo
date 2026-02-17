@@ -305,6 +305,10 @@ def block_sparse_attn(
     - On SM90 with compiled extension present: uses fastvideo_kernel_ops.block_sparse_fwd/bwd.
     - Otherwise: uses Triton implementation (requires q/k/v to have same padded length today).
     """
+    if _force_triton():
+        _print_dispatch_once("triton (forced)")
+        return block_sparse_attn_triton(q, k, v, block_map, variable_block_sizes)
+
     if not _disable_cute_fwd():
         try:
             out = block_sparse_attn_cute_fwd(q, k, v, block_map, variable_block_sizes)
