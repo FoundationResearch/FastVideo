@@ -50,6 +50,8 @@ def parse_arguments() -> argparse.Namespace:
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     p.add_argument("--force_triton", action="store_true", help="Force wrapper to use Triton path (if supported by shapes).")
     p.add_argument("--skip_backward", action="store_true", help="Benchmark forward only and skip backward timing.")
+    p.add_argument("--breakdown", action="store_true", help="Print detailed forward time breakdown for wrapper path.")
+    p.add_argument("--breakdown_rep", type=int, default=10, help="Repetitions for breakdown timing.")
     return p.parse_args()
 
 
@@ -77,6 +79,116 @@ def flops_sparse_attention(bs: int, h: int, d: int, q_len: int, topk_blocks: int
 
 def bench_ms(fn: Callable[[], object], warmup: int, rep: int) -> float:
     return do_bench(fn, warmup=warmup, rep=rep, quantiles=None)
+
+
+def _time_cuda_ms(fn: Callable[[], object], rep: int = 10, warmup: int = 2) -> float:
+    for _ in range(max(0, warmup)):
+        fn()
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    total_ms = 0.0
+    for _ in range(rep):
+        start.record()
+        fn()
+        end.record()
+        torch.cuda.synchronize()
+        total_ms += start.elapsed_time(end)
+    return total_ms / rep
+
+
+def _print_breakdown_cute(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    block_map: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+    rep: int,
+) -> None:
+    from fastvideo_kernel.block_sparse_attn_cute_fwd import (
+        _aggregate_q_block_map,
+        _choose_q_sparse_block_size,
+        _ensure_flash_attn_importable,
+        _map_to_index,
+        _get_vsa_mask_mod,
+        BLOCK_N as CUTE_BLOCK_N,
+    )
+
+    _ensure_flash_attn_importable()
+    from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
+    from flash_attn.cute.interface import _flash_attn_fwd
+
+    block_map_bool = block_map.to(torch.bool)
+    if block_map_bool.dim() == 3:
+        block_map_bool = block_map_bool.unsqueeze(0)
+    q_sparse_block_size = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+
+    def _preprocess():
+        sparse_map = _aggregate_q_block_map(
+            block_map_bool, q_sparse_block_size=q_sparse_block_size
+        )
+        mask_block_idx, mask_block_cnt = _map_to_index(sparse_map)
+        mask_block_idx = mask_block_idx.to(torch.int32).contiguous()
+        mask_block_cnt = mask_block_cnt.to(torch.int32).contiguous()
+        full_block_cnt = torch.zeros_like(mask_block_cnt)
+        full_block_idx = torch.zeros_like(mask_block_idx)
+        return BlockSparseTensorsTorch(
+            full_block_cnt=full_block_cnt,
+            full_block_idx=full_block_idx,
+            mask_block_cnt=mask_block_cnt,
+            mask_block_idx=mask_block_idx,
+            block_size=(q_sparse_block_size, CUTE_BLOCK_N),
+        )
+
+    sparse_tensors = _preprocess()
+    aux_tensors = [block_map_bool.contiguous()]
+    mask_mod = _get_vsa_mask_mod()
+
+    def _transpose_in():
+        return (
+            q.transpose(1, 2).contiguous(),
+            k.transpose(1, 2).contiguous(),
+            v.transpose(1, 2).contiguous(),
+        )
+
+    q_cute, k_cute, v_cute = _transpose_in()
+
+    def _kernel():
+        return _flash_attn_fwd(
+            q_cute,
+            k_cute,
+            v_cute,
+            m_block_size=128,
+            n_block_size=CUTE_BLOCK_N,
+            mask_mod=mask_mod,
+            block_sparse_tensors=sparse_tensors,
+            causal=False,
+            return_lse=True,
+            aux_tensors=aux_tensors,
+        )
+
+    out_cute, _lse_cute = _kernel()
+
+    def _transpose_out():
+        return out_cute.transpose(1, 2).contiguous()
+
+    preprocess_ms = _time_cuda_ms(_preprocess, rep=rep)
+    transpose_in_ms = _time_cuda_ms(_transpose_in, rep=rep)
+    kernel_ms = _time_cuda_ms(_kernel, rep=rep)
+    transpose_out_ms = _time_cuda_ms(_transpose_out, rep=rep)
+    total_ms = preprocess_ms + transpose_in_ms + kernel_ms + transpose_out_ms
+    print("breakdown(cute_fwd):")
+    print(
+        f"  preprocess(map/index+sparse_tensors): {preprocess_ms:.3f} ms ({preprocess_ms / total_ms * 100:.1f}%)"
+    )
+    print(
+        f"  transpose_in([B,H,T,D]->[B,T,H,D]): {transpose_in_ms:.3f} ms ({transpose_in_ms / total_ms * 100:.1f}%)"
+    )
+    print(f"  kernel(_flash_attn_fwd): {kernel_ms:.3f} ms ({kernel_ms / total_ms * 100:.1f}%)")
+    print(
+        f"  transpose_out([B,T,H,D]->[B,H,T,D]): {transpose_out_ms:.3f} ms ({transpose_out_ms / total_ms * 100:.1f}%)"
+    )
+    print(f"  subtotal: {total_ms:.3f} ms")
 
 
 def main() -> None:
@@ -135,6 +247,15 @@ def main() -> None:
         fwd_tflops = flops / fwd_ms * 1e-12 * 1e3
 
         print(f"fwd(wrapper): {fwd_ms:.3f} ms  | {fwd_tflops:.2f} TFLOPs (approx)")
+        if args.breakdown and not args.force_triton:
+            _print_breakdown_cute(
+                q=q,
+                k=k,
+                v=v,
+                block_map=block_map,
+                variable_block_sizes=variable_block_sizes,
+                rep=max(1, args.breakdown_rep),
+            )
         if args.skip_backward:
             print("bwd(wrapper): skipped (--skip_backward)")
             continue

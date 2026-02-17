@@ -17,3 +17,7 @@ PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH \
 python /root/FastVideo/fastvideo-kernel/dev/bench_cute_vsa_bs64.py
 
 PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRAPPER_PRINT=1 python -m pytest tests/test_vsa_forward.py -vs
+
+PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_KERNEL_VSA_FORCE_TRITON=1 FASTVIDEO_VSA_WRAPPER_PRINT=1 python benchmarks/bench_vsa.py --skip_backward --breakdown
+
+PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRAPPER_PRINT=1 python benchmarks/bench_vsa.py --skip_backward --breakdown
