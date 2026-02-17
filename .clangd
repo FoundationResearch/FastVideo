@@ -1,0 +1,16 @@
+CompileFlags:
+  # 告诉 clangd 把 .cu 和 .cuh 文件当作 CUDA C++ 处理
+  Add: [-xcuda, --cuda-path=/usr/local/cuda] 
+  
+  # 移除 clang 不认识但 nvcc 需要的参数，避免假报错
+  Remove: 
+    - -gencode*
+    - -forward-unknown-to-host-compiler
+    - -rdc*
+    - -Xcompiler*
+    - --threads*
+    - -allow-unsupported-compiler
+
+# 如果你的代码里有大量模板（ThunderKittens 通常很多），防止提示符太卡
+Index:
+  Background: Build

@@ -83,11 +83,13 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     using q_tile = st_bf<64, K::tile_width>;
     using k_tile = st_bf<64, K::tile_width>;
     using v_tile = st_bf<64, K::tile_width>;
+    using p_tile = st_bf<64, 64>;
     using o_tile = st_bf<64, K::tile_width>;
 
     q_tile (&q_smem)[1] = al.allocate<q_tile, 1>();
     k_tile (&k_smem)[1] = al.allocate<k_tile, 1>();
     v_tile (&v_smem)[1] = al.allocate<v_tile, 1>();
+    p_tile (&p_smem)[1] = al.allocate<p_tile, 1>();
     // Reuse Q shared memory region for O to reduce shared memory footprint.
     // This is safe because we fully materialize Q into registers before
     // writing O back to shared.
@@ -136,124 +138,93 @@ fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     // wait for q block
     wait(qsmem_semaphore, 0);
 
-    const int warp_id = kittens::warpid();
-    const bool active_warp = (warp_id < 4);
-
-    // Per-warp Q tile: (16, D)
-    rt_bf<16, K::tile_width> q_reg;
-    if (active_warp) {
-        auto q_sub = q_smem[0].template subtile<16, K::tile_width>(
-            int2{warp_id, 0});
-        warp::load(q_reg, q_sub);
-    }
-
     rt_fl<16, K::tile_width> o_reg;
-    if (active_warp) {
-        warp::zero(o_reg);
-    }
+    warp::zero(o_reg);
 
     col_vec<rt_fl<16, 64>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
-    if (active_warp) {
-        warp::neg_infty(max_vec);
-        warp::zero(norm_vec);
-    }
+    warp::neg_infty(max_vec);
+    warp::zero(norm_vec);
+
+    // Blackwell tcgen05 path: use tensor memory as MMA destination.
+    tensor_allocator<1, 1> tm_alloc{};
+    using qk_tt = half_tt_fl<64>;
+    using pv_tt = half_tt_fl<K::tile_width>;
+    qk_tt qk_tmem = tm_alloc.template allocate<qk_tt>(0, 0);
+    pv_tt pv_tmem = tm_alloc.template allocate<pv_tt>(0, qk_tt::cols);
 
     // main loop: pipeline loads next KV block while computing current.
     for (int kv_idx = 0; kv_idx < kv_blocks; kv_idx++) {
         // Load K/V tile for this kv_idx
         wait(k_smem_arrived, kv_idx % 2);
-        wait(v_smem_arrived, kv_idx % 2);
+        // QK^T on tcgen05 path: (64,D) x (64,D)^T -> (64,64) in tensor memory.
+        warpgroup::mm_ABt(qk_tmem, q_smem[0], k_smem[0]);
+        rt_fl<16, 64> att_block;
+        warpgroup::load_async(att_block, qk_tmem);
+        tensor_load_wait();
 
-        if (active_warp) {
-            // Materialize attention scores (16x64) in 4 subtiles of 16 columns.
-            rt_fl<16, 64> att_block;
-            #pragma unroll
-            for (int j = 0; j < 4; j++) {
-                rt_bf<16, K::tile_width> k_reg;
-                auto k_sub = k_smem[0].template subtile<16, K::tile_width>(
-                    int2{j, 0});
-                warp::load(k_reg, k_sub);
-
-                // Compute a 16x16 score block and write it into the j-th subtile.
-                rt_fl<16, 16> att_sub;
-                warp::zero(att_sub);
-                warp::mma_ABt(att_sub, q_reg, k_reg, att_sub);
-                att_block.tiles[0][j] = att_sub.tiles[0][0];
-            }
-
-            warp::copy(max_vec_last_scaled, max_vec);
-            if constexpr (D == 64) {
-                warp::mul(max_vec_last_scaled, max_vec_last_scaled,
-                          1.44269504089f * 0.125f);
-            } else {
-                warp::mul(max_vec_last_scaled, max_vec_last_scaled,
-                          1.44269504089f * 0.08838834764f);
-            }
-
-            warp::right_fill(att_block, att_block,
-                             g.block_size[q2k_block_sparse_index_ptr[kv_idx]],
-                             base_types::constants<float>::neg_infty());
-            warp::row_max(max_vec, att_block, max_vec);
-
-            if constexpr (D == 64) {
-                warp::mul(att_block, att_block, 1.44269504089f * 0.125f);
-                warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.125f);
-            } else {
-                warp::mul(att_block, att_block, 1.44269504089f * 0.08838834764f);
-                warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.08838834764f);
-            }
-
-            warp::sub_row(att_block, att_block, max_vec_scaled);
-            warp::exp2(att_block, att_block);
-            warp::sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
-            warp::exp2(max_vec_last_scaled, max_vec_last_scaled);
-            warp::mul(norm_vec, norm_vec, max_vec_last_scaled);
-            warp::row_sum(norm_vec, att_block, norm_vec);
-            warp::add(att_block, att_block, 0.f);
-
-            rt_bf<16, 64> att_block_mma;
-            warp::copy(att_block_mma, att_block);
-            warp::mul_row(o_reg, o_reg, max_vec_last_scaled);
-
-            // O += P * V (split by 4 x 16-token blocks)
-            #pragma unroll
-            for (int j = 0; j < 4; j++) {
-                rt_bf<16, 16> p_sub;
-                p_sub.tiles[0][0] = att_block_mma.tiles[0][j];
-                rt_bf<16, K::tile_width, col_l> v_reg;
-                auto v_sub = v_smem[0].template subtile<16, K::tile_width>(
-                    int2{j, 0});
-                warp::load(v_reg, v_sub);
-                warp::mma_AB(o_reg, p_sub, v_reg, o_reg);
-            }
+        warp::copy(max_vec_last_scaled, max_vec);
+        if constexpr (D == 64) {
+            warp::mul(max_vec_last_scaled, max_vec_last_scaled,
+                      1.44269504089f * 0.125f);
+        } else {
+            warp::mul(max_vec_last_scaled, max_vec_last_scaled,
+                      1.44269504089f * 0.08838834764f);
         }
 
-        // Kick next K/V loads (single buffer) after all warps finished consuming.
-        __syncthreads();
         if (threadIdx.x == 0 && (kv_idx + 1) < kv_blocks) {
-            const int32_t kv_block_index =
-                q2k_block_sparse_index_ptr[kv_idx + 1];
+            const int32_t next_kv_block_index = q2k_block_sparse_index_ptr[kv_idx + 1];
             tma::expect_bytes(k_smem_arrived, sizeof(k_tile));
-            coord<k_tile> k_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index,
-                                        0};
+            coord<k_tile> k_tile_idx = {blockIdx.z, kv_head_idx, next_kv_block_index, 0};
             tma::load_async(k_smem[0], g.k, k_tile_idx, k_smem_arrived);
+        }
 
+        warp::right_fill(att_block, att_block,
+                         g.block_size[q2k_block_sparse_index_ptr[kv_idx]],
+                         base_types::constants<float>::neg_infty());
+        warp::row_max(max_vec, att_block, max_vec);
+
+        if constexpr (D == 64) {
+            warp::mul(att_block, att_block, 1.44269504089f * 0.125f);
+            warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.125f);
+        } else {
+            warp::mul(att_block, att_block, 1.44269504089f * 0.08838834764f);
+            warp::mul(max_vec_scaled, max_vec, 1.44269504089f * 0.08838834764f);
+        }
+
+        warp::sub_row(att_block, att_block, max_vec_scaled);
+        warp::exp2(att_block, att_block);
+        warp::sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
+        warp::exp2(max_vec_last_scaled, max_vec_last_scaled);
+        warp::mul(norm_vec, norm_vec, max_vec_last_scaled);
+        warp::row_sum(norm_vec, att_block, norm_vec);
+        warp::add(att_block, att_block, 0.f);
+
+        rt_bf<16, 64> att_block_mma;
+        warp::copy(att_block_mma, att_block);
+        warp::mul_row(o_reg, o_reg, max_vec_last_scaled);
+        warpgroup::store(p_smem[0], att_block_mma);
+        __syncthreads();
+
+        wait(v_smem_arrived, kv_idx % 2);
+
+        // PV on tcgen05 path: (64,64) x (64,D) -> (64,D) in tensor memory.
+        warpgroup::mm_AB(pv_tmem, p_smem[0], v_smem[0]);
+        rt_fl<16, K::tile_width> pv_reg;
+        warpgroup::load_async(pv_reg, pv_tmem);
+        tensor_load_wait();
+        warp::add(o_reg, o_reg, pv_reg);
+
+        if (threadIdx.x == 0 && (kv_idx + 1) < kv_blocks) {
+            const int32_t next_kv_block_index = q2k_block_sparse_index_ptr[kv_idx + 1];
             tma::expect_bytes(v_smem_arrived, sizeof(v_tile));
-            coord<v_tile> v_tile_idx = {blockIdx.z, kv_head_idx, kv_block_index,
-                                        0};
+            coord<v_tile> v_tile_idx = {blockIdx.z, kv_head_idx, next_kv_block_index, 0};
             tma::load_async(v_smem[0], g.v, v_tile_idx, v_smem_arrived);
         }
         __syncthreads();
     }
 
-    if (active_warp) {
-        warp::div_row(o_reg, o_reg, norm_vec);
-
-        // Store (16,D) into shared output tile, then a single warp TMA-stores to GMEM.
-        auto o_sub = o_smem[0].template subtile<16, K::tile_width>(
-            int2{warp_id, 0});
-        warp::store(o_sub, o_reg);
-    }
+    warp::div_row(o_reg, o_reg, norm_vec);
+    warpgroup::store(o_smem[0], o_reg);
     __syncthreads();
 
     if (threadIdx.x / 32 == 0) {
@@ -381,7 +352,7 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
         // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
         constexpr int mem_size =
             int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
-                sizeof(typename globals::v_tile) + 4096);
+                sizeof(typename globals::v_tile) + sizeof(st_bf<64, 64>) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<64>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
@@ -435,7 +406,7 @@ std::vector<torch::Tensor> block_sparse_attention_forward_sm100(
         // Shared memory: Q + K + V (O aliases Q) + allocator overhead.
         constexpr int mem_size =
             int(sizeof(typename globals::q_tile) + sizeof(typename globals::k_tile) +
-                sizeof(typename globals::v_tile) + 4096);
+                sizeof(typename globals::v_tile) + sizeof(st_bf<64, 64>) + 4096);
         cudaFuncSetAttribute(fwd_attend_ker<128>,
                              cudaFuncAttributeMaxDynamicSharedMemorySize,
                              mem_size);
