@@ -23,3 +23,8 @@ PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRA
 PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_KERNEL_VSA_FORCE_TRITON=1 FASTVIDEO_VSA_WRAPPER_PRINT=1 python benchmarks/bench_vsa.py --skip_backward --breakdown
 
 PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRAPPER_PRINT=1 python benchmarks/bench_vsa.py --skip_backward --breakdown
+
+
+# modal
+
+modal run fastvideo-kernel/dev/modal_cute_qk128_smoke.py 

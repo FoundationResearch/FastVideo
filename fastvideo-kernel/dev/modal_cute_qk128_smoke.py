@@ -12,7 +12,9 @@ Optional environment variables:
 
 from __future__ import annotations
 
+import base64
 import os
+from pathlib import Path
 import subprocess
 from textwrap import dedent
 
@@ -38,11 +40,32 @@ def _resolve_image_tag() -> str:
 
 IMAGE_TAG = _resolve_image_tag()
 REPO_URL = os.environ.get("MODAL_SMOKE_REPO_URL", DEFAULT_REPO_URL)
-REPO_COMMIT = os.environ.get("MODAL_SMOKE_COMMIT", "main")
 FLASH_ATTN_REPO = os.environ.get(
     "MODAL_SMOKE_FLASH_ATTN_REPO",
     DEFAULT_FLASH_ATTN_REPO,
 )
+
+
+def _resolve_repo_commit() -> str:
+    if os.environ.get("MODAL_SMOKE_COMMIT"):
+        return os.environ["MODAL_SMOKE_COMMIT"]
+    try:
+        root = Path(__file__).resolve().parents[2]
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            text=True,
+        ).strip()
+    except Exception:
+        # Fallback keeps behavior deterministic when local git metadata is unavailable.
+        return "main"
+
+
+REPO_COMMIT = _resolve_repo_commit()
+LOCAL_SMOKE_SCRIPT = Path(__file__).with_name("test_cute_qk128_smoke.py")
+LOCAL_SMOKE_SOURCE_B64 = base64.b64encode(
+    LOCAL_SMOKE_SCRIPT.read_bytes()
+).decode("ascii")
 
 app = modal.App(APP_NAME)
 
@@ -72,7 +95,18 @@ def run_remote_smoke() -> dict:
         fi
         python -m pip install -U pip setuptools wheel
         python -m pip install -e /FastVideo/fastvideo-kernel/include/flash-attention/flash_attn/cute
-        python /FastVideo/fastvideo-kernel/dev/test_cute_qk128_smoke.py
+        SMOKE_SCRIPT=/FastVideo/fastvideo-kernel/dev/test_cute_qk128_smoke.py
+        if [ ! -f "$SMOKE_SCRIPT" ]; then
+          echo "remote repo missing smoke script, injecting local copy..."
+          python - <<'PY'
+import base64
+from pathlib import Path
+content = base64.b64decode("{LOCAL_SMOKE_SOURCE_B64}".encode("ascii"))
+Path("/tmp/test_cute_qk128_smoke.py").write_bytes(content)
+PY
+          SMOKE_SCRIPT=/tmp/test_cute_qk128_smoke.py
+        fi
+        python "$SMOKE_SCRIPT"
         """
     ).strip()
 
