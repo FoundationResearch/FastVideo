@@ -20,7 +20,20 @@ import modal
 APP_NAME = "fastvideo-cute-qk128-smoke"
 DEFAULT_IMAGE = "ghcr.io/hao-ai-lab/fastvideo/fastvideo-dev:latest"
 GPU_SPEC = "B200:1"
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_repo_root() -> Path:
+    """Find repo root robustly across local and Modal import paths."""
+    candidates = [Path(__file__).resolve(), Path.cwd().resolve()]
+    for start in candidates:
+        for parent in [start, *start.parents]:
+            if (parent / "fastvideo-kernel").is_dir():
+                return parent
+    # Fallback keeps module importable in shallow container paths.
+    return Path.cwd().resolve()
+
+
+REPO_ROOT = _resolve_repo_root()
 
 
 def _resolve_image_tag() -> str:
@@ -64,7 +77,7 @@ def run_remote_smoke() -> dict:
           echo "ERROR: local mount is missing fastvideo-kernel/dev/test_cute_qk128_smoke.py"
           exit 2
         fi
-        python -m pip install --no-deps -e /FastVideo/fastvideo-kernel/include/flash-attention/flash_attn/cute
+        python -m pip install -e /FastVideo/fastvideo-kernel/include/flash-attention/flash_attn/cute
         python /FastVideo/fastvideo-kernel/dev/test_cute_qk128_smoke.py
         """
     ).strip()
