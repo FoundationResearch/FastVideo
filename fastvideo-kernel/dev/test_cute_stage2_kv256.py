@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Forward-only smoke + benchmark for CuTe block-sparse (q/k block = 128).
+"""Forward-only benchmark for CuTe block-sparse with stage=2 and KV block=256.
 
 Checks:
 1) output/lse shapes
@@ -9,8 +9,8 @@ Checks:
 
 from __future__ import annotations
 
-import math
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -28,6 +28,24 @@ def _ensure_flash_attn_importable() -> None:
     repo_str = str(flash_attn_repo)
     if repo_str not in sys.path:
         sys.path.insert(0, repo_str)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Forward-only CuTe benchmark with stage=2 and block_size=(256,256)"
+    )
+    # Keep defaults aligned with benchmarks/bench_vsa.py
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--num_heads", type=int, default=12)
+    parser.add_argument("--head_dim", type=int, default=128, choices=[64, 128])
+    parser.add_argument("--q_seq_len", type=int, default=49152)
+    parser.add_argument("--kv_seq_len", type=int, default=None)
+    parser.add_argument("--topk", type=int, default=None)
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--rep", type=int, default=20)
+    parser.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
+    parser.add_argument("--seed", type=int, default=0)
+    return parser.parse_args()
 
 
 def _build_random_block_sparse_tensors(
@@ -56,7 +74,6 @@ def _build_random_block_sparse_tensors(
             idx = torch.topk(scores, topk, dim=-1).indices.to(torch.int32)
             mask_block_idx[b, h, :, :topk] = idx
 
-    # Provide explicit empty full lists (more stable than None on some paths).
     full_block_cnt = torch.zeros_like(mask_block_cnt)
     full_block_idx = torch.zeros_like(mask_block_idx)
     return mask_block_cnt, mask_block_idx, full_block_cnt, full_block_idx
@@ -86,47 +103,21 @@ def _flops_sparse_attention(
     topk_blocks: int,
     block_n: int,
 ) -> float:
-    # Approximate FLOPs for sparse attention: QK^T + PV
     return 4.0 * batch_size * num_heads * head_dim * seqlen_q * (topk_blocks * block_n)
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Forward-only CuTe q/k=128 smoke + benchmark")
-    # Align defaults with fastvideo-kernel/benchmarks/bench_vsa.py
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--num_heads", type=int, default=12)
-    parser.add_argument("--head_dim", type=int, default=128, choices=[64, 128])
-    parser.add_argument("--q_seq_len", type=int, default=49152)
-    parser.add_argument("--kv_seq_len", type=int, default=None)
-    parser.add_argument("--topk", type=int, default=None)
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--rep", type=int, default=20)
-    parser.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
-    parser.add_argument("--seed", type=int, default=0)
-    return parser.parse_args()
-
-
-def _choose_q_block_size(q_len: int, base_block_m: int = 128) -> int:
-    forced = os.environ.get("FLASH_ATTN_CUTE_FORCE_Q_STAGE")
-    if forced == "1":
-        return base_block_m
-    if forced == "2":
-        return 2 * base_block_m
-    # On SM100+, q_stage can become 2 when seqlen > 128, requiring q block to be multiple of 256.
-    major, _minor = torch.cuda.get_device_capability()
-    if major >= 10 and q_len > base_block_m:
-        return 2 * base_block_m
-    return base_block_m
 
 
 def main() -> None:
     if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is required for this smoke test.")
-
-    _ensure_flash_attn_importable()
-    from flash_attn.cute import flash_attn_func
+        raise RuntimeError("CUDA is required for this benchmark.")
 
     args = _parse_args()
+    _ensure_flash_attn_importable()
+    from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
+    from flash_attn.cute.interface import _flash_attn_fwd
+
+    # Force SM100 q_stage=2 for this experiment.
+    os.environ["FLASH_ATTN_CUTE_FORCE_Q_STAGE"] = "2"
+
     torch.manual_seed(args.seed)
     device = torch.device("cuda")
     dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
@@ -136,8 +127,8 @@ def main() -> None:
     head_dim = args.head_dim
     seqlen_q = args.q_seq_len
     seqlen_k = args.kv_seq_len if args.kv_seq_len is not None else args.q_seq_len
-    q_block_size = _choose_q_block_size(seqlen_q, base_block_m=128)
-    block_size = (q_block_size, 128)
+    block_size = (256, 256)
+
     num_kv_blocks = math.ceil(seqlen_k / block_size[1])
     topk = args.topk if args.topk is not None else max(1, num_kv_blocks // 10)
 
@@ -155,20 +146,37 @@ def main() -> None:
         device=device,
     )
 
+    sparse_tensors = BlockSparseTensorsTorch(
+        full_block_cnt=full_cnt,
+        full_block_idx=full_idx,
+        mask_block_cnt=mask_cnt,
+        mask_block_idx=mask_idx,
+        block_size=block_size,
+    )
+
     def _fwd():
-        return flash_attn_func(
+        return _flash_attn_fwd(
             q,
             k,
             v,
+            m_block_size=128,
+            n_block_size=256,
+            block_sparse_tensors=sparse_tensors,
             causal=False,
-            mask_block_cnt=mask_cnt,
-            mask_block_idx=mask_idx,
-            full_block_cnt=full_cnt,
-            full_block_idx=full_idx,
-            block_size=block_size,
+            return_lse=True,
         )
 
-    out, lse = _fwd()
+    try:
+        out, lse = _fwd()
+    except AssertionError as e:
+        msg = str(e) or "kernel assertion"
+        print("UNSUPPORTED: CuTe stage=2 with block_size=(256,256) failed before execution.")
+        print(f"reason: {msg}")
+        print(
+            "hint: SM100 forward kernel enforces TMEM capacity; "
+            "for stage=2 and head_dim=128, effective n_block_size is capped at 128."
+        )
+        return
     out_finite = torch.isfinite(out).all().item()
     lse_finite = True if lse is None else torch.isfinite(lse).all().item()
 
@@ -183,11 +191,11 @@ def main() -> None:
     )
     fwd_tflops = flops / fwd_ms * 1e-12 * 1e3
 
-    print("PASS: CuTe block-sparse q/k block=128 forward test")
+    print("PASS: CuTe block-sparse stage=2, block_size=(256,256)")
     print(
         f"config: batch={batch_size}, heads={num_heads}, head_dim={head_dim}, "
-        f"q_len={seqlen_q}, kv_len={seqlen_k}, q_block={q_block_size}, kv_block=128, "
-        f"topk={topk}, dtype={args.dtype}"
+        f"q_len={seqlen_q}, kv_len={seqlen_k}, q_block=256, kv_block=256, "
+        f"topk={topk}, dtype={args.dtype}, forced_q_stage=2"
     )
     print(f"out.shape={tuple(out.shape)}, out.dtype={out.dtype}")
     if lse is None:
