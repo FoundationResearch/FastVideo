@@ -6,4 +6,4 @@
 	url = https://github.com/NVIDIA/cutlass.git
 [submodule "fastvideo-kernel/include/flash-attention"]
 	path = fastvideo-kernel/include/flash-attention
-	url = https://github.com/Dao-AILab/flash-attention.git
+	url = git@github.com:FoundationResearch/flash-attention.git
