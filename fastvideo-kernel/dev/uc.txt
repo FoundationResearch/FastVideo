@@ -1,0 +1,16 @@
+fastvideo-kernel/include/flash-attention/flash_attn/cute/pyproject.toml
+change the dependencies to:
+dependencies = [
+    "nvidia-cutlass-dsl>=4.4.0.dev1",
+    "torch>=2.10.0",
+    "einops",
+    "typing_extensions",
+    "apache-tvm-ffi>=0.1.5,<0.2",
+    "torch-c-dlpack-ext",
+    "quack-kernels>=0.2.9",
+]
+
+python -m pip install -U pip setuptools wheel
+python -m pip install -e fastvideo-kernel/include/flash-attention/flash_attn/cute
+
+PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRAPPER_PRINT=1 python -m pytest tests/test_vsa_forward.py -vs

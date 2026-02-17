@@ -9,6 +9,7 @@ import torch
 
 BLOCK_M = 64
 BLOCK_N = 64
+_VSA_MASK_MOD = None
 
 
 def _ensure_flash_attn_importable() -> None:
@@ -81,6 +82,38 @@ def _aggregate_q_block_map(
         block_map = torch.cat([block_map, pad], dim=2)
     block_map = block_map.view(bsz, nhead, q_blocks_sparse, factor, kv_blocks_64)
     return block_map.any(dim=3)
+
+
+def _get_vsa_mask_mod():
+    global _VSA_MASK_MOD
+    if _VSA_MASK_MOD is not None:
+        return _VSA_MASK_MOD
+
+    import cutlass
+    import cutlass.cute as cute
+    from flash_attn.cute import utils
+    from flash_attn.cute.block_sparsity import fast_sampling
+
+    @fast_sampling
+    @cute.jit
+    def _vsa_mask_mod(
+        batch,
+        head,
+        q_idx,
+        kv_idx,
+        seqlen_info,
+        aux_tensors,
+    ):
+        block_map = aux_tensors[0]
+        q_idx_scalar = utils.ssa_to_scalar(q_idx)
+        kv_idx_scalar = utils.ssa_to_scalar(kv_idx)
+        q_blk = q_idx_scalar // BLOCK_M
+        kv_blk = kv_idx_scalar // BLOCK_M
+        allow = block_map[batch[0], head[0], q_blk, kv_blk]
+        return utils.scalar_to_ssa(allow, cutlass.Boolean)
+
+    _VSA_MASK_MOD = _vsa_mask_mod
+    return _VSA_MASK_MOD
 
 
 def block_sparse_attn_cute_fwd(
@@ -161,9 +194,11 @@ def block_sparse_attn_cute_fwd(
         v_cute,
         m_block_size=128,
         n_block_size=BLOCK_N,
+        mask_mod=_get_vsa_mask_mod(),
         block_sparse_tensors=sparse_tensors,
         causal=False,
         return_lse=True,
+        aux_tensors=[block_map.contiguous()],
     )
 
     out = out_cute.transpose(1, 2).contiguous()
