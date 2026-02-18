@@ -52,6 +52,7 @@ def _run_case(
 ) -> Tuple[float, float]:
     assert torch.cuda.is_available()
     os.environ["FASTVIDEO_VSA_256"] = "1"
+    os.environ["FASTVIDEO_VSA_256_BACKEND"] = "cute"
     _ensure_local_fastvideo_kernel()
     import fastvideo_kernel.ops as fv_ops
 

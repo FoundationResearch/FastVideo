@@ -31,6 +31,7 @@ def _reload_video_sparse_attn(
     allow_fallback: bool,
 ):
     os.environ["FASTVIDEO_VSA_256"] = "1"
+    os.environ["FASTVIDEO_VSA_256_BACKEND"] = "auto"
     os.environ["FASTVIDEO_VSA_256_TRITON_COMPAT"] = "1" if triton_compat else "0"
     os.environ["FASTVIDEO_KERNEL_VSA_FORCE_TRITON"] = "1" if force_triton else "0"
     os.environ["FASTVIDEO_VSA_256_ALLOW_TRITON_FALLBACK"] = (

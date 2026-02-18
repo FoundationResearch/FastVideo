@@ -39,17 +39,6 @@ def _disable_cute_fwd() -> bool:
     return os.environ.get("FASTVIDEO_KERNEL_VSA_DISABLE_CUTE_FWD", "0") == "1"
 
 
-def _prefer_cute_fwd_vsa256() -> bool:
-    # VSA256 mode prefers CuTe forward, but can optionally fall back.
-    return os.environ.get("FASTVIDEO_VSA_256", "0") == "1"
-
-
-def _allow_vsa256_triton_fallback() -> bool:
-    # Route-A compatibility: allow training to run on Triton/SM90 paths
-    # when CuTe is unavailable or unsupported.
-    return os.environ.get("FASTVIDEO_VSA_256_ALLOW_TRITON_FALLBACK", "1") == "1"
-
-
 def _should_print_dispatch() -> bool:
     return os.environ.get("FASTVIDEO_VSA_WRAPPER_PRINT", "0") == "1"
 
@@ -316,25 +305,19 @@ def block_sparse_attn(
     - On SM90 with compiled extension present: uses fastvideo_kernel_ops.block_sparse_fwd/bwd.
     - Otherwise: uses Triton implementation (requires q/k/v to have same padded length today).
     """
+    q_blocks = block_map.shape[-2]
+    kv_blocks = block_map.shape[-1]
+    q_block_tokens = q.shape[2] // max(q_blocks, 1)
+    kv_block_tokens = k.shape[2] // max(kv_blocks, 1)
+    if q_block_tokens == 256 or kv_block_tokens == 256:
+        raise ValueError(
+            "block_sparse_attn (vsa64 wrapper) does not accept logical 256-block maps. "
+            "Use block_sparse_attn_256 via video_sparse_attn when FASTVIDEO_VSA_256=1."
+        )
+
     if _force_triton():
         _print_dispatch_once("triton (forced)")
         return block_sparse_attn_triton(q, k, v, block_map, variable_block_sizes)
-
-    if _prefer_cute_fwd_vsa256():
-        try:
-            out = block_sparse_attn_cute_fwd(q, k, v, block_map, variable_block_sizes)
-            _print_dispatch_once("cute_fwd (preferred by FASTVIDEO_VSA_256=1)")
-            return out
-        except Exception as e:
-            if not _allow_vsa256_triton_fallback():
-                raise RuntimeError(
-                    "FASTVIDEO_VSA_256=1 preferred CuTe forward but it failed, "
-                    "and fallback is disabled by FASTVIDEO_VSA_256_ALLOW_TRITON_FALLBACK=0. "
-                    f"error: {type(e).__name__}: {e}"
-                ) from e
-            _print_dispatch_once(
-                f"cute_fwd(vsa256) -> fallback ({type(e).__name__})"
-            )
 
     if not _disable_cute_fwd():
         try:

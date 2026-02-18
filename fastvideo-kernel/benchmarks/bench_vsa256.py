@@ -162,10 +162,10 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this benchmark.")
     _ensure_flash_attn_importable()
-    # Enable full VSA-256 path (logical 256 + wrapper-forced CuTe dispatch).
+    # Enable full VSA256 path.
     os.environ["FASTVIDEO_VSA_256"] = "1"
-    # This benchmark targets the q256/kv128 expansion path.
-    os.environ["FASTVIDEO_VSA_256_TRITON_COMPAT"] = "0"
+    # This benchmark targets the q256/kv128 CuTe path.
+    os.environ["FASTVIDEO_VSA_256_BACKEND"] = "cute"
     from flash_attn.cute import flash_attn_func
     from fastvideo_kernel.block_sparse_attn import block_sparse_attn
     from fastvideo_kernel.ops import video_sparse_attn

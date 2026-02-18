@@ -26,6 +26,7 @@ def _ensure_local_fastvideo_kernel() -> None:
 
 def _reload_video_sparse_attn_triton():
     os.environ["FASTVIDEO_VSA_256"] = "1"
+    os.environ["FASTVIDEO_VSA_256_BACKEND"] = "triton"
     os.environ["FASTVIDEO_VSA_256_TRITON_COMPAT"] = "1"
     os.environ["FASTVIDEO_KERNEL_VSA_FORCE_TRITON"] = "1"
     os.environ["FASTVIDEO_VSA_256_ALLOW_TRITON_FALLBACK"] = "1"
