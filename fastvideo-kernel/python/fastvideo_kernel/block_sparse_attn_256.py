@@ -6,7 +6,10 @@ from typing import Tuple
 import torch
 
 from .block_sparse_attn import block_sparse_attn_triton
-from .block_sparse_attn_cute_fwd import block_sparse_attn_cute_fwd
+from .block_sparse_attn_cute_fwd import (
+    block_sparse_attn_cute_fwd,
+    block_sparse_attn_cute_fwd_bshd,
+)
 
 _DISPATCH_PRINTED_256 = False
 
@@ -92,4 +95,36 @@ def block_sparse_attn_256(
     )
     out = block_sparse_attn_cute_fwd(q, k, v, mask_128, sizes_128)
     _print_dispatch_once("cute(q256/kv128)")
+    return out
+
+
+def block_sparse_attn_256_bshd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    logical_block_map_256: torch.Tensor,
+    logical_variable_block_sizes_256: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """VSA256 wrapper for [B, S, H, D] layout.
+
+    Default path is CuTe with direct BSHD input to avoid layout round-trips.
+    Triton is used only when force-triton is enabled.
+    """
+    if logical_block_map_256.dim() == 3:
+        logical_block_map_256 = logical_block_map_256.unsqueeze(0)
+    if _resolve_backend() == "triton":
+        out_h, aux = block_sparse_attn_256(
+            q.transpose(1, 2).contiguous(),
+            k.transpose(1, 2).contiguous(),
+            v.transpose(1, 2).contiguous(),
+            logical_block_map_256,
+            logical_variable_block_sizes_256,
+        )
+        return out_h.transpose(1, 2).contiguous(), aux
+
+    mask_128, sizes_128 = _expand_vsa256_mask_and_sizes_to_128(
+        logical_block_map_256, logical_variable_block_sizes_256
+    )
+    out = block_sparse_attn_cute_fwd_bshd(q, k, v, mask_128, sizes_128)
+    _print_dispatch_once("cute_bshd(q256/kv128)")
     return out

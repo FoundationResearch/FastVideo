@@ -3,6 +3,7 @@ from .version import __version__
 from fastvideo_kernel.ops import (
     sliding_tile_attention,
     video_sparse_attn,
+    video_sparse_attn_bshd,
 )
 
 from fastvideo_kernel.vmoba import (
@@ -22,6 +23,7 @@ from fastvideo_kernel.turbodiffusion_ops import (
 __all__ = [
     "sliding_tile_attention",
     "video_sparse_attn",
+    "video_sparse_attn_bshd",
     "moba_attn_varlen",
     "process_moba_input",
     "process_moba_output",

@@ -2,7 +2,7 @@ import math
 import os
 import torch
 from .block_sparse_attn import block_sparse_attn
-from .block_sparse_attn_256 import block_sparse_attn_256
+from .block_sparse_attn_256 import block_sparse_attn_256, block_sparse_attn_256_bshd
 from .triton_kernels.block_sparse_attn_triton import triton_block_sparse_attn_forward
 from .triton_kernels.st_attn_triton import sliding_tile_attention_triton
 from .triton_kernels.index import map_to_index
@@ -154,6 +154,63 @@ def video_sparse_attn(
         # Triton-only forward (kept for environments without the wrapper deps)
         idx, num = map_to_index(mask)
         out_s, _ = triton_block_sparse_attn_forward(q, k, v, idx, num, variable_block_sizes)
+
+    if compress_attn_weight is not None:
+        return out_c * compress_attn_weight + out_s
+    return out_c + out_s
+
+
+def video_sparse_attn_bshd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+    q_variable_block_sizes: torch.Tensor,
+    topk: int,
+    block_size: int | tuple = 64,
+    compress_attn_weight: torch.Tensor = None,
+) -> torch.Tensor:
+    """VSA entrypoint for [B, S, H, D] tensors.
+
+    Intended for VSA256 CuTe path to avoid BSHD<->BHSD layout round-trips.
+    """
+    if isinstance(block_size, int):
+        block_size = (block_size, block_size, block_size)
+    block_elements = block_size[0] * block_size[1] * block_size[2]
+    batch, q_seq_len, heads, dim = q.shape
+    kv_seq_len = k.shape[1]
+
+    q_num_blocks = q_seq_len // block_elements
+    kv_num_blocks = kv_seq_len // block_elements
+
+    q_c = q.view(batch, q_num_blocks, block_elements, heads, dim)
+    k_c = k.view(batch, kv_num_blocks, block_elements, heads, dim)
+    v_c = v.view(batch, kv_num_blocks, block_elements, heads, dim)
+    q_c = (q_c.float().sum(dim=2) / q_variable_block_sizes.view(1, -1, 1, 1)).to(q.dtype)
+    k_c = (k_c.float().sum(dim=2) / variable_block_sizes.view(1, -1, 1, 1)).to(k.dtype)
+    v_c = (v_c.float().sum(dim=2) / variable_block_sizes.view(1, -1, 1, 1)).to(v.dtype)
+    q_ch = q_c.permute(0, 2, 1, 3).contiguous()
+    k_ch = k_c.permute(0, 2, 1, 3).contiguous()
+    v_ch = v_c.permute(0, 2, 1, 3).contiguous()
+
+    scores = torch.matmul(q_ch, k_ch.transpose(-2, -1)) / (dim**0.5)
+    attn = torch.softmax(scores, dim=-1)
+    out_c_ch = torch.matmul(attn, v_ch)
+    out_c = (
+        out_c_ch.permute(0, 2, 1, 3)
+        .view(batch, q_num_blocks, 1, heads, dim)
+        .repeat(1, 1, block_elements, 1, 1)
+        .view(batch, q_seq_len, heads, dim)
+    )
+
+    topk_idx = torch.topk(scores, topk, dim=-1).indices
+    mask = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, topk_idx, True)
+    if block_elements != 256:
+        raise ValueError(
+            "video_sparse_attn_bshd requires logical block_elements=256, "
+            f"got {block_elements}"
+        )
+    out_s, _ = block_sparse_attn_256_bshd(q, k, v, mask, variable_block_sizes)
 
     if compress_attn_weight is not None:
         return out_c * compress_attn_weight + out_s

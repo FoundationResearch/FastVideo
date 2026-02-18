@@ -194,3 +194,73 @@ def block_sparse_attn_cute_fwd(
     return out, lse
 
 
+def block_sparse_attn_cute_fwd_bshd(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    block_map: torch.Tensor,
+    variable_block_sizes: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """CuTe forward-only VSA implementation for [B, S, H, D] inputs."""
+    if block_map.dim() == 3:
+        block_map = block_map.unsqueeze(0)
+
+    q_blocks = block_map.shape[2]
+    kv_blocks = block_map.shape[3]
+    q_block_size = q.shape[1] // q_blocks
+    kv_block_size = k.shape[1] // kv_blocks
+
+    q_sparse_candidate = _choose_q_sparse_block_size(q.shape[1], m_block_size=128)
+    q_sparse_block_size = max(
+        q_block_size,
+        ((q_sparse_candidate + q_block_size - 1) // q_block_size) * q_block_size,
+    )
+    sparse_map = _aggregate_q_block_map(
+        block_map,
+        q_sparse_block_size=q_sparse_block_size,
+        q_block_size=q_block_size,
+    )
+    kv_full = (variable_block_sizes == kv_block_size).view(1, 1, 1, -1)
+    kv_partial = ((variable_block_sizes > 0) & (variable_block_sizes < kv_block_size)).view(1, 1, 1, -1)
+    full_map = sparse_map & kv_full
+    mask_map = sparse_map & kv_partial
+
+    full_block_idx, full_block_cnt = _map_to_index(full_map)
+    mask_block_idx, mask_block_cnt = _map_to_index(mask_map)
+    full_block_idx = full_block_idx.to(torch.int32).contiguous()
+    full_block_cnt = full_block_cnt.to(torch.int32).contiguous()
+    mask_block_idx = mask_block_idx.to(torch.int32).contiguous()
+    mask_block_cnt = mask_block_cnt.to(torch.int32).contiguous()
+
+    sparse_tensors = BlockSparseTensorsTorch(
+        full_block_cnt=full_block_cnt,
+        full_block_idx=full_block_idx,
+        mask_block_cnt=mask_block_cnt,
+        mask_block_idx=mask_block_idx,
+        block_size=(q_sparse_block_size, kv_block_size),
+    )
+
+    out_cute, lse_cute = _flash_attn_fwd(
+        q,
+        k,
+        v,
+        m_block_size=128,
+        n_block_size=kv_block_size,
+        mask_mod=_get_vbs_mask_mod(kv_block_size),
+        block_sparse_tensors=sparse_tensors,
+        aux_tensors=[variable_block_sizes],
+        causal=False,
+        return_lse=True,
+    )
+
+    if lse_cute is None:
+        lse = torch.empty(
+            (q.shape[0], q.shape[2], q.shape[1]),
+            dtype=torch.float32,
+            device=q.device,
+        )
+    else:
+        lse = lse_cute.transpose(1, 2).contiguous()
+    return out_cute, lse
+
+
