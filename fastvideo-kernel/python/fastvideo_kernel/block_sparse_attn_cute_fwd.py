@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import sys
 from pathlib import Path
 from typing import Tuple
@@ -89,6 +90,42 @@ def _get_vsa_mask_mod():
     # Kept for compatibility with older benchmark utilities.
     # Current wrapper path relies on block_sparse_tensors directly.
     return None
+
+
+@functools.lru_cache(maxsize=4)
+def _get_vbs_mask_mod(kv_block_size: int):
+    """Build a CuTe mask_mod that trims per-KV-block valid tokens.
+
+    aux_tensors[0] must be int32 tensor of shape [kv_blocks], where each value is
+    the valid token count in [0, kv_block_size] for that KV block.
+    """
+    import cutlass
+    import cutlass.cute as cute
+    from flash_attn.cute import utils
+    from flash_attn.cute.block_sparsity import fast_sampling
+
+    kv_block_size_const = int(kv_block_size)
+
+    @fast_sampling
+    @cute.jit
+    def _vbs_mask_mod(
+        batch: cute.TensorSSA,
+        head: cute.TensorSSA,
+        m_idx: cute.TensorSSA,
+        n_idx: cute.TensorSSA,
+        seqlen_info,
+        aux_tensors,
+    ) -> cute.TensorSSA:
+        del batch, head, m_idx, seqlen_info
+        block_size_ssa = utils.scalar_to_ssa(kv_block_size_const, cutlass.Int32)
+        zero_ssa = utils.scalar_to_ssa(0, cutlass.Int32)
+        kv_blk = n_idx // block_size_ssa
+        kv_off = n_idx % block_size_ssa
+        kv_sizes = aux_tensors[0]
+        valid = utils.scalar_to_ssa(kv_sizes[kv_blk[0]], cutlass.Int32)
+        return (valid > zero_ssa) & (kv_off < valid)
+
+    return _vbs_mask_mod
 
 
 def block_sparse_attn_cute_fwd(
@@ -187,13 +224,16 @@ def block_sparse_attn_cute_fwd(
     q_cute = q.transpose(1, 2).contiguous()
     k_cute = k.transpose(1, 2).contiguous()
     v_cute = v.transpose(1, 2).contiguous()
+    use_vbs_mask = torch.any(variable_block_sizes != kv_block_size).item()
     out_cute, lse_cute = _flash_attn_fwd(
         q_cute,
         k_cute,
         v_cute,
         m_block_size=128,
         n_block_size=kv_block_size,
+        mask_mod=_get_vbs_mask_mod(kv_block_size) if use_vbs_mask else None,
         block_sparse_tensors=sparse_tensors,
+        aux_tensors=[variable_block_sizes] if use_vbs_mask else None,
         causal=False,
         return_lse=True,
     )

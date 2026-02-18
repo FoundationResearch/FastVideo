@@ -95,9 +95,7 @@ def _torch_vsa256_reference(
 
 def test_vsa256_cute_variable_block_size_vs_torch_ref() -> None:
     """
-    Regression sentinel:
-    CuTe VSA256 path is expected to deviate under variable kv block sizes (<256).
-    This test currently FAILS by design to expose that gap.
+    Validate CuTe VSA256 correctness under variable kv block sizes (<256).
     """
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
@@ -153,5 +151,4 @@ def test_vsa256_cute_variable_block_size_vs_torch_ref() -> None:
         f"avg_abs={avg_abs:.6e}, max_rel={max_rel:.6e}"
     )
 
-    # Intentionally strict: expected to fail until CuTe path handles variable kv block size semantics.
     assert avg_abs < 1e-3 and max_rel < 0.2
