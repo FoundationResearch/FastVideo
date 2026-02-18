@@ -28,3 +28,9 @@ PYTHONPATH=/root/FastVideo/fastvideo-kernel/python:$PYTHONPATH FASTVIDEO_VSA_WRA
 # modal
 
 modal run fastvideo-kernel/dev/modal_cute_qk128_smoke.py 
+
+set -x MODAL_VSA256_RUN_CMD "pytest fastvideo-kernel/tests/test_vsa256_forward.py -v -s"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
