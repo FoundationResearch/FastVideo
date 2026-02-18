@@ -66,6 +66,10 @@ modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 set -x MODAL_VSA256_RUN_CMD "pytest fastvideo-kernel/tests/test_ltx2_vsa256_model_fastpath_correctness.py -v -s"
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 
+### 10) LTX Model level real bench
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_ltx2_real_model_once.py --rep 10 --warmup 3 --num_layers 48"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+
 ---
 
 如果你愿意，我下一步可以再给你一个“一键全跑”的 fish 脚本（按上面顺序串行执行，每步失败即停止，并自动保存每一步日志到本地文件）。
