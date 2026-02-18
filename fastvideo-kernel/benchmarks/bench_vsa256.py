@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import sys
 from pathlib import Path
@@ -120,6 +121,16 @@ def _expand_mask_256_to_128(mask_256: torch.Tensor) -> torch.Tensor:
     return mask_128
 
 
+def _expand_sizes_256_to_128(sizes_256: torch.Tensor) -> torch.Tensor:
+    sizes_256 = sizes_256.to(torch.int32)
+    child0 = torch.clamp(sizes_256, min=0, max=128)
+    child1 = torch.clamp(sizes_256 - 128, min=0, max=128)
+    out = torch.empty((sizes_256.numel() * 2,), dtype=torch.int32, device=sizes_256.device)
+    out[0::2] = child0
+    out[1::2] = child1
+    return out
+
+
 def flops_sparse_attention(
     bs: int,
     h: int,
@@ -138,7 +149,11 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this benchmark.")
     _ensure_flash_attn_importable()
+    # Enable full VSA-256 path (logical 256 + wrapper-forced CuTe dispatch).
+    os.environ["FASTVIDEO_VSA_256"] = "1"
     from flash_attn.cute import flash_attn_func
+    from fastvideo_kernel.block_sparse_attn import block_sparse_attn
+    from fastvideo_kernel.ops import video_sparse_attn
 
     args = parse_args()
     set_seed(args.seed)
@@ -180,6 +195,13 @@ def main() -> None:
         mask_idx, mask_cnt = _map_to_index_torch(mask_128)
         full_cnt = torch.zeros_like(mask_cnt)
         full_idx = torch.zeros_like(mask_idx)
+        variable_block_sizes_256 = torch.full(
+            (kv_blocks_256,), KV_BLOCK_LOGICAL, dtype=torch.int32, device="cuda"
+        )
+        q_variable_block_sizes_256 = torch.full(
+            (q_blocks_256,), Q_BLOCK, dtype=torch.int32, device="cuda"
+        )
+        variable_block_sizes_128 = _expand_sizes_256_to_128(variable_block_sizes_256)
 
         def _kernel_only():
             return flash_attn_func(
@@ -212,6 +234,21 @@ def main() -> None:
                 block_size=(Q_BLOCK, KV_BLOCK_KERNEL),
             )
 
+        def _wrapper_sparse_only():
+            return block_sparse_attn(q, k, v, mask_128, variable_block_sizes_128)
+
+        def _wrapper_e2e():
+            return video_sparse_attn(
+                q,
+                k,
+                v,
+                variable_block_sizes_256,
+                q_variable_block_sizes_256,
+                topk_logical,
+                block_size=(4, 8, 8),
+                compress_attn_weight=None,
+            )
+
         out, lse = _kernel_only()
         out_finite = torch.isfinite(out).all().item()
         lse_finite = True if lse is None else torch.isfinite(lse).all().item()
@@ -220,8 +257,12 @@ def main() -> None:
 
         kernel_ms = bench_ms(_kernel_only, warmup=args.warmup, rep=args.rep)
         e2e_ms = bench_ms(_e2e, warmup=args.warmup, rep=args.rep)
+        wrapper_sparse_ms = bench_ms(_wrapper_sparse_only, warmup=args.warmup, rep=args.rep)
+        wrapper_e2e_ms = bench_ms(_wrapper_e2e, warmup=args.warmup, rep=args.rep)
         kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
         e2e_tflops = flops / e2e_ms * 1e-12 * 1e3
+        wrapper_sparse_tflops = flops / wrapper_sparse_ms * 1e-12 * 1e3
+        wrapper_e2e_tflops = flops / wrapper_e2e_ms * 1e-12 * 1e3
 
         print("\n" + "=" * 100)
         print(
@@ -231,7 +272,15 @@ def main() -> None:
         )
         print(f"finite_check: out={out_finite}, lse={lse_finite}")
         print(f"kernel_only: {kernel_ms:.3f} ms | {kernel_tflops:.2f} TFLOPs (approx)")
-        print(f"e2e_total:   {e2e_ms:.3f} ms | {e2e_tflops:.2f} TFLOPs (approx)")
+        print(f"manual_e2e:  {e2e_ms:.3f} ms | {e2e_tflops:.2f} TFLOPs (approx)")
+        print(
+            f"wrapper_sparse_only: {wrapper_sparse_ms:.3f} ms | "
+            f"{wrapper_sparse_tflops:.2f} TFLOPs (approx)"
+        )
+        print(
+            f"wrapper_e2e(video_sparse_attn): {wrapper_e2e_ms:.3f} ms | "
+            f"{wrapper_e2e_tflops:.2f} TFLOPs (approx)"
+        )
 
 
 if __name__ == "__main__":

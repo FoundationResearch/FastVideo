@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import functools
 import math
+import os
 from dataclasses import dataclass
 
 import torch
@@ -20,7 +21,13 @@ from fastvideo.distributed import get_sp_group
 from fastvideo.logger import init_logger
 
 logger = init_logger(__name__)
-VSA_TILE_SIZE = (4, 4, 4)
+
+
+def _use_vsa_256() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_256", "0") == "1"
+
+
+VSA_TILE_SIZE = (4, 8, 8) if _use_vsa_256() else (4, 4, 4)
 
 
 @functools.lru_cache(maxsize=10)

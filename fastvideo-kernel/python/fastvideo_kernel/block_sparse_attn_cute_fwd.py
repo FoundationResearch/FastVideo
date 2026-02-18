@@ -9,7 +9,6 @@ import torch
 
 BLOCK_M = 64
 BLOCK_N = 64
-_VSA_MASK_MOD = None
 
 
 def _ensure_flash_attn_importable() -> None:
@@ -61,59 +60,35 @@ def _choose_q_sparse_block_size(
 def _aggregate_q_block_map(
     block_map: torch.Tensor,
     q_sparse_block_size: int,
+    q_block_size: int,
 ) -> torch.Tensor:
-    factor = q_sparse_block_size // BLOCK_M
-    if factor <= 0 or q_sparse_block_size % BLOCK_M != 0:
+    factor = q_sparse_block_size // q_block_size
+    if factor <= 0 or q_sparse_block_size % q_block_size != 0:
         raise ValueError(
-            f"q_sparse_block_size must be a positive multiple of {BLOCK_M}, got {q_sparse_block_size}"
+            "q_sparse_block_size must be a positive multiple of "
+            f"q_block_size ({q_block_size}), got {q_sparse_block_size}"
         )
-    bsz, nhead, q_blocks_64, kv_blocks_64 = block_map.shape
-    q_blocks_sparse = (q_blocks_64 + factor - 1) // factor
-    pad_q = q_blocks_sparse * factor - q_blocks_64
+    bsz, nhead, q_blocks, kv_blocks = block_map.shape
+    q_blocks_sparse = (q_blocks + factor - 1) // factor
+    pad_q = q_blocks_sparse * factor - q_blocks
     if pad_q > 0:
         pad = torch.zeros(
             bsz,
             nhead,
             pad_q,
-            kv_blocks_64,
+            kv_blocks,
             dtype=torch.bool,
             device=block_map.device,
         )
         block_map = torch.cat([block_map, pad], dim=2)
-    block_map = block_map.view(bsz, nhead, q_blocks_sparse, factor, kv_blocks_64)
+    block_map = block_map.view(bsz, nhead, q_blocks_sparse, factor, kv_blocks)
     return block_map.any(dim=3)
 
 
 def _get_vsa_mask_mod():
-    global _VSA_MASK_MOD
-    if _VSA_MASK_MOD is not None:
-        return _VSA_MASK_MOD
-
-    import cutlass
-    import cutlass.cute as cute
-    from flash_attn.cute import utils
-    from flash_attn.cute.block_sparsity import fast_sampling
-
-    @fast_sampling
-    @cute.jit
-    def _vsa_mask_mod(
-        batch,
-        head,
-        q_idx,
-        kv_idx,
-        seqlen_info,
-        aux_tensors,
-    ):
-        block_map = aux_tensors[0]
-        q_idx_scalar = utils.ssa_to_scalar(q_idx)
-        kv_idx_scalar = utils.ssa_to_scalar(kv_idx)
-        q_blk = q_idx_scalar // BLOCK_M
-        kv_blk = kv_idx_scalar // BLOCK_M
-        allow = block_map[batch[0], head[0], q_blk, kv_blk]
-        return utils.scalar_to_ssa(allow, cutlass.Boolean)
-
-    _VSA_MASK_MOD = _vsa_mask_mod
-    return _VSA_MASK_MOD
+    # Kept for compatibility with older benchmark utilities.
+    # Current wrapper path relies on block_sparse_tensors directly.
+    return None
 
 
 def block_sparse_attn_cute_fwd(
@@ -138,38 +113,62 @@ def block_sparse_attn_cute_fwd(
         raise ValueError("Head count mismatch among q/k/v.")
     if q.shape[3] != k.shape[3] or q.shape[3] != v.shape[3]:
         raise ValueError("Head dim mismatch among q/k/v.")
-    if q.shape[2] % BLOCK_M != 0 or k.shape[2] % BLOCK_N != 0:
+    block_map = block_map.to(torch.bool)
+    if block_map.dim() == 3:
+        block_map = block_map.unsqueeze(0)
+    if block_map.dim() != 4:
         raise ValueError(
-            f"q_len and kv_len must be divisible by {BLOCK_M}/{BLOCK_N} for this wrapper."
+            "block_map must be [B,H,Q,KV] (or [H,Q,KV]), "
+            f"got shape={tuple(block_map.shape)}"
         )
+    if block_map.shape[0] != q.shape[0] or block_map.shape[1] != q.shape[1]:
+        raise ValueError(
+            "block_map batch/head must match q/k/v. "
+            f"got block_map={tuple(block_map.shape[:2])}, q={tuple(q.shape[:2])}"
+        )
+
+    q_blocks = block_map.shape[2]
+    kv_blocks = block_map.shape[3]
+    if q_blocks <= 0 or kv_blocks <= 0:
+        raise ValueError("block_map must have positive Q/KV block dimensions.")
+    if q.shape[2] % q_blocks != 0 or k.shape[2] % kv_blocks != 0:
+        raise ValueError(
+            "q_len/kv_len must be divisible by block_map block counts. "
+            f"got q_len={q.shape[2]}, kv_len={k.shape[2]}, "
+            f"q_blocks={q_blocks}, kv_blocks={kv_blocks}"
+        )
+    q_block_size = q.shape[2] // q_blocks
+    kv_block_size = k.shape[2] // kv_blocks
 
     if variable_block_sizes.dtype != torch.int32:
         variable_block_sizes = variable_block_sizes.to(torch.int32)
     if not variable_block_sizes.is_cuda:
         variable_block_sizes = variable_block_sizes.to(q.device)
-    if variable_block_sizes.numel() != k.shape[2] // BLOCK_N:
+    if variable_block_sizes.numel() != kv_blocks:
         raise ValueError(
             "variable_block_sizes length mismatch: expected "
-            f"{k.shape[2] // BLOCK_N}, got {variable_block_sizes.numel()}"
+            f"{kv_blocks}, got {variable_block_sizes.numel()}"
         )
-    if torch.any((variable_block_sizes < 0) | (variable_block_sizes > BLOCK_N)):
-        raise ValueError("variable_block_sizes values must be in [0, 64].")
-    # Current wrapper does not thread variable block sizes into CuTe mask_mod yet.
-    # Keep semantics explicit until mask_mod path is integrated.
-    if not torch.all(variable_block_sizes == BLOCK_N):
-        raise NotImplementedError(
-            "CuTe forward wrapper currently requires all variable_block_sizes == 64."
+    if torch.any((variable_block_sizes < 0) | (variable_block_sizes > kv_block_size)):
+        raise ValueError(
+            "variable_block_sizes values must be in "
+            f"[0, {kv_block_size}] for this input."
         )
 
     _ensure_flash_attn_importable()
     from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
     from flash_attn.cute.interface import _flash_attn_fwd
 
-    block_map = block_map.to(torch.bool)
-    if block_map.dim() == 3:
-        block_map = block_map.unsqueeze(0)
-    q_sparse_block_size = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
-    sparse_map = _aggregate_q_block_map(block_map, q_sparse_block_size=q_sparse_block_size)
+    q_sparse_candidate = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+    q_sparse_block_size = max(
+        q_block_size,
+        ((q_sparse_candidate + q_block_size - 1) // q_block_size) * q_block_size,
+    )
+    sparse_map = _aggregate_q_block_map(
+        block_map,
+        q_sparse_block_size=q_sparse_block_size,
+        q_block_size=q_block_size,
+    )
     mask_block_idx, mask_block_cnt = _map_to_index(sparse_map)
     mask_block_idx = mask_block_idx.to(torch.int32).contiguous()
     mask_block_cnt = mask_block_cnt.to(torch.int32).contiguous()
@@ -181,7 +180,7 @@ def block_sparse_attn_cute_fwd(
         full_block_idx=full_block_idx,
         mask_block_cnt=mask_block_cnt,
         mask_block_idx=mask_block_idx,
-        block_size=(q_sparse_block_size, BLOCK_N),
+        block_size=(q_sparse_block_size, kv_block_size),
     )
 
     # CuTe uses [B, S, H, D].
@@ -193,12 +192,10 @@ def block_sparse_attn_cute_fwd(
         k_cute,
         v_cute,
         m_block_size=128,
-        n_block_size=BLOCK_N,
-        mask_mod=_get_vsa_mask_mod(),
+        n_block_size=kv_block_size,
         block_sparse_tensors=sparse_tensors,
         causal=False,
         return_lse=True,
-        aux_tensors=[block_map.contiguous()],
     )
 
     out = out_cute.transpose(1, 2).contiguous()

@@ -39,6 +39,12 @@ def _disable_cute_fwd() -> bool:
     return os.environ.get("FASTVIDEO_KERNEL_VSA_DISABLE_CUTE_FWD", "0") == "1"
 
 
+def _force_cute_fwd_vsa256() -> bool:
+    # FASTVIDEO_VSA_256=1 means logical q/kv blocks are 256 and wrapper must
+    # dispatch to CuTe forward path.
+    return os.environ.get("FASTVIDEO_VSA_256", "0") == "1"
+
+
 def _should_print_dispatch() -> bool:
     return os.environ.get("FASTVIDEO_VSA_WRAPPER_PRINT", "0") == "1"
 
@@ -305,6 +311,17 @@ def block_sparse_attn(
     - On SM90 with compiled extension present: uses fastvideo_kernel_ops.block_sparse_fwd/bwd.
     - Otherwise: uses Triton implementation (requires q/k/v to have same padded length today).
     """
+    if _force_cute_fwd_vsa256():
+        try:
+            out = block_sparse_attn_cute_fwd(q, k, v, block_map, variable_block_sizes)
+            _print_dispatch_once("cute_fwd (forced by FASTVIDEO_VSA_256=1)")
+            return out
+        except Exception as e:
+            raise RuntimeError(
+                "FASTVIDEO_VSA_256=1 requires dispatch to cute_fwd, "
+                f"but cute_fwd failed: {type(e).__name__}: {e}"
+            ) from e
+
     if _force_triton():
         _print_dispatch_once("triton (forced)")
         return block_sparse_attn_triton(q, k, v, block_map, variable_block_sizes)
