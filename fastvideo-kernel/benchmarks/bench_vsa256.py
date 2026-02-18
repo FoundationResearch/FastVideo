@@ -385,6 +385,174 @@ def main() -> None:
         def _wb_output_transpose():
             return out_wb_once.transpose(1, 2).contiguous()
 
+        def _wb_pipeline_replay_total():
+            mask_128_local, sizes_128_local = _expand_vsa256_mask_and_sizes_to_128(
+                logical_mask, variable_block_sizes_256
+            )
+            q_sparse_candidate_local = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+            q_block_size_local = q.shape[2] // mask_128_local.shape[2]
+            kv_block_size_local = k.shape[2] // mask_128_local.shape[3]
+            q_sparse_block_size_local = max(
+                q_block_size_local,
+                ((q_sparse_candidate_local + q_block_size_local - 1) // q_block_size_local)
+                * q_block_size_local,
+            )
+            sparse_map_local = _aggregate_q_block_map(
+                mask_128_local,
+                q_sparse_block_size=q_sparse_block_size_local,
+                q_block_size=q_block_size_local,
+            )
+            kv_full_local = (sizes_128_local == kv_block_size_local).view(1, 1, 1, -1)
+            kv_partial_local = (
+                (sizes_128_local > 0) & (sizes_128_local < kv_block_size_local)
+            ).view(1, 1, 1, -1)
+            full_map_local = sparse_map_local & kv_full_local
+            mask_map_local = sparse_map_local & kv_partial_local
+            full_idx_local, full_cnt_local = _map_to_index_cute(full_map_local)
+            mask_idx_local, mask_cnt_local = _map_to_index_cute(mask_map_local)
+            full_idx_local = full_idx_local.to(torch.int32).contiguous()
+            full_cnt_local = full_cnt_local.to(torch.int32).contiguous()
+            mask_idx_local = mask_idx_local.to(torch.int32).contiguous()
+            mask_cnt_local = mask_cnt_local.to(torch.int32).contiguous()
+            sparse_tensors_local = BlockSparseTensorsTorch(
+                full_block_cnt=full_cnt_local,
+                full_block_idx=full_idx_local,
+                mask_block_cnt=mask_cnt_local,
+                mask_block_idx=mask_idx_local,
+                block_size=(q_sparse_block_size_local, kv_block_size_local),
+            )
+            q_c_local = q.transpose(1, 2).contiguous()
+            k_c_local = k.transpose(1, 2).contiguous()
+            v_c_local = v.transpose(1, 2).contiguous()
+            use_vbs_mask_local = bool(
+                (sizes_128_local > 0).any().item()
+                and (sizes_128_local < kv_block_size_local).any().item()
+            )
+            out_local, _lse_local = _flash_attn_fwd(
+                q_c_local,
+                k_c_local,
+                v_c_local,
+                m_block_size=128,
+                n_block_size=kv_block_size_local,
+                mask_mod=_get_vbs_mask_mod(kv_block_size_local) if use_vbs_mask_local else None,
+                block_sparse_tensors=sparse_tensors_local,
+                aux_tensors=[sizes_128_local] if use_vbs_mask_local else None,
+                causal=False,
+                return_lse=True,
+            )
+            return out_local.transpose(1, 2).contiguous()
+
+        def _wb_stage_events_avg(rep: int) -> dict:
+            keys = [
+                "expand_256_to_128",
+                "aggregate_q_sparse_map",
+                "split_full_partial_map",
+                "map_to_index_full",
+                "map_to_index_mask",
+                "index_to_int_contiguous",
+                "build_sparse_tensors",
+                "layout_transpose",
+                "flash_attn_fwd_only",
+                "output_transpose",
+            ]
+            accum = {k: 0.0 for k in keys}
+            for _ in range(rep):
+                torch.cuda.synchronize()
+                t0 = torch.cuda.Event(enable_timing=True)
+                t1 = torch.cuda.Event(enable_timing=True)
+                t2 = torch.cuda.Event(enable_timing=True)
+                t3 = torch.cuda.Event(enable_timing=True)
+                t4 = torch.cuda.Event(enable_timing=True)
+                t5 = torch.cuda.Event(enable_timing=True)
+                t6 = torch.cuda.Event(enable_timing=True)
+                t7 = torch.cuda.Event(enable_timing=True)
+                t8 = torch.cuda.Event(enable_timing=True)
+                t9 = torch.cuda.Event(enable_timing=True)
+                t10 = torch.cuda.Event(enable_timing=True)
+                t11 = torch.cuda.Event(enable_timing=True)
+
+                t0.record()
+                mask_128_local, sizes_128_local = _expand_vsa256_mask_and_sizes_to_128(
+                    logical_mask, variable_block_sizes_256
+                )
+                t1.record()
+                q_sparse_candidate_local = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+                q_block_size_local = q.shape[2] // mask_128_local.shape[2]
+                kv_block_size_local = k.shape[2] // mask_128_local.shape[3]
+                q_sparse_block_size_local = max(
+                    q_block_size_local,
+                    ((q_sparse_candidate_local + q_block_size_local - 1) // q_block_size_local)
+                    * q_block_size_local,
+                )
+                sparse_map_local = _aggregate_q_block_map(
+                    mask_128_local,
+                    q_sparse_block_size=q_sparse_block_size_local,
+                    q_block_size=q_block_size_local,
+                )
+                t2.record()
+                kv_full_local = (sizes_128_local == kv_block_size_local).view(1, 1, 1, -1)
+                kv_partial_local = (
+                    (sizes_128_local > 0) & (sizes_128_local < kv_block_size_local)
+                ).view(1, 1, 1, -1)
+                full_map_local = sparse_map_local & kv_full_local
+                mask_map_local = sparse_map_local & kv_partial_local
+                t3.record()
+                full_idx_local, full_cnt_local = _map_to_index_cute(full_map_local)
+                t4.record()
+                mask_idx_local, mask_cnt_local = _map_to_index_cute(mask_map_local)
+                t5.record()
+                full_idx_local = full_idx_local.to(torch.int32).contiguous()
+                full_cnt_local = full_cnt_local.to(torch.int32).contiguous()
+                mask_idx_local = mask_idx_local.to(torch.int32).contiguous()
+                mask_cnt_local = mask_cnt_local.to(torch.int32).contiguous()
+                t6.record()
+                sparse_tensors_local = BlockSparseTensorsTorch(
+                    full_block_cnt=full_cnt_local,
+                    full_block_idx=full_idx_local,
+                    mask_block_cnt=mask_cnt_local,
+                    mask_block_idx=mask_idx_local,
+                    block_size=(q_sparse_block_size_local, kv_block_size_local),
+                )
+                t7.record()
+                q_c_local = q.transpose(1, 2).contiguous()
+                k_c_local = k.transpose(1, 2).contiguous()
+                v_c_local = v.transpose(1, 2).contiguous()
+                t8.record()
+                use_vbs_mask_local = bool(
+                    (sizes_128_local > 0).any().item()
+                    and (sizes_128_local < kv_block_size_local).any().item()
+                )
+                out_local, _lse_local = _flash_attn_fwd(
+                    q_c_local,
+                    k_c_local,
+                    v_c_local,
+                    m_block_size=128,
+                    n_block_size=kv_block_size_local,
+                    mask_mod=_get_vbs_mask_mod(kv_block_size_local) if use_vbs_mask_local else None,
+                    block_sparse_tensors=sparse_tensors_local,
+                    aux_tensors=[sizes_128_local] if use_vbs_mask_local else None,
+                    causal=False,
+                    return_lse=True,
+                )
+                t9.record()
+                _ = out_local.transpose(1, 2).contiguous()
+                t10.record()
+                torch.cuda.synchronize()
+                t11.record()
+                torch.cuda.synchronize()
+
+                accum["expand_256_to_128"] += t0.elapsed_time(t1)
+                accum["aggregate_q_sparse_map"] += t1.elapsed_time(t2)
+                accum["split_full_partial_map"] += t2.elapsed_time(t3)
+                accum["map_to_index_full"] += t3.elapsed_time(t4)
+                accum["map_to_index_mask"] += t4.elapsed_time(t5)
+                accum["index_to_int_contiguous"] += t5.elapsed_time(t6)
+                accum["build_sparse_tensors"] += t6.elapsed_time(t7)
+                accum["layout_transpose"] += t7.elapsed_time(t8)
+                accum["flash_attn_fwd_only"] += t8.elapsed_time(t9)
+                accum["output_transpose"] += t9.elapsed_time(t10)
+            return {k: v / rep for k, v in accum.items()}
+
         out, lse = _kernel_only()
         out_finite = torch.isfinite(out).all().item()
         lse_finite = True if lse is None else torch.isfinite(lse).all().item()
@@ -437,6 +605,10 @@ def main() -> None:
         wb_out_transpose_ms = bench_ms(
             _wb_output_transpose, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
         )
+        wb_pipeline_replay_total_ms = bench_ms(
+            _wb_pipeline_replay_total, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_stage_evt = _wb_stage_events_avg(max(1, args.wrapper_breakdown_rep))
         kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
         e2e_tflops = flops / e2e_ms * 1e-12 * 1e3
         wrapper_sparse_tflops = flops / wrapper_sparse_ms * 1e-12 * 1e3
@@ -482,6 +654,25 @@ def main() -> None:
         print(f"  wb.layout_transpose:              {wb_layout_ms:.3f} ms")
         print(f"  wb.flash_attn_fwd_only:           {wb_flash_ms:.3f} ms")
         print(f"  wb.output_transpose:              {wb_out_transpose_ms:.3f} ms")
+        print(
+            f"  wb.pipeline_replay_total:         {wb_pipeline_replay_total_ms:.3f} ms "
+            "(single-call staged replay)"
+        )
+        print("wrapper_internal_stage_events(single-call, additive):")
+        print(f"  evt.expand_256_to_128:            {wb_stage_evt['expand_256_to_128']:.3f} ms")
+        print(f"  evt.aggregate_q_sparse_map:       {wb_stage_evt['aggregate_q_sparse_map']:.3f} ms")
+        print(f"  evt.split_full_partial_map:       {wb_stage_evt['split_full_partial_map']:.3f} ms")
+        print(f"  evt.map_to_index_full:            {wb_stage_evt['map_to_index_full']:.3f} ms")
+        print(f"  evt.map_to_index_mask:            {wb_stage_evt['map_to_index_mask']:.3f} ms")
+        print(f"  evt.index_to_int_contiguous:      {wb_stage_evt['index_to_int_contiguous']:.3f} ms")
+        print(f"  evt.build_sparse_tensors:         {wb_stage_evt['build_sparse_tensors']:.3f} ms")
+        print(f"  evt.layout_transpose:             {wb_stage_evt['layout_transpose']:.3f} ms")
+        print(f"  evt.flash_attn_fwd_only:          {wb_stage_evt['flash_attn_fwd_only']:.3f} ms")
+        print(f"  evt.output_transpose:             {wb_stage_evt['output_transpose']:.3f} ms")
+        print(
+            f"  evt.stage_sum:                    "
+            f"{sum(wb_stage_evt.values()):.3f} ms"
+        )
         print(
             "note: wrapper_* includes CuTe token-level vbs mask_mod overhead; "
             "manual kernel/e2e path does not."
