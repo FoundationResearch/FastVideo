@@ -29,7 +29,8 @@ DEFAULT_FLASH_ATTN_WHEEL = "https://github.com/mjun0812/flash-attention-prebuild
 # DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward.py -v -s"
 # DEFAULT_RUN_CMD = "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
 # DEFAULT_RUN_CMD = "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchmarks/bench_triton_vsa64_kernel.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5 --breakdown_rep 20"
-DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward_cross.py -v -s"
+# DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward_cross.py -v -s"
+DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa_256_triton.py -v -s"
 
 
 def _resolve_image_tag() -> str:
