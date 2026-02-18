@@ -52,6 +52,11 @@ set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchma
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 ```
 
+### 7) CuteDSL Variable block size!= 256 forward
+
+set -x MODAL_VSA256_RUN_CMD "pytest fastvideo-kernel/tests/test_vsa_256_forward_vbs.py -v -s"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+
 ---
 
 如果你愿意，我下一步可以再给你一个“一键全跑”的 fish 脚本（按上面顺序串行执行，每步失败即停止，并自动保存每一步日志到本地文件）。
