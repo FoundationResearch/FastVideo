@@ -176,19 +176,22 @@ def video_sparse_attn(
 
     idx, num = map_to_index(mask)
     
-    if block_sparse_fwd is not None:
-        # Use autograd-enabled wrapper so backward works (and still uses SM90 kernel when available)
-        sparse_mask = mask
-        sparse_block_sizes = variable_block_sizes
-        if _use_vsa_256():
-            if block_elements != 256:
-                raise ValueError(
-                    "FASTVIDEO_VSA_256=1 requires logical block_elements=256 "
-                    f"(got {block_elements}, block_size={block_size})."
-                )
-            sparse_mask, sparse_block_sizes = _expand_vsa256_mask_and_sizes(
-                mask, variable_block_sizes
+    sparse_mask = mask
+    sparse_block_sizes = variable_block_sizes
+    if _use_vsa_256():
+        if block_elements != 256:
+            raise ValueError(
+                "FASTVIDEO_VSA_256=1 requires logical block_elements=256 "
+                f"(got {block_elements}, block_size={block_size})."
             )
+        sparse_mask, sparse_block_sizes = _expand_vsa256_mask_and_sizes(
+            mask, variable_block_sizes
+        )
+        # In VSA256 mode wrapper dispatch is required and must not fall back
+        # to the Triton 64-block forward path.
+        out_s = block_sparse_attn(q, k, v, sparse_mask, sparse_block_sizes)[0]
+    elif block_sparse_fwd is not None:
+        # Use autograd-enabled wrapper so backward works (and still uses SM90 kernel when available)
         out_s = block_sparse_attn(q, k, v, sparse_mask, sparse_block_sizes)[0]
     else:
         # Triton-only forward (kept for environments without the wrapper deps)
