@@ -122,6 +122,44 @@ def _untile_local(
     return x[:, non_pad_index][:, reverse_tile_partition_indices]
 
 
+def _use_model_fastpath() -> bool:
+    return os.environ.get("FASTVIDEO_LTX2_TILE_FASTPATH", "0") == "1"
+
+
+class _MiniUpstreamLayer(torch.nn.Module):
+    """Approximate upstream per-layer qkvg path with per-head projections."""
+
+    def __init__(self, head_dim: int, dtype: torch.dtype, device: torch.device):
+        super().__init__()
+        self.norm = torch.nn.RMSNorm(head_dim, eps=1e-6).to(device=device, dtype=dtype)
+        self.to_q = torch.nn.Linear(head_dim, head_dim, bias=False).to(
+            device=device, dtype=dtype
+        )
+        self.to_k = torch.nn.Linear(head_dim, head_dim, bias=False).to(
+            device=device, dtype=dtype
+        )
+        self.to_v = torch.nn.Linear(head_dim, head_dim, bias=False).to(
+            device=device, dtype=dtype
+        )
+        self.to_gate = torch.nn.Linear(head_dim, head_dim, bias=False).to(
+            device=device, dtype=dtype
+        )
+        self.to_out = torch.nn.Linear(head_dim, head_dim, bias=False).to(
+            device=device, dtype=dtype
+        )
+
+    def proj(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        h = self.norm(x)
+        q = self.to_q(h)
+        k = self.to_k(h)
+        v = self.to_v(h)
+        gate = self.to_gate(h)
+        return q, k, v, gate
+
+    def out(self, y: torch.Tensor) -> torch.Tensor:
+        return self.to_out(y)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Model-level LTX2 VSA256 tile fastpath benchmark")
     p.add_argument("--batch_size", type=int, default=1)
@@ -133,6 +171,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rep", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
+    p.add_argument(
+        "--mode",
+        type=str,
+        default="compare",
+        choices=["compare", "baseline", "fastpath", "env"],
+        help=(
+            "compare: print both routes; "
+            "baseline/fastpath: run single route; "
+            "env: route by FASTVIDEO_LTX2_TILE_FASTPATH."
+        ),
+    )
     return p.parse_args()
 
 
@@ -164,16 +213,22 @@ def main() -> None:
     non_pad_index = _get_non_pad_index_local(kv_var_256, BLOCK_256)
 
     x0 = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
-    gates = [
-        torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
-        for _ in range(args.num_layers)
-    ]
+    layers = torch.nn.ModuleList(
+        [_MiniUpstreamLayer(d, dtype=dtype, device=device) for _ in range(args.num_layers)]
+    )
+    for layer in layers:
+        layer.eval()
 
-    def _attn_on_tiled(x_tiled: torch.Tensor, gate_tiled: torch.Tensor) -> torch.Tensor:
+    def _attn_on_tiled(
+        q_tiled: torch.Tensor,
+        k_tiled: torch.Tensor,
+        v_tiled: torch.Tensor,
+        gate_tiled: torch.Tensor,
+    ) -> torch.Tensor:
         return video_sparse_attn_bshd(
-            x_tiled,
-            x_tiled,
-            x_tiled,
+            q_tiled,
+            k_tiled,
+            v_tiled,
             kv_var_256,
             q_var_256,
             topk_logical,
@@ -181,37 +236,69 @@ def main() -> None:
             compress_attn_weight=gate_tiled,
         )
 
-    def _baseline_per_layer_tile_untile():
+    def _baseline_upstream_per_layer_qkvg_tile():
         x = x0
-        for i in range(args.num_layers):
-            x_t = _tile_local(x, padded_seq_len, tile_partition_indices, non_pad_index)
-            g_t = _tile_local(gates[i], padded_seq_len, tile_partition_indices, non_pad_index)
-            y_t = _attn_on_tiled(x_t, g_t)
-            x = _untile_local(y_t, reverse_tile_partition_indices, non_pad_index)
+        for layer in layers:
+            q, k, v, g = layer.proj(x)
+            qkvg = torch.cat([q, k, v, g], dim=0)
+            qkvg_t = _tile_local(
+                qkvg, padded_seq_len, tile_partition_indices, non_pad_index
+            )
+            q_t, k_t, v_t, g_t = qkvg_t.chunk(4, dim=0)
+            y_t = _attn_on_tiled(q_t, k_t, v_t, g_t)
+            y = _untile_local(y_t, reverse_tile_partition_indices, non_pad_index)
+            x = x + layer.out(y)
         return x
 
-    def _fastpath_model_level_tile_untile():
+    def _fastpath_model_level_x_tile():
         x_t = _tile_local(x0, padded_seq_len, tile_partition_indices, non_pad_index)
-        gates_t = [
-            _tile_local(g, padded_seq_len, tile_partition_indices, non_pad_index)
-            for g in gates
-        ]
-        for i in range(args.num_layers):
-            x_t = _attn_on_tiled(x_t, gates_t[i])
+        for layer in layers:
+            q_t, k_t, v_t, g_t = layer.proj(x_t)
+            y_t = _attn_on_tiled(q_t, k_t, v_t, g_t)
+            x_t = x_t + layer.out(y_t)
         x = _untile_local(x_t, reverse_tile_partition_indices, non_pad_index)
         return x
 
-    base_ms = bench_ms(_baseline_per_layer_tile_untile, warmup=args.warmup, rep=args.rep)
-    fast_ms = bench_ms(_fastpath_model_level_tile_untile, warmup=args.warmup, rep=args.rep)
-
-    speedup = base_ms / max(1e-6, fast_ms)
     print("LTX2 model-level VSA256 tile fastpath benchmark")
     print(f"device: {torch.cuda.get_device_name(0)}")
     print(f"shape(real): T,H,W={T_REAL},{H_REAL},{W_REAL}, padded_seq={padded_seq_len}")
     print(f"batch={bs}, heads={h}, head_dim={d}, layers={args.num_layers}, topk={topk_logical}")
-    print(f"baseline(per-layer tile/untile): {base_ms:.3f} ms")
-    print(f"fastpath(model-level tile/untile): {fast_ms:.3f} ms")
-    print(f"speedup: {speedup:.3f}x")
+
+    if args.mode == "compare":
+        base_ms = bench_ms(
+            _baseline_upstream_per_layer_qkvg_tile, warmup=args.warmup, rep=args.rep
+        )
+        fast_ms = bench_ms(
+            _fastpath_model_level_x_tile, warmup=args.warmup, rep=args.rep
+        )
+        speedup = base_ms / max(1e-6, fast_ms)
+        print(f"baseline(upstream per-layer qkvg tile): {base_ms:.3f} ms")
+        print(f"fastpath(model-level x tile once):      {fast_ms:.3f} ms")
+        print(f"speedup: {speedup:.3f}x")
+        return
+
+    if args.mode == "baseline":
+        base_ms = bench_ms(
+            _baseline_upstream_per_layer_qkvg_tile, warmup=args.warmup, rep=args.rep
+        )
+        print(f"mode=baseline, FASTVIDEO_LTX2_TILE_FASTPATH={os.environ.get('FASTVIDEO_LTX2_TILE_FASTPATH', '<unset>')}")
+        print(f"baseline(upstream per-layer qkvg tile): {base_ms:.3f} ms")
+        return
+
+    if args.mode == "fastpath":
+        fast_ms = bench_ms(
+            _fastpath_model_level_x_tile, warmup=args.warmup, rep=args.rep
+        )
+        print(f"mode=fastpath, FASTVIDEO_LTX2_TILE_FASTPATH={os.environ.get('FASTVIDEO_LTX2_TILE_FASTPATH', '<unset>')}")
+        print(f"fastpath(model-level x tile once):      {fast_ms:.3f} ms")
+        return
+
+    use_fastpath = _use_model_fastpath()
+    fn = _fastpath_model_level_x_tile if use_fastpath else _baseline_upstream_per_layer_qkvg_tile
+    ms = bench_ms(fn, warmup=args.warmup, rep=args.rep)
+    route = "fastpath(model-level x tile once)" if use_fastpath else "baseline(upstream per-layer qkvg tile)"
+    print(f"mode=env, FASTVIDEO_LTX2_TILE_FASTPATH={int(use_fastpath)}")
+    print(f"{route}: {ms:.3f} ms")
 
 
 if __name__ == "__main__":
