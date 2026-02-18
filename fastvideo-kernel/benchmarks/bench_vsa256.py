@@ -164,6 +164,8 @@ def main() -> None:
     _ensure_flash_attn_importable()
     # Enable full VSA-256 path (logical 256 + wrapper-forced CuTe dispatch).
     os.environ["FASTVIDEO_VSA_256"] = "1"
+    # This benchmark targets the q256/kv128 expansion path.
+    os.environ["FASTVIDEO_VSA_256_TRITON_COMPAT"] = "0"
     from flash_attn.cute import flash_attn_func
     from fastvideo_kernel.block_sparse_attn import block_sparse_attn
     from fastvideo_kernel.ops import video_sparse_attn

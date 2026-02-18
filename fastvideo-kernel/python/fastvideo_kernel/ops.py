@@ -80,7 +80,11 @@ def video_sparse_attn(
     def _use_vsa_256() -> bool:
         return os.environ.get("FASTVIDEO_VSA_256", "0") == "1"
 
-    def _expand_vsa256_mask_and_sizes(
+    def _vsa256_triton_compat() -> bool:
+        # Route-A: expand logical 256 blocks to Triton-compatible 64 blocks.
+        return os.environ.get("FASTVIDEO_VSA_256_TRITON_COMPAT", "1") == "1"
+
+    def _expand_vsa256_mask_and_sizes_to_128(
         logical_mask: torch.Tensor,
         logical_kv_sizes: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -113,6 +117,26 @@ def video_sparse_attn(
         )
         expanded_sizes[0::2] = child0_size
         expanded_sizes[1::2] = child1_size
+        return expanded_mask, expanded_sizes
+
+    def _expand_vsa256_mask_and_sizes_to_64(
+        logical_mask: torch.Tensor,
+        logical_kv_sizes: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # logical_mask: [B, H, Qb256, KVb256] -> [B, H, Qb64, KVb64]
+        # Each logical 256x256 edge expands to a dense 4x4 sub-block in 64-grid.
+        expanded_mask = logical_mask.repeat_interleave(4, dim=2).repeat_interleave(
+            4, dim=3
+        )
+
+        # logical size s in [0,256] -> 4 children in [0,64]
+        logical_kv_sizes = logical_kv_sizes.to(torch.int32)
+        offsets = torch.tensor(
+            [0, 64, 128, 192], dtype=torch.int32, device=logical_kv_sizes.device
+        )
+        expanded_sizes = torch.clamp(
+            logical_kv_sizes[:, None] - offsets[None, :], min=0, max=64
+        ).reshape(-1)
         return expanded_mask, expanded_sizes
 
     if isinstance(block_size, int):
@@ -184,11 +208,17 @@ def video_sparse_attn(
                 "FASTVIDEO_VSA_256=1 requires logical block_elements=256 "
                 f"(got {block_elements}, block_size={block_size})."
             )
-        sparse_mask, sparse_block_sizes = _expand_vsa256_mask_and_sizes(
-            mask, variable_block_sizes
-        )
-        # In VSA256 mode wrapper dispatch is required and must not fall back
-        # to the Triton 64-block forward path.
+        if _vsa256_triton_compat():
+            sparse_mask, sparse_block_sizes = _expand_vsa256_mask_and_sizes_to_64(
+                mask, variable_block_sizes
+            )
+        else:
+            # Keep the CuTe-optimized q256/kv128 expansion path.
+            sparse_mask, sparse_block_sizes = _expand_vsa256_mask_and_sizes_to_128(
+                mask, variable_block_sizes
+            )
+        # In VSA256 mode always go through wrapper dispatch so backward/training
+        # can use Triton/SM90 paths when CuTe is unavailable.
         out_s = block_sparse_attn(q, k, v, sparse_mask, sparse_block_sizes)[0]
     elif block_sparse_fwd is not None:
         # Use autograd-enabled wrapper so backward works (and still uses SM90 kernel when available)
