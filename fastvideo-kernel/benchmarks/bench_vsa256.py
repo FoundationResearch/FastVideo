@@ -380,9 +380,10 @@ def main() -> None:
                 return_lse=True,
             )
 
+        out_wb_once, _lse_wb_once = _wb_flash_fwd_only()
+
         def _wb_output_transpose():
-            out_wb, _lse_wb = _wb_flash_fwd_only()
-            return out_wb.transpose(1, 2).contiguous()
+            return out_wb_once.transpose(1, 2).contiguous()
 
         out, lse = _kernel_only()
         out_finite = torch.isfinite(out).all().item()
