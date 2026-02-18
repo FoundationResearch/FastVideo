@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import os
 import random
 import sys
@@ -26,6 +27,18 @@ def _install_torchvision_stub_if_needed() -> None:
         return
     tv = types.ModuleType("torchvision")
     tv_utils = types.ModuleType("torchvision.utils")
+    # diffusers checks importlib.util.find_spec("torchvision"), so __spec__ must exist.
+    tv.__spec__ = importlib.machinery.ModuleSpec(
+        "torchvision",
+        loader=None,
+        is_package=True,
+    )
+    tv.__path__ = []
+    tv_utils.__spec__ = importlib.machinery.ModuleSpec(
+        "torchvision.utils",
+        loader=None,
+        is_package=False,
+    )
 
     def _dummy_make_grid(*args, **kwargs):  # noqa: ANN001, ANN003
         if args:
