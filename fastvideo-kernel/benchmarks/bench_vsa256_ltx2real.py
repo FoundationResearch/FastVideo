@@ -167,6 +167,76 @@ def flops_sparse_attention(bs: int, h: int, d: int, q_len: int, avg_topk_kernel:
     return 4.0 * bs * h * d * q_len * (avg_topk_kernel * KV_BLOCK_KERNEL)
 
 
+def _upstream_use_vsa_256() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_256", "0") == "1"
+
+
+def _upstream_force_triton() -> bool:
+    return os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1"
+
+
+@torch.no_grad()
+def _get_tile_partition_indices_local(
+    dit_seq_shape: tuple[int, int, int],
+    tile_size: tuple[int, int, int],
+    device: torch.device,
+) -> torch.LongTensor:
+    t, h, w = dit_seq_shape
+    ts, hs, ws = tile_size
+    indices = torch.arange(t * h * w, device=device, dtype=torch.long).reshape(t, h, w)
+    chunks = []
+    for tt in range(math.ceil(t / ts)):
+        for hh in range(math.ceil(h / hs)):
+            for ww in range(math.ceil(w / ws)):
+                chunks.append(
+                    indices[
+                        tt * ts:min(tt * ts + ts, t),
+                        hh * hs:min(hh * hs + hs, h),
+                        ww * ws:min(ww * ws + ws, w),
+                    ].flatten()
+                )
+    return torch.cat(chunks, dim=0)
+
+
+def _get_non_pad_index_local(
+    variable_block_sizes: torch.LongTensor,
+    max_block_size: int,
+) -> torch.LongTensor:
+    n_win = variable_block_sizes.shape[0]
+    device = variable_block_sizes.device
+    starts_pad = torch.arange(n_win, device=device) * max_block_size
+    index_pad = starts_pad[:, None] + torch.arange(max_block_size, device=device)[None, :]
+    index_mask = torch.arange(max_block_size, device=device)[None, :] < variable_block_sizes[:, None]
+    return index_pad[index_mask]
+
+
+def _tile_local(
+    x: torch.Tensor,
+    num_tiles: tuple[int, int, int],
+    tile_size: tuple[int, int, int],
+    tile_partition_indices: torch.LongTensor,
+    non_pad_index: torch.LongTensor,
+) -> torch.Tensor:
+    t_padded_size = num_tiles[0] * tile_size[0]
+    h_padded_size = num_tiles[1] * tile_size[1]
+    w_padded_size = num_tiles[2] * tile_size[2]
+    x_padded = torch.zeros(
+        (x.shape[0], t_padded_size * h_padded_size * w_padded_size, x.shape[-2], x.shape[-1]),
+        device=x.device,
+        dtype=x.dtype,
+    )
+    x_padded[:, non_pad_index] = x[:, tile_partition_indices]
+    return x_padded
+
+
+def _untile_local(
+    x: torch.Tensor,
+    reverse_tile_partition_indices: torch.LongTensor,
+    non_pad_index: torch.LongTensor,
+) -> torch.Tensor:
+    return x[:, non_pad_index][:, reverse_tile_partition_indices]
+
+
 def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this benchmark.")
@@ -187,12 +257,7 @@ def main() -> None:
         _get_vbs_mask_mod,
         _map_to_index as _map_to_index_cute,
     )
-    from fastvideo_kernel.ops import video_sparse_attn_bshd
-    from fastvideo.attention.backends.video_sparse_attn import (
-        VideoSparseAttentionImpl,
-        VideoSparseAttentionMetadataBuilder,
-        VSA_TILE_SIZE,
-    )
+    from fastvideo_kernel.ops import video_sparse_attn, video_sparse_attn_bshd
 
     args = parse_args()
     set_seed(args.seed)
@@ -225,33 +290,24 @@ def main() -> None:
     stats = _vbs_stats(kv_var_256)
 
     # Upstream true-E2E inputs (unpadded real sequence) for
-    # preprocess -> backend.forward(auto-dispatch) -> postprocess path.
+    # preprocess -> backend.forward(auto-dispatch equivalent) -> postprocess path.
     seq_real = T_REAL * H_REAL * W_REAL
     q_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
     k_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
     v_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
     g_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
-    builder = VideoSparseAttentionMetadataBuilder()
-    sparsity_for_topk = max(
-        0.0,
-        1.0 - (
-            float(topk_logical)
-            / (
-                float(T_REAL * H_REAL * W_REAL)
-                / float(math.prod(VSA_TILE_SIZE))
-            )
-        ),
+    vsa_tile_size = (4, 8, 8)
+    dit_seq_shape = (T_REAL, H_REAL, W_REAL)
+    num_tiles = (
+        math.ceil(dit_seq_shape[0] / vsa_tile_size[0]),
+        math.ceil(dit_seq_shape[1] / vsa_tile_size[1]),
+        math.ceil(dit_seq_shape[2] / vsa_tile_size[2]),
     )
-    metadata_up = builder.build(
-        current_timestep=0,
-        raw_latent_shape=(T_REAL, H_REAL, W_REAL),
-        patch_size=(1, 1, 1),
-        VSA_sparsity=sparsity_for_topk,
-        device=device,
+    tile_partition_indices = _get_tile_partition_indices_local(
+        dit_seq_shape, vsa_tile_size, device
     )
-    # Bypass __init__ to avoid distributed-group initialization dependency;
-    # forward/preprocess/postprocess do not rely on instance state.
-    impl_up = VideoSparseAttentionImpl.__new__(VideoSparseAttentionImpl)
+    reverse_tile_partition_indices = torch.argsort(tile_partition_indices)
+    non_pad_index = _get_non_pad_index_local(kv_var_256, BLOCK_256)
 
     def _kernel_only():
         return flash_attn_func(
@@ -301,10 +357,41 @@ def main() -> None:
 
     def _upstream_true_e2e():
         qkvg = torch.cat([q_up, k_up, v_up, g_up], dim=0)
-        qkvg = impl_up.preprocess_qkv(qkvg, metadata_up)
+        qkvg = _tile_local(
+            qkvg,
+            num_tiles=num_tiles,
+            tile_size=vsa_tile_size,
+            tile_partition_indices=tile_partition_indices,
+            non_pad_index=non_pad_index,
+        )
         q_t, k_t, v_t, g_t = qkvg.chunk(4, dim=0)
-        out_t = impl_up.forward(q_t, k_t, v_t, g_t, metadata_up)
-        return impl_up.postprocess_output(out_t, metadata_up)
+        if _upstream_use_vsa_256() and (not _upstream_force_triton()):
+            out_t = video_sparse_attn_bshd(
+                q_t,
+                k_t,
+                v_t,
+                kv_var_256,
+                kv_var_256,
+                topk_logical,
+                block_size=(4, 8, 8),
+                compress_attn_weight=g_t,
+            )
+        else:
+            out_t = video_sparse_attn(
+                q_t.transpose(1, 2).contiguous(),
+                k_t.transpose(1, 2).contiguous(),
+                v_t.transpose(1, 2).contiguous(),
+                kv_var_256,
+                kv_var_256,
+                topk_logical,
+                block_size=(4, 8, 8),
+                compress_attn_weight=g_t.transpose(1, 2).contiguous(),
+            ).transpose(1, 2)
+        return _untile_local(
+            out_t,
+            reverse_tile_partition_indices=reverse_tile_partition_indices,
+            non_pad_index=non_pad_index,
+        )
 
     logical_mask_fixed = logical_mask
     mask_128_fixed = mask_128
