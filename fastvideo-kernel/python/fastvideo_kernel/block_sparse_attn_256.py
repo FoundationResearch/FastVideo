@@ -87,33 +87,32 @@ def block_sparse_attn_256(
     - CuTe path via q256/kv128 expansion
     - Triton path via q64/kv64 compatibility expansion (route A)
     """
+    # Performance mode: assume valid CUDA inputs / dtypes from caller.
     if logical_block_map_256.dim() == 3:
         logical_block_map_256 = logical_block_map_256.unsqueeze(0)
-    if logical_block_map_256.dtype != torch.bool:
-        logical_block_map_256 = logical_block_map_256.to(torch.bool)
-    if logical_variable_block_sizes_256.dtype != torch.int32:
-        logical_variable_block_sizes_256 = logical_variable_block_sizes_256.to(torch.int32)
-    if not logical_variable_block_sizes_256.is_cuda:
-        logical_variable_block_sizes_256 = logical_variable_block_sizes_256.to(q.device)
-
     backend = _resolve_backend()
     allow_fallback = os.environ.get("FASTVIDEO_VSA_256_ALLOW_TRITON_FALLBACK", "1") == "1"
 
     if backend in {"auto", "cute"}:
-        try:
+        if backend == "auto" and allow_fallback:
+            try:
+                mask_128, sizes_128 = _expand_vsa256_mask_and_sizes_to_128(
+                    logical_block_map_256, logical_variable_block_sizes_256
+                )
+                out = block_sparse_attn_cute_fwd(q, k, v, mask_128, sizes_128)
+                _print_dispatch_once("cute(q256/kv128)")
+                return out
+            except Exception as e:
+                _print_dispatch_once(
+                    f"cute(q256/kv128) -> triton64 fallback ({type(e).__name__})"
+                )
+        else:
             mask_128, sizes_128 = _expand_vsa256_mask_and_sizes_to_128(
                 logical_block_map_256, logical_variable_block_sizes_256
             )
             out = block_sparse_attn_cute_fwd(q, k, v, mask_128, sizes_128)
             _print_dispatch_once("cute(q256/kv128)")
             return out
-        except Exception as e:
-            if backend == "cute" or not allow_fallback:
-                raise RuntimeError(
-                    "VSA256 CuTe path failed and fallback is disabled. "
-                    f"error: {type(e).__name__}: {e}"
-                ) from e
-            _print_dispatch_once(f"cute(q256/kv128) -> triton64 fallback ({type(e).__name__})")
 
     mask_64, sizes_64 = _expand_vsa256_mask_and_sizes_to_64(
         logical_block_map_256, logical_variable_block_sizes_256
