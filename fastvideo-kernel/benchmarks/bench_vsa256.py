@@ -64,12 +64,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--topk_logical", type=int, default=None)
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--rep", type=int, default=20)
+    p.add_argument("--breakdown_rep", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     return p.parse_args()
 
 
-def _map_to_index_torch(block_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def _map_to_index_torch_fallback(
+    block_map: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     bsz, nhead, q_blocks, kv_blocks = block_map.shape
     index = torch.zeros(
         (bsz, nhead, q_blocks, kv_blocks), dtype=torch.int32, device=block_map.device
@@ -86,6 +89,16 @@ def _map_to_index_torch(block_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Te
                     index[b, h, q, :cnt] = row.to(torch.int32)
                 index_num[b, h, q] = cnt
     return index, index_num
+
+
+def _map_to_index(block_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    # Prefer Triton implementation to reflect real wrapper prep cost.
+    try:
+        from fastvideo_kernel.triton_kernels.index import map_to_index as triton_map_to_index
+
+        return triton_map_to_index(block_map)
+    except Exception:
+        return _map_to_index_torch_fallback(block_map)
 
 
 def _make_logical_mask(
@@ -192,7 +205,7 @@ def main() -> None:
 
         logical_mask = _make_logical_mask(bs, h, q_blocks_256, kv_blocks_256, topk_logical)
         mask_128 = _expand_mask_256_to_128(logical_mask)
-        mask_idx, mask_cnt = _map_to_index_torch(mask_128)
+        mask_idx, mask_cnt = _map_to_index(mask_128)
         full_cnt = torch.zeros_like(mask_cnt)
         full_idx = torch.zeros_like(mask_idx)
         variable_block_sizes_256 = torch.full(
@@ -219,7 +232,7 @@ def main() -> None:
         def _e2e():
             m256 = _make_logical_mask(bs, h, q_blocks_256, kv_blocks_256, topk_logical)
             m128 = _expand_mask_256_to_128(m256)
-            idx, cnt = _map_to_index_torch(m128)
+            idx, cnt = _map_to_index(m128)
             zcnt = torch.zeros_like(cnt)
             zidx = torch.zeros_like(idx)
             return flash_attn_func(
@@ -233,6 +246,30 @@ def main() -> None:
                 full_block_idx=zidx,
                 block_size=(Q_BLOCK, KV_BLOCK_KERNEL),
             )
+
+        logical_mask_fixed = logical_mask
+        mask_128_fixed = mask_128
+        sizes_256_fixed = variable_block_sizes_256
+
+        def _prep_logical_mask_only():
+            return _make_logical_mask(bs, h, q_blocks_256, kv_blocks_256, topk_logical)
+
+        def _prep_split_mask_only():
+            return _expand_mask_256_to_128(logical_mask_fixed)
+
+        def _prep_split_sizes_only():
+            return _expand_sizes_256_to_128(sizes_256_fixed)
+
+        def _prep_index_only():
+            return _map_to_index(mask_128_fixed)
+
+        def _prep_kernel_inputs_only():
+            m256 = _make_logical_mask(bs, h, q_blocks_256, kv_blocks_256, topk_logical)
+            m128 = _expand_mask_256_to_128(m256)
+            idx, cnt = _map_to_index(m128)
+            zcnt = torch.zeros_like(cnt)
+            zidx = torch.zeros_like(idx)
+            return idx, cnt, zidx, zcnt
 
         def _wrapper_sparse_only():
             return block_sparse_attn(q, k, v, mask_128, variable_block_sizes_128)
@@ -259,6 +296,21 @@ def main() -> None:
         e2e_ms = bench_ms(_e2e, warmup=args.warmup, rep=args.rep)
         wrapper_sparse_ms = bench_ms(_wrapper_sparse_only, warmup=args.warmup, rep=args.rep)
         wrapper_e2e_ms = bench_ms(_wrapper_e2e, warmup=args.warmup, rep=args.rep)
+        prep_logical_ms = bench_ms(
+            _prep_logical_mask_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+        )
+        prep_split_mask_ms = bench_ms(
+            _prep_split_mask_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+        )
+        prep_split_sizes_ms = bench_ms(
+            _prep_split_sizes_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+        )
+        prep_index_ms = bench_ms(
+            _prep_index_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+        )
+        prep_kernel_inputs_ms = bench_ms(
+            _prep_kernel_inputs_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+        )
         kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
         e2e_tflops = flops / e2e_ms * 1e-12 * 1e3
         wrapper_sparse_tflops = flops / wrapper_sparse_ms * 1e-12 * 1e3
@@ -281,6 +333,13 @@ def main() -> None:
             f"wrapper_e2e(video_sparse_attn): {wrapper_e2e_ms:.3f} ms | "
             f"{wrapper_e2e_tflops:.2f} TFLOPs (approx)"
         )
+        print("breakdown(prep+kernel):")
+        print(f"  prep.logical_mask(topk):         {prep_logical_ms:.3f} ms")
+        print(f"  prep.split_kv_mask(256->128):    {prep_split_mask_ms:.3f} ms")
+        print(f"  prep.split_kv_sizes(256->128):   {prep_split_sizes_ms:.3f} ms")
+        print(f"  prep.map_to_index:               {prep_index_ms:.3f} ms")
+        print(f"  prep.kernel_inputs_total:        {prep_kernel_inputs_ms:.3f} ms")
+        print(f"  kernel_only:                     {kernel_ms:.3f} ms")
 
 
 if __name__ == "__main__":
