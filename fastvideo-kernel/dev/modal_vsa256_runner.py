@@ -87,6 +87,10 @@ def run_remote() -> dict:
           rm -rf "${REPO_DIR}"
           git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" "${REPO_DIR}"
         else
+          # Volume cache may keep local tracked edits from prior runs.
+          # Force a clean tree before switching to latest remote commit.
+          git -C "${REPO_DIR}" reset --hard
+          git -C "${REPO_DIR}" clean -fd
           git -C "${REPO_DIR}" remote set-url origin "${REPO_URL}"
           git -C "${REPO_DIR}" fetch origin "${REPO_BRANCH}" --depth 1
           git -C "${REPO_DIR}" checkout -B "${REPO_BRANCH}" FETCH_HEAD
