@@ -196,12 +196,7 @@ def video_sparse_attn_bshd(
     scores = torch.matmul(q_ch, k_ch.transpose(-2, -1)) / (dim**0.5)
     attn = torch.softmax(scores, dim=-1)
     out_c_ch = torch.matmul(attn, v_ch)
-    out_c = (
-        out_c_ch.permute(0, 2, 1, 3)
-        .view(batch, q_num_blocks, 1, heads, dim)
-        .repeat(1, 1, block_elements, 1, 1)
-        .view(batch, q_seq_len, heads, dim)
-    )
+    out_c_blk = out_c_ch.permute(0, 2, 1, 3).contiguous()
 
     topk_idx = torch.topk(scores, topk, dim=-1).indices
     mask = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, topk_idx, True)
@@ -211,7 +206,13 @@ def video_sparse_attn_bshd(
             f"got {block_elements}"
         )
     out_s, _ = block_sparse_attn_256_bshd(q, k, v, mask, variable_block_sizes)
-
+    out = out_s
+    out_view = out.view(batch, q_num_blocks, block_elements, heads, dim)
     if compress_attn_weight is not None:
-        return out_c * compress_attn_weight + out_s
-    return out_c + out_s
+        gate_view = compress_attn_weight.view(
+            batch, q_num_blocks, block_elements, heads, dim
+        )
+        out_view.add_(out_c_blk.unsqueeze(2) * gate_view)
+    else:
+        out_view.add_(out_c_blk.unsqueeze(2))
+    return out
