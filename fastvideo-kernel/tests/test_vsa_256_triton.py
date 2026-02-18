@@ -50,8 +50,8 @@ def _torch_vsa256_reference(
     bsz, heads, _sq, dim = q.shape
     q_blocks = q_var.numel()
     kv_blocks = kv_var.numel()
-    q_block = int(q_var[0].item())
-    kv_block = int(kv_var[0].item())
+    q_block = q.shape[2] // q_blocks
+    kv_block = k.shape[2] // kv_blocks
 
     q_c = q.view(bsz, heads, q_blocks, q_block, dim)
     k_c = k.view(bsz, heads, kv_blocks, kv_block, dim)
