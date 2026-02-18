@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections import deque
 from textwrap import dedent
 
 import modal
@@ -125,18 +126,25 @@ def run_remote(run_cmd: str) -> dict:
             "RUN_CMD": run_cmd,
         }
     )
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         ["/bin/bash", "-lc", cmd],
         env=env,
         text=True,
-        capture_output=True,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
     )
+    output_tail = deque(maxlen=2000)
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        output_tail.append(line)
+    proc.wait()
     REPO_VOLUME.commit()
     return {
         "returncode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        "output_tail": "".join(output_tail),
+        "streamed": True,
         "image_tag": IMAGE_TAG,
         "gpu": GPU_SPEC,
         "repo_url": REPO_URL,
@@ -155,9 +163,9 @@ def main() -> None:
     print(f"repo: {result['repo_url']} @ {result['repo_branch']}")
     print(f"run_cmd: {result['run_cmd']}")
     print(f"returncode: {result['returncode']}")
-    print("----- stdout -----")
-    print(result["stdout"] or "<empty>")
-    print("----- stderr -----")
-    print(result["stderr"] or "<empty>")
+    print(f"streamed: {result.get('streamed', False)}")
+    if result["returncode"] != 0:
+        print("----- output tail (on failure) -----")
+        print(result.get("output_tail") or "<empty>")
     if result["returncode"] != 0:
         raise SystemExit(result["returncode"])

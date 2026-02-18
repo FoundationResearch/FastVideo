@@ -32,6 +32,9 @@ set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256.py 
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 ```
 
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256_ltx2real.py --rep 5 --warmup 3"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+
 ---
 
 ### 5) Triton VSA256（Route-A）速度
@@ -68,6 +71,9 @@ modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 
 ### 10) LTX Model level real bench
 set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_ltx2_real_model_once.py --rep 10 --warmup 3 --num_layers 48"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+
+set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_STAGE_LOGGING=1 python fastvideo-kernel/benchmarks/bench_ltx2_real_model_once.py --num_frames 121 --height 1088 --width 1920 --num_inference_steps 8 --rep 1 --warmup 1 --dtype bf16"
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 
 ---
