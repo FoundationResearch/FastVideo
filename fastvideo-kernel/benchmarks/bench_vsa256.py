@@ -65,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--rep", type=int, default=20)
     p.add_argument("--breakdown_rep", type=int, default=20)
+    p.add_argument("--wrapper_breakdown_rep", type=int, default=20)
     p.add_argument("--vbs_min", type=int, default=16)
     p.add_argument("--vbs_max", type=int, default=256)
     p.add_argument("--seed", type=int, default=42)
@@ -155,7 +156,18 @@ def main() -> None:
     # This benchmark targets the q256/kv128 CuTe path.
     os.environ["FASTVIDEO_VSA_256_BACKEND"] = "cute"
     from flash_attn.cute import flash_attn_func
-    from fastvideo_kernel.block_sparse_attn_256 import block_sparse_attn_256
+    from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
+    from flash_attn.cute.interface import _flash_attn_fwd
+    from fastvideo_kernel.block_sparse_attn_256 import (
+        block_sparse_attn_256,
+        _expand_vsa256_mask_and_sizes_to_128,
+    )
+    from fastvideo_kernel.block_sparse_attn_cute_fwd import (
+        _aggregate_q_block_map,
+        _choose_q_sparse_block_size,
+        _get_vbs_mask_mod,
+        _map_to_index as _map_to_index_cute,
+    )
     from fastvideo_kernel.ops import video_sparse_attn
 
     args = parse_args()
@@ -292,6 +304,86 @@ def main() -> None:
                 compress_attn_weight=None,
             )
 
+        # Wrapper-internal staged breakdown (block_sparse_attn_256 + cute_fwd).
+        def _wb_expand_256_to_128():
+            return _expand_vsa256_mask_and_sizes_to_128(logical_mask, variable_block_sizes_256)
+
+        mask_128_wb, sizes_128_wb = _wb_expand_256_to_128()
+        q_sparse_candidate = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+        q_block_size = q.shape[2] // mask_128_wb.shape[2]
+        kv_block_size = k.shape[2] // mask_128_wb.shape[3]
+        q_sparse_block_size = max(
+            q_block_size,
+            ((q_sparse_candidate + q_block_size - 1) // q_block_size) * q_block_size,
+        )
+
+        def _wb_aggregate_q_sparse_map():
+            return _aggregate_q_block_map(
+                mask_128_wb, q_sparse_block_size=q_sparse_block_size, q_block_size=q_block_size
+            )
+
+        sparse_map_wb = _wb_aggregate_q_sparse_map()
+
+        def _wb_split_full_partial():
+            kv_full = (sizes_128_wb == kv_block_size).view(1, 1, 1, -1)
+            kv_partial = ((sizes_128_wb > 0) & (sizes_128_wb < kv_block_size)).view(1, 1, 1, -1)
+            full_map = sparse_map_wb & kv_full
+            mask_map = sparse_map_wb & kv_partial
+            return full_map, mask_map
+
+        full_map_wb, mask_map_wb = _wb_split_full_partial()
+
+        def _wb_map_to_index_full():
+            return _map_to_index_cute(full_map_wb)
+
+        def _wb_map_to_index_mask():
+            return _map_to_index_cute(mask_map_wb)
+
+        full_idx_wb, full_cnt_wb = _wb_map_to_index_full()
+        mask_idx_wb, mask_cnt_wb = _wb_map_to_index_mask()
+        full_idx_wb = full_idx_wb.to(torch.int32).contiguous()
+        full_cnt_wb = full_cnt_wb.to(torch.int32).contiguous()
+        mask_idx_wb = mask_idx_wb.to(torch.int32).contiguous()
+        mask_cnt_wb = mask_cnt_wb.to(torch.int32).contiguous()
+
+        def _wb_build_sparse_tensors():
+            return BlockSparseTensorsTorch(
+                full_block_cnt=full_cnt_wb,
+                full_block_idx=full_idx_wb,
+                mask_block_cnt=mask_cnt_wb,
+                mask_block_idx=mask_idx_wb,
+                block_size=(q_sparse_block_size, kv_block_size),
+            )
+
+        sparse_tensors_wb = _wb_build_sparse_tensors()
+        use_vbs_mask = bool((sizes_128_wb > 0).any().item() and (sizes_128_wb < kv_block_size).any().item())
+
+        def _wb_layout_transpose():
+            q_c = q.transpose(1, 2).contiguous()
+            k_c2 = k.transpose(1, 2).contiguous()
+            v_c2 = v.transpose(1, 2).contiguous()
+            return q_c, k_c2, v_c2
+
+        q_cute_wb, k_cute_wb, v_cute_wb = _wb_layout_transpose()
+
+        def _wb_flash_fwd_only():
+            return _flash_attn_fwd(
+                q_cute_wb,
+                k_cute_wb,
+                v_cute_wb,
+                m_block_size=128,
+                n_block_size=kv_block_size,
+                mask_mod=_get_vbs_mask_mod(kv_block_size) if use_vbs_mask else None,
+                block_sparse_tensors=sparse_tensors_wb,
+                aux_tensors=[sizes_128_wb] if use_vbs_mask else None,
+                causal=False,
+                return_lse=True,
+            )
+
+        def _wb_output_transpose():
+            out_wb, _lse_wb = _wb_flash_fwd_only()
+            return out_wb.transpose(1, 2).contiguous()
+
         out, lse = _kernel_only()
         out_finite = torch.isfinite(out).all().item()
         lse_finite = True if lse is None else torch.isfinite(lse).all().item()
@@ -316,6 +408,33 @@ def main() -> None:
         )
         prep_kernel_inputs_ms = bench_ms(
             _prep_kernel_inputs_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+        )
+        wb_expand_ms = bench_ms(
+            _wb_expand_256_to_128, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_aggregate_ms = bench_ms(
+            _wb_aggregate_q_sparse_map, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_split_full_partial_ms = bench_ms(
+            _wb_split_full_partial, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_map_full_ms = bench_ms(
+            _wb_map_to_index_full, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_map_mask_ms = bench_ms(
+            _wb_map_to_index_mask, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_sparse_tensor_ms = bench_ms(
+            _wb_build_sparse_tensors, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_layout_ms = bench_ms(
+            _wb_layout_transpose, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_flash_ms = bench_ms(
+            _wb_flash_fwd_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+        )
+        wb_out_transpose_ms = bench_ms(
+            _wb_output_transpose, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
         )
         kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
         e2e_tflops = flops / e2e_ms * 1e-12 * 1e3
@@ -352,6 +471,16 @@ def main() -> None:
         print(f"  prep.map_to_index:               {prep_index_ms:.3f} ms")
         print(f"  prep.kernel_inputs_total:        {prep_kernel_inputs_ms:.3f} ms")
         print(f"  kernel_only:                     {kernel_ms:.3f} ms")
+        print("wrapper_internal_breakdown(block_sparse_attn_256 + cute_fwd):")
+        print(f"  wb.expand_256_to_128(mask+sizes): {wb_expand_ms:.3f} ms")
+        print(f"  wb.aggregate_q_sparse_map:        {wb_aggregate_ms:.3f} ms")
+        print(f"  wb.split_full_partial_map:        {wb_split_full_partial_ms:.3f} ms")
+        print(f"  wb.map_to_index(full):            {wb_map_full_ms:.3f} ms")
+        print(f"  wb.map_to_index(mask):            {wb_map_mask_ms:.3f} ms")
+        print(f"  wb.build_sparse_tensors:          {wb_sparse_tensor_ms:.3f} ms")
+        print(f"  wb.layout_transpose:              {wb_layout_ms:.3f} ms")
+        print(f"  wb.flash_attn_fwd_only:           {wb_flash_ms:.3f} ms")
+        print(f"  wb.output_transpose:              {wb_out_transpose_ms:.3f} ms")
         print(
             "note: wrapper_* includes CuTe token-level vbs mask_mod overhead; "
             "manual kernel/e2e path does not."
