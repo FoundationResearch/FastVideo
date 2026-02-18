@@ -30,11 +30,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--num_heads", type=int, default=12)
     p.add_argument("--head_dim", type=int, default=128, choices=[64, 128])
-    p.add_argument("--q_seq_lens", type=int, nargs="+", default=[49152])
+    p.add_argument("--q_seq_lens", type=int, nargs="+", default=[8192])
     p.add_argument("--kv_seq_lens", type=int, nargs="+", default=None)
     p.add_argument("--topk_logical", type=int, default=None)
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--rep", type=int, default=20)
+    p.add_argument("--bench_backward", action="store_true", default=True)
+    p.add_argument("--no_bench_backward", action="store_false", dest="bench_backward")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     return p.parse_args()
@@ -116,6 +118,63 @@ def main() -> None:
         )
         fwd_tflops = flops / fwd_ms * 1e-12 * 1e3
 
+        bwd_ms = None
+        fwd_bwd_ms = None
+        bwd_tflops = None
+        fwd_bwd_tflops = None
+        grad_finite = None
+        if args.bench_backward:
+            q_req = q.detach().clone().requires_grad_(True)
+            k_req = k.detach().clone().requires_grad_(True)
+            v_req = v.detach().clone().requires_grad_(True)
+
+            out_for_bwd = video_sparse_attn(
+                q_req,
+                k_req,
+                v_req,
+                kv_var,
+                q_var,
+                topk_logical,
+                block_size=(4, 8, 8),
+                compress_attn_weight=None,
+            )
+            grad_out = torch.randn_like(out_for_bwd)
+            torch.autograd.backward(out_for_bwd, grad_out, retain_graph=True)
+            grad_finite = (
+                torch.isfinite(q_req.grad).all().item()
+                and torch.isfinite(k_req.grad).all().item()
+                and torch.isfinite(v_req.grad).all().item()
+            )
+
+            def _bwd_only():
+                q_req.grad = None
+                k_req.grad = None
+                v_req.grad = None
+                torch.autograd.backward(out_for_bwd, grad_out, retain_graph=True)
+
+            def _fwd_bwd():
+                q_fb = q.detach().clone().requires_grad_(True)
+                k_fb = k.detach().clone().requires_grad_(True)
+                v_fb = v.detach().clone().requires_grad_(True)
+                out_fb = video_sparse_attn(
+                    q_fb,
+                    k_fb,
+                    v_fb,
+                    kv_var,
+                    q_var,
+                    topk_logical,
+                    block_size=(4, 8, 8),
+                    compress_attn_weight=None,
+                )
+                grad_fb = torch.randn_like(out_fb)
+                torch.autograd.backward(out_fb, grad_fb)
+
+            bwd_ms = bench_ms(_bwd_only, warmup=args.warmup, rep=args.rep)
+            fwd_bwd_ms = bench_ms(_fwd_bwd, warmup=args.warmup, rep=args.rep)
+            # bwd uses same asymptotic flops proxy as fwd (for rough comparison only)
+            bwd_tflops = flops / bwd_ms * 1e-12 * 1e3
+            fwd_bwd_tflops = (2.0 * flops) / fwd_bwd_ms * 1e-12 * 1e3
+
         print("\n" + "=" * 100)
         print(
             f"q_len={q_len}, kv_len={kv_len}, q_blocks_256={q_blocks_256}, "
@@ -123,6 +182,13 @@ def main() -> None:
         )
         print(f"finite_check: out={out_finite}")
         print(f"forward(wrapper_e2e): {fwd_ms:.3f} ms | {fwd_tflops:.2f} TFLOPs (approx)")
+        if args.bench_backward:
+            print(f"finite_check: grad(q/k/v)={grad_finite}")
+            print(f"backward_only(retained_graph): {bwd_ms:.3f} ms | {bwd_tflops:.2f} TFLOPs (approx)")
+            print(
+                f"forward+backward(e2e): {fwd_bwd_ms:.3f} ms | "
+                f"{fwd_bwd_tflops:.2f} TFLOPs (approx)"
+            )
 
 
 if __name__ == "__main__":

@@ -167,7 +167,7 @@ def main() -> None:
     # This benchmark targets the q256/kv128 CuTe path.
     os.environ["FASTVIDEO_VSA_256_BACKEND"] = "cute"
     from flash_attn.cute import flash_attn_func
-    from fastvideo_kernel.block_sparse_attn import block_sparse_attn
+    from fastvideo_kernel.block_sparse_attn_256 import block_sparse_attn_256
     from fastvideo_kernel.ops import video_sparse_attn
 
     args = parse_args()
@@ -274,7 +274,13 @@ def main() -> None:
             return idx, cnt, zidx, zcnt
 
         def _wrapper_sparse_only():
-            return block_sparse_attn(q, k, v, mask_128, variable_block_sizes_128)
+            return block_sparse_attn_256(
+                q,
+                k,
+                v,
+                logical_mask,
+                variable_block_sizes_256,
+            )
 
         def _wrapper_e2e():
             return video_sparse_attn(
