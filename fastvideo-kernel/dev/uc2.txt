@@ -28,7 +28,7 @@ modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 ### 4) CuTe VSA256 速度（含分解耗时）
 
 ```bash
-set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 5 --warmup 3"
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 ```
 

@@ -65,6 +65,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--rep", type=int, default=20)
     p.add_argument("--breakdown_rep", type=int, default=20)
+    p.add_argument("--vbs_min", type=int, default=16)
+    p.add_argument("--vbs_max", type=int, default=256)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     return p.parse_args()
@@ -171,6 +173,11 @@ def main() -> None:
     from fastvideo_kernel.ops import video_sparse_attn
 
     args = parse_args()
+    if not (1 <= args.vbs_min <= args.vbs_max <= KV_BLOCK_LOGICAL):
+        raise ValueError(
+            f"Require 1 <= vbs_min <= vbs_max <= {KV_BLOCK_LOGICAL}, "
+            f"got vbs_min={args.vbs_min}, vbs_max={args.vbs_max}"
+        )
     set_seed(args.seed)
     dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
 
@@ -182,6 +189,7 @@ def main() -> None:
     print("VSA256 Benchmark (logical q/kv=256, kernel kv=128)")
     print(f"device: {torch.cuda.get_device_name(0)}")
     print(f"batch={bs}, heads={h}, head_dim={d}, dtype={args.dtype}")
+    print(f"kv variable_block_sizes: random int in [{args.vbs_min}, {args.vbs_max}]")
 
     for q_len, kv_len in zip(args.q_seq_lens, kv_seq_lens):
         if q_len % Q_BLOCK != 0 or kv_len % KV_BLOCK_LOGICAL != 0:
@@ -210,8 +218,12 @@ def main() -> None:
         mask_idx, mask_cnt = _map_to_index(mask_128)
         full_cnt = torch.zeros_like(mask_cnt)
         full_idx = torch.zeros_like(mask_idx)
-        variable_block_sizes_256 = torch.full(
-            (kv_blocks_256,), KV_BLOCK_LOGICAL, dtype=torch.int32, device="cuda"
+        variable_block_sizes_256 = torch.randint(
+            args.vbs_min,
+            args.vbs_max + 1,
+            (kv_blocks_256,),
+            dtype=torch.int32,
+            device="cuda",
         )
         q_variable_block_sizes_256 = torch.full(
             (q_blocks_256,), Q_BLOCK, dtype=torch.int32, device="cuda"
@@ -330,6 +342,12 @@ def main() -> None:
             f"kv_blocks_256={kv_blocks_256}, topk_logical={topk_logical}, "
             f"avg_topk_kernel={avg_topk_kernel:.2f}"
         )
+        print(
+            "vbs_256 stats: "
+            f"min={int(variable_block_sizes_256.min().item())}, "
+            f"max={int(variable_block_sizes_256.max().item())}, "
+            f"mean={float(variable_block_sizes_256.float().mean().item()):.2f}"
+        )
         print(f"finite_check: out={out_finite}, lse={lse_finite}")
         print(f"kernel_only: {kernel_ms:.3f} ms | {kernel_tflops:.2f} TFLOPs (approx)")
         print(f"manual_e2e:  {e2e_ms:.3f} ms | {e2e_tflops:.2f} TFLOPs (approx)")
@@ -348,6 +366,10 @@ def main() -> None:
         print(f"  prep.map_to_index:               {prep_index_ms:.3f} ms")
         print(f"  prep.kernel_inputs_total:        {prep_kernel_inputs_ms:.3f} ms")
         print(f"  kernel_only:                     {kernel_ms:.3f} ms")
+        print(
+            "note: wrapper_* includes CuTe token-level vbs mask_mod overhead; "
+            "manual kernel/e2e path does not."
+        )
 
 
 if __name__ == "__main__":
