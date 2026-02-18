@@ -41,11 +41,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--num_heads", type=int, default=12)
     parser.add_argument("--head_dim", type=int, default=128, choices=[64, 128])
-    parser.add_argument("--q_seq_len", type=int, default=49152)
+    parser.add_argument("--q_seq_len", type=int, default=24576)
     parser.add_argument("--kv_seq_len", type=int, default=None)
     parser.add_argument("--topk", type=int, default=None)
-    parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--rep", type=int, default=20)
+    parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--rep", type=int, default=10)
     parser.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
@@ -67,30 +67,36 @@ def _build_expanded_block_sparse_tensors(
     n_blocks_kernel = math.ceil(seqlen_k / kv_block_kernel)
     topk_logical = min(max(1, topk_logical), n_blocks_logical)
 
-    mask_block_cnt = torch.zeros(
-        (batch_size, num_heads, m_blocks), dtype=torch.int32, device=device
+    scores = torch.rand(
+        batch_size, num_heads, m_blocks, n_blocks_logical, device=device
     )
+    coarse_idx = torch.topk(scores, topk_logical, dim=-1).indices.to(torch.int32)
+    child0 = 2 * coarse_idx
+    child1 = child0 + 1
+    expanded = torch.stack((child0, child1), dim=-1).reshape(
+        batch_size, num_heads, m_blocks, 2 * topk_logical
+    )
+    valid = expanded < n_blocks_kernel
+
+    # Pack valid expanded indices to the left without Python loops.
+    exp_w = expanded.shape[-1]
+    pos = torch.arange(exp_w, device=device, dtype=torch.int32).view(
+        1, 1, 1, exp_w
+    )
+    invalid_pos = torch.full_like(pos, exp_w)
+    stable_key = torch.where(valid, pos, invalid_pos)
+    order = torch.argsort(stable_key, dim=-1)
+    packed_idx = torch.gather(expanded, dim=-1, index=order)
+    packed_valid = torch.gather(valid, dim=-1, index=order)
+    packed_idx = torch.where(packed_valid, packed_idx, torch.zeros_like(packed_idx))
+
+    mask_block_cnt = packed_valid.sum(dim=-1).to(torch.int32)
     mask_block_idx = torch.zeros(
         (batch_size, num_heads, m_blocks, n_blocks_kernel),
         dtype=torch.int32,
         device=device,
     )
-
-    for b in range(batch_size):
-        for h in range(num_heads):
-            scores = torch.rand(m_blocks, n_blocks_logical, device=device)
-            coarse_idx = torch.topk(scores, topk_logical, dim=-1).indices.to(torch.int32)
-
-            child0 = 2 * coarse_idx
-            child1 = child0 + 1
-            expanded = torch.stack((child0, child1), dim=-1).reshape(m_blocks, -1)
-            valid = expanded < n_blocks_kernel
-
-            for r in range(m_blocks):
-                row_vals = expanded[r][valid[r]]
-                cnt = int(row_vals.numel())
-                mask_block_cnt[b, h, r] = cnt
-                mask_block_idx[b, h, r, :cnt] = row_vals
+    mask_block_idx[..., :exp_w] = packed_idx
 
     full_block_cnt = torch.zeros_like(mask_block_cnt)
     full_block_idx = torch.zeros_like(mask_block_idx)

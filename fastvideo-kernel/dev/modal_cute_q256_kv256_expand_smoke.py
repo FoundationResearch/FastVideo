@@ -99,7 +99,7 @@ def run_remote_smoke() -> dict:
         fi
         python -m pip install --upgrade "${{FLASH_ATTN_WHEEL}}"
         python -m pip install -e "${{REPO_DIR}}/fastvideo-kernel/include/flash-attention/flash_attn/cute"
-        python "${{REPO_DIR}}/{TEST_SCRIPT}"
+        python "${{REPO_DIR}}/{TEST_SCRIPT}" --q_seq_len 24576 --warmup 3 --rep 10
         """
     ).strip()
 
