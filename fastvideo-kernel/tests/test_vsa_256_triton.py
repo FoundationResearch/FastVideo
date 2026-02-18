@@ -74,11 +74,15 @@ def _torch_vsa256_reference(
         block_mask = torch.zeros_like(scores, dtype=torch.bool).scatter_(
             -1, topk_idx, True
         )
-        token_mask = (
-            block_mask.repeat_interleave(q_block, dim=2)
-            .repeat_interleave(kv_block, dim=3)
-            .to(torch.bool)
+        block_token_idx = torch.arange(kv_block, device=kv_var.device, dtype=torch.int32)
+        kv_token_valid_by_block = (
+            block_token_idx.view(1, -1) < kv_var.to(torch.int32).view(-1, 1)
+        ).to(torch.bool)
+        kv_token_valid = kv_token_valid_by_block.reshape(1, 1, 1, kv_blocks * kv_block)
+        token_mask = block_mask.repeat_interleave(q_block, dim=2).repeat_interleave(
+            kv_block, dim=3
         )
+        token_mask = token_mask & kv_token_valid
 
     qf, kf, vf = q.float(), k.float(), v.float()
     logits = torch.matmul(qf, kf.transpose(-2, -1)) / math.sqrt(dim)
@@ -110,7 +114,17 @@ def test_vsa256_triton_forward_backward_vs_torch_ref() -> None:
     grad_out = torch.randn_like(q_base)
 
     q_var = torch.full((q_blocks_256,), q_block, dtype=torch.int32, device=device)
-    kv_var = torch.full((kv_blocks_256,), kv_block, dtype=torch.int32, device=device)
+    kv_var = torch.randint(
+        16, kv_block + 1, (kv_blocks_256,), dtype=torch.int32, device=device
+    )
+    token_idx = torch.arange(kv_block, device=device, dtype=torch.int32)
+    kv_valid = token_idx.view(1, -1) < kv_var.view(-1, 1)
+    kv_valid = kv_valid.view(1, 1, kv_blocks_256, kv_block, 1)
+    kv_valid = kv_valid.expand(bsz, heads, kv_blocks_256, kv_block, dim).reshape(
+        bsz, heads, skv, dim
+    )
+    k_base = k_base * kv_valid.to(k_base.dtype)
+    v_base = v_base * kv_valid.to(v_base.dtype)
 
     video_sparse_attn = _reload_video_sparse_attn_triton()
 
@@ -157,6 +171,7 @@ def test_vsa256_triton_forward_backward_vs_torch_ref() -> None:
     m_dv = _metrics(dv_ref, dv)
     print(
         "[vsa256-triton] "
+        f"kv_var[min={int(kv_var.min().item())}, max={int(kv_var.max().item())}], "
         f"out(avg_abs={m_out[0]:.6e}, max_rel={m_out[1]:.6e}), "
         f"dq(avg_abs={m_dq[0]:.6e}, max_rel={m_dq[1]:.6e}), "
         f"dk(avg_abs={m_dk[0]:.6e}, max_rel={m_dk[1]:.6e}), "
