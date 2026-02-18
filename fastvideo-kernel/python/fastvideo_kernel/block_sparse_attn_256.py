@@ -21,22 +21,12 @@ def _print_dispatch_once(msg: str) -> None:
 
 
 def _resolve_backend() -> str:
-    # Allowed: auto | cute | triton
-    backend = os.environ.get("FASTVIDEO_VSA_256_BACKEND", "auto").strip().lower()
+    # Performance mode policy:
+    # - default: always CuTe
+    # - Triton only when explicitly forced
     if os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1":
         return "triton"
-    # Backward compatibility with old route-A flag.
-    if (
-        backend == "auto"
-        and os.environ.get("FASTVIDEO_VSA_256_TRITON_COMPAT", "0") == "1"
-    ):
-        return "triton"
-    if backend not in {"auto", "cute", "triton"}:
-        raise ValueError(
-            "FASTVIDEO_VSA_256_BACKEND must be one of: auto, cute, triton. "
-            f"got {backend}"
-        )
-    return backend
+    return "cute"
 
 
 def _expand_vsa256_mask_and_sizes_to_128(
@@ -90,32 +80,16 @@ def block_sparse_attn_256(
     # Performance mode: assume valid CUDA inputs / dtypes from caller.
     if logical_block_map_256.dim() == 3:
         logical_block_map_256 = logical_block_map_256.unsqueeze(0)
-    backend = _resolve_backend()
-    allow_fallback = os.environ.get("FASTVIDEO_VSA_256_ALLOW_TRITON_FALLBACK", "1") == "1"
+    if _resolve_backend() == "triton":
+        mask_64, sizes_64 = _expand_vsa256_mask_and_sizes_to_64(
+            logical_block_map_256, logical_variable_block_sizes_256
+        )
+        _print_dispatch_once("triton(q64/kv64 compat)")
+        return block_sparse_attn_triton(q, k, v, mask_64, sizes_64)
 
-    if backend in {"auto", "cute"}:
-        if backend == "auto" and allow_fallback:
-            try:
-                mask_128, sizes_128 = _expand_vsa256_mask_and_sizes_to_128(
-                    logical_block_map_256, logical_variable_block_sizes_256
-                )
-                out = block_sparse_attn_cute_fwd(q, k, v, mask_128, sizes_128)
-                _print_dispatch_once("cute(q256/kv128)")
-                return out
-            except Exception as e:
-                _print_dispatch_once(
-                    f"cute(q256/kv128) -> triton64 fallback ({type(e).__name__})"
-                )
-        else:
-            mask_128, sizes_128 = _expand_vsa256_mask_and_sizes_to_128(
-                logical_block_map_256, logical_variable_block_sizes_256
-            )
-            out = block_sparse_attn_cute_fwd(q, k, v, mask_128, sizes_128)
-            _print_dispatch_once("cute(q256/kv128)")
-            return out
-
-    mask_64, sizes_64 = _expand_vsa256_mask_and_sizes_to_64(
+    mask_128, sizes_128 = _expand_vsa256_mask_and_sizes_to_128(
         logical_block_map_256, logical_variable_block_sizes_256
     )
-    _print_dispatch_once("triton(q64/kv64 compat)")
-    return block_sparse_attn_triton(q, k, v, mask_64, sizes_64)
+    out = block_sparse_attn_cute_fwd(q, k, v, mask_128, sizes_128)
+    _print_dispatch_once("cute(q256/kv128)")
+    return out
