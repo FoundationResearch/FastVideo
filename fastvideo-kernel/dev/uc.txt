@@ -35,3 +35,8 @@ modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
 echo $MODAL_VSA256_RUN_CMD
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+
+
+git add .gitmodules fastvideo-kernel/include/flash-attention
+git commit -m "[misc]: track flash-attention submodule on vsapad and update gitlink"
+git push origin 128vsa

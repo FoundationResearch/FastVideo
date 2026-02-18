@@ -7,3 +7,4 @@
 [submodule "fastvideo-kernel/include/flash-attention"]
 	path = fastvideo-kernel/include/flash-attention
 	url = git@github.com:FoundationResearch/flash-attention.git
+	branch = vsapad
