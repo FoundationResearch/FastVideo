@@ -44,22 +44,7 @@ def _expand_vsa256_mask_and_sizes_to_128(
     logical_kv_sizes: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # logical_mask: [B, H, Qb256, KVb256] -> [B, H, Qb256, KVb128]
-    bsz, nhead, q_blocks, kv_blocks_256 = logical_mask.shape
-    expanded_mask = torch.zeros(
-        (bsz, nhead, q_blocks, kv_blocks_256 * 2),
-        dtype=torch.bool,
-        device=logical_mask.device,
-    )
-    pos = torch.nonzero(logical_mask, as_tuple=False)
-    if pos.numel() > 0:
-        bb = pos[:, 0]
-        hh = pos[:, 1]
-        qq = pos[:, 2]
-        kk = pos[:, 3]
-        child0 = 2 * kk
-        child1 = child0 + 1
-        expanded_mask[bb, hh, qq, child0] = True
-        expanded_mask[bb, hh, qq, child1] = True
+    expanded_mask = logical_mask.repeat_interleave(2, dim=3)
 
     logical_kv_sizes = logical_kv_sizes.to(torch.int32)
     child0_size = torch.clamp(logical_kv_sizes, min=0, max=128)

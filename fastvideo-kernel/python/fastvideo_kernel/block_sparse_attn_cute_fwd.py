@@ -206,11 +206,21 @@ def block_sparse_attn_cute_fwd(
         q_sparse_block_size=q_sparse_block_size,
         q_block_size=q_block_size,
     )
-    mask_block_idx, mask_block_cnt = _map_to_index(sparse_map)
+    # Split sparse edges into:
+    # - full blocks: variable_block_sizes == kv_block_size (no token-level mask needed)
+    # - partial blocks: 0 < variable_block_sizes < kv_block_size (needs token-level mask)
+    # - zero blocks: variable_block_sizes == 0 (drop)
+    kv_full = (variable_block_sizes == kv_block_size).view(1, 1, 1, -1)
+    kv_partial = ((variable_block_sizes > 0) & (variable_block_sizes < kv_block_size)).view(1, 1, 1, -1)
+    full_map = sparse_map & kv_full
+    mask_map = sparse_map & kv_partial
+
+    full_block_idx, full_block_cnt = _map_to_index(full_map)
+    mask_block_idx, mask_block_cnt = _map_to_index(mask_map)
+    full_block_idx = full_block_idx.to(torch.int32).contiguous()
+    full_block_cnt = full_block_cnt.to(torch.int32).contiguous()
     mask_block_idx = mask_block_idx.to(torch.int32).contiguous()
     mask_block_cnt = mask_block_cnt.to(torch.int32).contiguous()
-    full_block_cnt = torch.zeros_like(mask_block_cnt)
-    full_block_idx = torch.zeros_like(mask_block_idx)
 
     sparse_tensors = BlockSparseTensorsTorch(
         full_block_cnt=full_block_cnt,
@@ -224,7 +234,7 @@ def block_sparse_attn_cute_fwd(
     q_cute = q.transpose(1, 2).contiguous()
     k_cute = k.transpose(1, 2).contiguous()
     v_cute = v.transpose(1, 2).contiguous()
-    use_vbs_mask = torch.any(variable_block_sizes != kv_block_size).item()
+    use_vbs_mask = bool((variable_block_sizes > 0).any().item() and (variable_block_sizes < kv_block_size).any().item())
     out_cute, lse_cute = _flash_attn_fwd(
         q_cute,
         k_cute,

@@ -119,21 +119,7 @@ def _make_logical_mask(
 
 
 def _expand_mask_256_to_128(mask_256: torch.Tensor) -> torch.Tensor:
-    bsz, h, qb, kvb256 = mask_256.shape
-    kvb128 = kvb256 * 2
-    mask_128 = torch.zeros((bsz, h, qb, kvb128), dtype=torch.bool, device=mask_256.device)
-    pos = torch.nonzero(mask_256, as_tuple=False)
-    if pos.numel() == 0:
-        return mask_128
-    bb = pos[:, 0]
-    hh = pos[:, 1]
-    qq = pos[:, 2]
-    kk = pos[:, 3]
-    child0 = 2 * kk
-    child1 = child0 + 1
-    mask_128[bb, hh, qq, child0] = True
-    mask_128[bb, hh, qq, child1] = True
-    return mask_128
+    return mask_256.repeat_interleave(2, dim=3)
 
 
 def _expand_sizes_256_to_128(sizes_256: torch.Tensor) -> torch.Tensor:
