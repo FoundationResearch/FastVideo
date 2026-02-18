@@ -18,6 +18,29 @@ except ImportError:
     block_sparse_fwd = None
     block_sparse_bwd = None
 
+
+_VSA_PROFILE_STATS = {
+    "calls": 0,
+    "coarse_ms_total": 0.0,
+    "sparse_ms_total": 0.0,
+    "fuse_add_ms_total": 0.0,
+}
+
+
+def _vsa_profile_enabled() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_PROFILE", "0") == "1"
+
+
+def reset_vsa_profile_stats() -> None:
+    _VSA_PROFILE_STATS["calls"] = 0
+    _VSA_PROFILE_STATS["coarse_ms_total"] = 0.0
+    _VSA_PROFILE_STATS["sparse_ms_total"] = 0.0
+    _VSA_PROFILE_STATS["fuse_add_ms_total"] = 0.0
+
+
+def get_vsa_profile_stats() -> dict:
+    return dict(_VSA_PROFILE_STATS)
+
 def sliding_tile_attention(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -183,6 +206,15 @@ def video_sparse_attn_bshd(
     q_num_blocks = q_seq_len // block_elements
     kv_num_blocks = kv_seq_len // block_elements
 
+    do_profile = _vsa_profile_enabled() and q.is_cuda
+    if do_profile:
+        e0 = torch.cuda.Event(enable_timing=True)
+        e1 = torch.cuda.Event(enable_timing=True)
+        e2 = torch.cuda.Event(enable_timing=True)
+        e3 = torch.cuda.Event(enable_timing=True)
+        e4 = torch.cuda.Event(enable_timing=True)
+        e0.record()
+
     q_c = q.view(batch, q_num_blocks, block_elements, heads, dim)
     k_c = k.view(batch, kv_num_blocks, block_elements, heads, dim)
     v_c = v.view(batch, kv_num_blocks, block_elements, heads, dim)
@@ -200,12 +232,18 @@ def video_sparse_attn_bshd(
 
     topk_idx = torch.topk(scores, topk, dim=-1).indices
     mask = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, topk_idx, True)
+    if do_profile:
+        e1.record()
     if block_elements != 256:
         raise ValueError(
             "video_sparse_attn_bshd requires logical block_elements=256, "
             f"got {block_elements}"
         )
+    if do_profile:
+        e2.record()
     out_s, _ = block_sparse_attn_256_bshd(q, k, v, mask, variable_block_sizes)
+    if do_profile:
+        e3.record()
     out = out_s
     out_view = out.view(batch, q_num_blocks, block_elements, heads, dim)
     if compress_attn_weight is not None:
@@ -215,4 +253,11 @@ def video_sparse_attn_bshd(
         out_view.add_(out_c_blk.unsqueeze(2) * gate_view)
     else:
         out_view.add_(out_c_blk.unsqueeze(2))
+    if do_profile:
+        e4.record()
+        torch.cuda.synchronize()
+        _VSA_PROFILE_STATS["calls"] += 1
+        _VSA_PROFILE_STATS["coarse_ms_total"] += float(e0.elapsed_time(e1))
+        _VSA_PROFILE_STATS["sparse_ms_total"] += float(e2.elapsed_time(e3))
+        _VSA_PROFILE_STATS["fuse_add_ms_total"] += float(e3.elapsed_time(e4))
     return out

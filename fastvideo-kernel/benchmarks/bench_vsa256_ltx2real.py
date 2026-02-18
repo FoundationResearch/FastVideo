@@ -175,6 +175,26 @@ def _upstream_force_triton() -> bool:
     return os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1"
 
 
+def _collect_vsa_backend_real_profile(
+    fn,
+    reset_stats_fn,
+    get_stats_fn,
+    rep: int,
+) -> dict[str, float]:
+    reset_stats_fn()
+    for _ in range(rep):
+        _ = fn()
+    torch.cuda.synchronize()
+    raw = get_stats_fn()
+    calls = max(1, int(raw.get("calls", 0)))
+    return {
+        "calls": float(calls),
+        "coarse_ms_avg": float(raw.get("coarse_ms_total", 0.0)) / calls,
+        "sparse_ms_avg": float(raw.get("sparse_ms_total", 0.0)) / calls,
+        "fuse_add_ms_avg": float(raw.get("fuse_add_ms_total", 0.0)) / calls,
+    }
+
+
 @torch.no_grad()
 def _get_tile_partition_indices_local(
     dit_seq_shape: tuple[int, int, int],
@@ -243,6 +263,7 @@ def main() -> None:
     _ensure_flash_attn_importable()
     os.environ["FASTVIDEO_VSA_256"] = "1"
     os.environ["FASTVIDEO_VSA_256_BACKEND"] = "cute"
+    os.environ.setdefault("FASTVIDEO_VSA_PROFILE", "1")
 
     from flash_attn.cute import flash_attn_func
     from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
@@ -257,7 +278,12 @@ def main() -> None:
         _get_vbs_mask_mod,
         _map_to_index as _map_to_index_cute,
     )
-    from fastvideo_kernel.ops import video_sparse_attn, video_sparse_attn_bshd
+    from fastvideo_kernel.ops import (
+        get_vsa_profile_stats,
+        reset_vsa_profile_stats,
+        video_sparse_attn,
+        video_sparse_attn_bshd,
+    )
 
     args = parse_args()
     set_seed(args.seed)
@@ -781,6 +807,12 @@ def main() -> None:
     up_untile_ms = bench_ms(
         _up_postprocess_untile_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
     )
+    up_backend_real = _collect_vsa_backend_real_profile(
+        _up_backend_forward_only,
+        reset_vsa_profile_stats,
+        get_vsa_profile_stats,
+        rep=max(1, args.wrapper_breakdown_rep),
+    )
 
     kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
     manual_tflops = flops / manual_e2e_ms * 1e-12 * 1e3
@@ -838,6 +870,9 @@ def main() -> None:
     print(f"  up.preprocess_tile:               {up_tile_ms:.3f} ms")
     print(f"  up.chunk_qkvg:                    {up_chunk_ms:.3f} ms")
     print(f"  up.backend_forward:               {up_backend_ms:.3f} ms")
+    print(f"  up.backend.coarse_real(avg):      {up_backend_real['coarse_ms_avg']:.3f} ms")
+    print(f"  up.backend.sparse_real(avg):      {up_backend_real['sparse_ms_avg']:.3f} ms")
+    print(f"  up.backend.fuse_add_real(avg):    {up_backend_real['fuse_add_ms_avg']:.3f} ms")
     print(f"  up.postprocess_untile:            {up_untile_ms:.3f} ms")
     print(f"  up.true_e2e_total:                {upstream_true_e2e_ms:.3f} ms")
 
