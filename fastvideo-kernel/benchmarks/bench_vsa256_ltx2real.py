@@ -393,6 +393,70 @@ def main() -> None:
             non_pad_index=non_pad_index,
         )
 
+    def _upstream_backend_forward(
+        q_t: torch.Tensor,
+        k_t: torch.Tensor,
+        v_t: torch.Tensor,
+        g_t: torch.Tensor,
+    ) -> torch.Tensor:
+        if _upstream_use_vsa_256() and (not _upstream_force_triton()):
+            return video_sparse_attn_bshd(
+                q_t,
+                k_t,
+                v_t,
+                kv_var_256,
+                kv_var_256,
+                topk_logical,
+                block_size=(4, 8, 8),
+                compress_attn_weight=g_t,
+            )
+        return video_sparse_attn(
+            q_t.transpose(1, 2).contiguous(),
+            k_t.transpose(1, 2).contiguous(),
+            v_t.transpose(1, 2).contiguous(),
+            kv_var_256,
+            kv_var_256,
+            topk_logical,
+            block_size=(4, 8, 8),
+            compress_attn_weight=g_t.transpose(1, 2).contiguous(),
+        ).transpose(1, 2)
+
+    qkvg_up_once = torch.cat([q_up, k_up, v_up, g_up], dim=0)
+    qkvg_tiled_once = _tile_local(
+        qkvg_up_once,
+        num_tiles=num_tiles,
+        tile_size=vsa_tile_size,
+        tile_partition_indices=tile_partition_indices,
+        non_pad_index=non_pad_index,
+    )
+    q_up_t, k_up_t, v_up_t, g_up_t = qkvg_tiled_once.chunk(4, dim=0)
+    out_up_once = _upstream_backend_forward(q_up_t, k_up_t, v_up_t, g_up_t)
+
+    def _up_cat_qkvg_only():
+        return torch.cat([q_up, k_up, v_up, g_up], dim=0)
+
+    def _up_preprocess_tile_only():
+        return _tile_local(
+            qkvg_up_once,
+            num_tiles=num_tiles,
+            tile_size=vsa_tile_size,
+            tile_partition_indices=tile_partition_indices,
+            non_pad_index=non_pad_index,
+        )
+
+    def _up_chunk_qkvg_only():
+        return qkvg_tiled_once.chunk(4, dim=0)
+
+    def _up_backend_forward_only():
+        return _upstream_backend_forward(q_up_t, k_up_t, v_up_t, g_up_t)
+
+    def _up_postprocess_untile_only():
+        return _untile_local(
+            out_up_once,
+            reverse_tile_partition_indices=reverse_tile_partition_indices,
+            non_pad_index=non_pad_index,
+        )
+
     logical_mask_fixed = logical_mask
     mask_128_fixed = mask_128
     sizes_256_fixed = kv_var_256
@@ -702,7 +766,21 @@ def main() -> None:
     wb_pipeline_replay_total_ms = bench_ms(
         _wb_pipeline_replay_total, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
     )
-    wb_stage_evt = _wb_stage_events_avg(max(1, args.wrapper_breakdown_rep))
+    up_cat_ms = bench_ms(
+        _up_cat_qkvg_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    up_tile_ms = bench_ms(
+        _up_preprocess_tile_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    up_chunk_ms = bench_ms(
+        _up_chunk_qkvg_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    up_backend_ms = bench_ms(
+        _up_backend_forward_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    up_untile_ms = bench_ms(
+        _up_postprocess_untile_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
 
     kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
     manual_tflops = flops / manual_e2e_ms * 1e-12 * 1e3
@@ -755,18 +833,13 @@ def main() -> None:
         f"  wb.pipeline_replay_total:         {wb_pipeline_replay_total_ms:.3f} ms "
         "(single-call staged replay)"
     )
-    print("wrapper_internal_stage_events(single-call, additive):")
-    print(f"  evt.expand_256_to_128:            {wb_stage_evt['expand_256_to_128']:.3f} ms")
-    print(f"  evt.aggregate_q_sparse_map:       {wb_stage_evt['aggregate_q_sparse_map']:.3f} ms")
-    print(f"  evt.split_full_partial_map:       {wb_stage_evt['split_full_partial_map']:.3f} ms")
-    print(f"  evt.map_to_index_full:            {wb_stage_evt['map_to_index_full']:.3f} ms")
-    print(f"  evt.map_to_index_mask:            {wb_stage_evt['map_to_index_mask']:.3f} ms")
-    print(f"  evt.index_to_int_contiguous:      {wb_stage_evt['index_to_int_contiguous']:.3f} ms")
-    print(f"  evt.build_sparse_tensors:         {wb_stage_evt['build_sparse_tensors']:.3f} ms")
-    print(f"  evt.layout_transpose:             {wb_stage_evt['layout_transpose']:.3f} ms")
-    print(f"  evt.flash_attn_fwd_only:          {wb_stage_evt['flash_attn_fwd_only']:.3f} ms")
-    print(f"  evt.output_transpose:             {wb_stage_evt['output_transpose']:.3f} ms")
-    print(f"  evt.stage_sum:                    {sum(wb_stage_evt.values()):.3f} ms")
+    print("upstream_true_e2e_breakdown(preprocess + backend + postprocess):")
+    print(f"  up.cat_qkvg:                      {up_cat_ms:.3f} ms")
+    print(f"  up.preprocess_tile:               {up_tile_ms:.3f} ms")
+    print(f"  up.chunk_qkvg:                    {up_chunk_ms:.3f} ms")
+    print(f"  up.backend_forward:               {up_backend_ms:.3f} ms")
+    print(f"  up.postprocess_untile:            {up_untile_ms:.3f} ms")
+    print(f"  up.true_e2e_total:                {upstream_true_e2e_ms:.3f} ms")
 
 
 if __name__ == "__main__":
