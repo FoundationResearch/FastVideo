@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark real LTX2 DiT single forward latency (no breakdown)."""
+"""Benchmark real LTX2 inference latency via VideoGenerator."""
 
 from __future__ import annotations
 
@@ -7,15 +7,11 @@ import argparse
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 import torch
-
-try:
-    from triton.testing import do_bench
-except Exception as e:  # pragma: no cover
-    raise ImportError("This benchmark requires triton (triton.testing.do_bench).") from e
 
 
 def _ensure_repo_on_path() -> Path:
@@ -35,17 +31,46 @@ def set_seed(seed: int) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Real LTX2 model-level one-call benchmark")
-    p.add_argument("--batch_size", type=int, default=1)
+    p = argparse.ArgumentParser(
+        description="Real LTX2 one-call benchmark through VideoGenerator"
+    )
+    p.add_argument(
+        "--model_path",
+        type=str,
+        default="Davids048/LTX2-Base-Diffusers",
+    )
+    p.add_argument("--prompt", type=str, default="A cat walking on grass, cinematic.")
     p.add_argument("--num_frames", type=int, default=16)
     p.add_argument("--height", type=int, default=34)
     p.add_argument("--width", type=int, default=60)
-    p.add_argument("--text_tokens", type=int, default=128)
+    p.add_argument("--num_inference_steps", type=int, default=8)
     p.add_argument("--warmup", type=int, default=3)
     p.add_argument("--rep", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
-    p.add_argument("--num_layers", type=int, default=48)
+    p.add_argument(
+        "--dtype",
+        type=str,
+        default="bf16",
+        choices=["bf16", "fp16"],
+        help="Maps to VideoGenerator torch_dtype.",
+    )
+    p.add_argument(
+        "--num_layers",
+        type=int,
+        default=48,
+        help="Kept only for CLI compatibility; unused in pretrained path.",
+    )
+    p.add_argument(
+        "--num_gpus",
+        type=int,
+        default=1,
+        help="Pass through to VideoGenerator.from_pretrained",
+    )
+    p.add_argument(
+        "--output_path",
+        type=str,
+        default="outputs_video/bench_ltx2_real_model_once",
+    )
     return p.parse_args()
 
 
@@ -56,69 +81,75 @@ def main() -> None:
     _ensure_repo_on_path()
     os.environ.setdefault("FASTVIDEO_VSA_256", "1")
     os.environ.setdefault("FASTVIDEO_VSA_256_BACKEND", "cute")
+    os.environ.setdefault("FASTVIDEO_ATTENTION_BACKEND", "VIDEO_SPARSE_ATTN")
 
-    from fastvideo.configs.models.dits.ltx2 import LTX2VideoConfig
-    import fastvideo.models.dits.ltx2 as ltx2_mod
-
-    # Run this benchmark in single-process mode without distributed init.
-    ltx2_mod.get_sp_world_size = lambda: 1
-    ltx2_mod.get_sp_parallel_rank = lambda: 0
+    from fastvideo import VideoGenerator
 
     args = parse_args()
     set_seed(args.seed)
-    dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
-    device = torch.device("cuda")
-
-    cfg = LTX2VideoConfig()
-    cfg.arch_config.num_layers = args.num_layers
-    model = ltx2_mod.LTX2Transformer3DModel(cfg, hf_config={}).to(device=device, dtype=dtype)
-    model.eval()
-
-    bsz = args.batch_size
-    c = cfg.arch_config.num_channels_latents
-    t, h, w = args.num_frames, args.height, args.width
-    seq_len = t * h * w
-    caption_channels = cfg.arch_config.caption_channels
-
-    hidden_states = torch.randn(bsz, c, t, h, w, device=device, dtype=dtype)
-    encoder_hidden_states = torch.randn(
-        bsz, args.text_tokens, caption_channels, device=device, dtype=dtype
+    torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
+    generator = VideoGenerator.from_pretrained(
+        args.model_path,
+        num_gpus=args.num_gpus,
+        torch_dtype=torch_dtype,
+        use_fsdp_inference=False,
     )
-    timestep = torch.ones((bsz, seq_len), device=device, dtype=torch.float32)
 
-    def _forward_once():
-        out = model(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            timestep=timestep,
-            encoder_attention_mask=None,
-            guidance=None,
-            audio_hidden_states=None,
-            audio_encoder_hidden_states=None,
-            audio_timestep=None,
-            audio_encoder_attention_mask=None,
-            skip_cross_modal_attn=True,
+    def _generate_once():
+        return generator.generate_video(
+            prompt=args.prompt,
+            num_frames=args.num_frames,
+            height=args.height,
+            width=args.width,
+            num_inference_steps=args.num_inference_steps,
+            output_path=args.output_path,
+            save_video=False,
+            return_frames=False,
+            seed=args.seed,
         )
-        return out
 
-    with torch.no_grad():
-        out = _forward_once()
-        if isinstance(out, tuple):
-            finite_ok = all(
-                (x is None) or torch.isfinite(x).all().item() for x in out
-            )
-        else:
-            finite_ok = torch.isfinite(out).all().item()
-        ms = do_bench(_forward_once, warmup=args.warmup, rep=args.rep, quantiles=None)
+    # Warmup runs
+    for _ in range(args.warmup):
+        _ = _generate_once()
+        torch.cuda.synchronize()
 
-    print("LTX2 real model-level benchmark (single DiT forward)")
+    # Timed runs
+    times_ms = []
+    last_out = None
+    for _ in range(args.rep):
+        t0 = time.perf_counter()
+        last_out = _generate_once()
+        torch.cuda.synchronize()
+        t1 = time.perf_counter()
+        times_ms.append((t1 - t0) * 1000.0)
+
+    finite_ok = False
+    if isinstance(last_out, dict) and "samples" in last_out:
+        finite_ok = torch.isfinite(last_out["samples"]).all().item()
+
+    avg_ms = float(np.mean(times_ms))
+    p50_ms = float(np.percentile(times_ms, 50))
+    p90_ms = float(np.percentile(times_ms, 90))
+    min_ms = float(np.min(times_ms))
+
+    print("LTX2 real benchmark via VideoGenerator.generate_video (single call)")
     print(f"device: {torch.cuda.get_device_name(0)}")
+    print(f"model_path: {args.model_path}")
     print(
-        f"batch={bsz}, latent_shape=[{c},{t},{h},{w}], "
-        f"text_tokens={args.text_tokens}, num_layers={args.num_layers}, dtype={args.dtype}"
+        f"frames={args.num_frames}, hw={args.height}x{args.width}, "
+        f"steps={args.num_inference_steps}, dtype={args.dtype}, num_gpus={args.num_gpus}"
     )
-    print(f"finite_check: {finite_ok}")
-    print(f"real_model_forward_once: {ms:.3f} ms")
+    print(f"finite_check(samples): {finite_ok}")
+    print(f"latency_avg: {avg_ms:.3f} ms")
+    print(f"latency_p50: {p50_ms:.3f} ms")
+    print(f"latency_p90: {p90_ms:.3f} ms")
+    print(f"latency_min: {min_ms:.3f} ms")
+    if args.num_layers != 48:
+        print(
+            f"note: --num_layers={args.num_layers} ignored in pretrained path "
+            "(kept for CLI compatibility)."
+        )
+    generator.shutdown()
 
 
 if __name__ == "__main__":
