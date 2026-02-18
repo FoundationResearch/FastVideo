@@ -188,6 +188,11 @@ def main() -> None:
         _map_to_index as _map_to_index_cute,
     )
     from fastvideo_kernel.ops import video_sparse_attn_bshd
+    from fastvideo.attention.backends.video_sparse_attn import (
+        VideoSparseAttentionImpl,
+        VideoSparseAttentionMetadataBuilder,
+        VSA_TILE_SIZE,
+    )
 
     args = parse_args()
     set_seed(args.seed)
@@ -218,6 +223,35 @@ def main() -> None:
     q_var_256 = kv_var_256.clone()
     kv_var_128 = _expand_sizes_256_to_128(kv_var_256)
     stats = _vbs_stats(kv_var_256)
+
+    # Upstream true-E2E inputs (unpadded real sequence) for
+    # preprocess -> backend.forward(auto-dispatch) -> postprocess path.
+    seq_real = T_REAL * H_REAL * W_REAL
+    q_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
+    k_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
+    v_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
+    g_up = torch.randn(bs, seq_real, h, d, dtype=dtype, device=device)
+    builder = VideoSparseAttentionMetadataBuilder()
+    sparsity_for_topk = max(
+        0.0,
+        1.0 - (
+            float(topk_logical)
+            / (
+                float(T_REAL * H_REAL * W_REAL)
+                / float(math.prod(VSA_TILE_SIZE))
+            )
+        ),
+    )
+    metadata_up = builder.build(
+        current_timestep=0,
+        raw_latent_shape=(T_REAL, H_REAL, W_REAL),
+        patch_size=(1, 1, 1),
+        VSA_sparsity=sparsity_for_topk,
+        device=device,
+    )
+    # Bypass __init__ to avoid distributed-group initialization dependency;
+    # forward/preprocess/postprocess do not rely on instance state.
+    impl_up = VideoSparseAttentionImpl.__new__(VideoSparseAttentionImpl)
 
     def _kernel_only():
         return flash_attn_func(
@@ -264,6 +298,13 @@ def main() -> None:
             block_size=(4, 8, 8),
             compress_attn_weight=None,
         )
+
+    def _upstream_true_e2e():
+        qkvg = torch.cat([q_up, k_up, v_up, g_up], dim=0)
+        qkvg = impl_up.preprocess_qkv(qkvg, metadata_up)
+        q_t, k_t, v_t, g_t = qkvg.chunk(4, dim=0)
+        out_t = impl_up.forward(q_t, k_t, v_t, g_t, metadata_up)
+        return impl_up.postprocess_output(out_t, metadata_up)
 
     logical_mask_fixed = logical_mask
     mask_128_fixed = mask_128
@@ -528,6 +569,7 @@ def main() -> None:
     manual_e2e_ms = bench_ms(_manual_e2e, warmup=args.warmup, rep=args.rep)
     wrapper_sparse_ms = bench_ms(_wrapper_sparse_only, warmup=args.warmup, rep=args.rep)
     wrapper_e2e_ms = bench_ms(_wrapper_e2e, warmup=args.warmup, rep=args.rep)
+    upstream_true_e2e_ms = bench_ms(_upstream_true_e2e, warmup=args.warmup, rep=args.rep)
     prep_logical_ms = bench_ms(
         _prep_logical_mask_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
     )
@@ -600,6 +642,10 @@ def main() -> None:
     print(
         f"wrapper_e2e(video_sparse_attn_bshd): {wrapper_e2e_ms:.3f} ms | "
         f"{wrapper_e2e_tflops:.2f} TFLOPs (approx)"
+    )
+    print(
+        f"upstream_true_e2e(preprocess->backend->postprocess): "
+        f"{upstream_true_e2e_ms:.3f} ms"
     )
     print("breakdown(prep+kernel):")
     print(f"  prep.logical_mask(topk):         {prep_logical_ms:.3f} ms")
