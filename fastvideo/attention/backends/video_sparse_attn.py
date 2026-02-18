@@ -25,6 +25,7 @@ from fastvideo.distributed import get_sp_group
 from fastvideo.logger import init_logger
 
 logger = init_logger(__name__)
+_VSA_DISPATCH_LOGGED: set[str] = set()
 
 
 def _use_vsa_256() -> bool:
@@ -33,6 +34,17 @@ def _use_vsa_256() -> bool:
 
 def _force_triton_vsa() -> bool:
     return os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1"
+
+
+def _dispatch_log_enabled() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_DISPATCH_LOG", "0") == "1"
+
+
+def _log_dispatch_once(route_key: str, message: str) -> None:
+    if (not _dispatch_log_enabled()) or route_key in _VSA_DISPATCH_LOGGED:
+        return
+    _VSA_DISPATCH_LOGGED.add(route_key)
+    logger.warning("=== [VSA DISPATCH] %s ===", message)
 
 
 VSA_TILE_SIZE = (4, 8, 8) if _use_vsa_256() else (4, 4, 4)
@@ -283,6 +295,10 @@ class VideoSparseAttentionImpl(AttentionImpl):
         if video_sparse_attn is None:
             raise NotImplementedError("video_sparse_attn is not installed")
         if _use_vsa_256() and (not _force_triton_vsa()) and video_sparse_attn_bshd is not None:
+            _log_dispatch_once(
+                "vsa256_bshd_fastpath",
+                "route=vsa256_bshd_fastpath backend=VIDEO_SPARSE_ATTN kernel=cute_bshd",
+            )
             # Fast path: keep BSHD layout end-to-end for CuTe VSA256.
             hidden_states = video_sparse_attn_bshd(
                 query,
@@ -295,6 +311,21 @@ class VideoSparseAttentionImpl(AttentionImpl):
                 compress_attn_weight=gate_compress,
             )
         else:
+            if _use_vsa_256() and _force_triton_vsa():
+                _log_dispatch_once(
+                    "vsa256_forced_triton_legacy",
+                    "route=vsa256_legacy_path backend=VIDEO_SPARSE_ATTN kernel=forced_triton",
+                )
+            elif _use_vsa_256() and video_sparse_attn_bshd is None:
+                _log_dispatch_once(
+                    "vsa256_missing_bshd_legacy",
+                    "route=vsa256_legacy_path backend=VIDEO_SPARSE_ATTN reason=missing_video_sparse_attn_bshd",
+                )
+            else:
+                _log_dispatch_once(
+                    "vsa64_or_legacy_bhsd",
+                    "route=legacy_bhsd_path backend=VIDEO_SPARSE_ATTN",
+                )
             query = query.transpose(1, 2).contiguous()
             key = key.transpose(1, 2).contiguous()
             value = value.transpose(1, 2).contiguous()
