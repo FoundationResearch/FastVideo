@@ -26,6 +26,7 @@ DEFAULT_REPO_DIR = "/cache/FastVideo"
 DEFAULT_VOLUME_NAME = "fastvideo-repo-cache"
 DEFAULT_SECRET_NAME = "FR-FV"
 DEFAULT_FLASH_ATTN_WHEEL = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp310-cp310-linux_x86_64.whl"
+DEFAULT_TORCHVISION_VERSION = "0.25.0"
 # DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward.py -v -s"
 # DEFAULT_RUN_CMD = "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
 # DEFAULT_RUN_CMD = "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchmarks/bench_triton_vsa64_kernel.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5 --breakdown_rep 20"
@@ -50,6 +51,9 @@ REPO_BRANCH = os.environ.get("MODAL_SMOKE_REPO_BRANCH", DEFAULT_BRANCH)
 REPO_DIR = os.environ.get("MODAL_SMOKE_REPO_DIR", DEFAULT_REPO_DIR)
 FLASH_ATTN_WHEEL = os.environ.get(
     "MODAL_SMOKE_FLASH_ATTN_WHEEL", DEFAULT_FLASH_ATTN_WHEEL
+)
+TORCHVISION_VERSION = os.environ.get(
+    "MODAL_SMOKE_TORCHVISION_VERSION", DEFAULT_TORCHVISION_VERSION
 )
 REPO_VOLUME = modal.Volume.from_name(
     os.environ.get("MODAL_SMOKE_VOLUME_NAME", DEFAULT_VOLUME_NAME),
@@ -107,6 +111,7 @@ def run_remote(run_cmd: str) -> dict:
 
         python -m pip install --upgrade "${FLASH_ATTN_WHEEL}"
         python -m pip install -e "${REPO_DIR}/fastvideo-kernel/include/flash-attention/flash_attn/cute"
+        python -m pip install --upgrade "torchvision==${TORCHVISION_VERSION}"
 
         export FASTVIDEO_VSA_256=1
         export PYTHONPATH="${REPO_DIR}/fastvideo-kernel/include/flash-attention:${REPO_DIR}/fastvideo-kernel/python:${PYTHONPATH:-}"
@@ -122,6 +127,7 @@ def run_remote(run_cmd: str) -> dict:
             "REPO_BRANCH": REPO_BRANCH,
             "REPO_DIR": REPO_DIR,
             "FLASH_ATTN_WHEEL": FLASH_ATTN_WHEEL,
+            "TORCHVISION_VERSION": TORCHVISION_VERSION,
             "RUN_CMD": run_cmd,
         }
     )

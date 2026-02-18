@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib.machinery
 import os
 import random
 import sys
-import types
 from pathlib import Path
 
 import numpy as np
@@ -18,37 +16,6 @@ try:
     from triton.testing import do_bench
 except Exception as e:  # pragma: no cover
     raise ImportError("This benchmark requires triton (triton.testing.do_bench).") from e
-
-
-def _install_torchvision_stub_if_needed() -> None:
-    # Some runtime images have mismatched torchvision/torch builds.
-    # LTX2 import path does not require torchvision features in this benchmark.
-    if "torchvision" in sys.modules:
-        return
-    tv = types.ModuleType("torchvision")
-    tv_utils = types.ModuleType("torchvision.utils")
-    # diffusers checks importlib.util.find_spec("torchvision"), so __spec__ must exist.
-    tv.__spec__ = importlib.machinery.ModuleSpec(
-        "torchvision",
-        loader=None,
-        is_package=True,
-    )
-    tv.__path__ = []
-    tv_utils.__spec__ = importlib.machinery.ModuleSpec(
-        "torchvision.utils",
-        loader=None,
-        is_package=False,
-    )
-
-    def _dummy_make_grid(*args, **kwargs):  # noqa: ANN001, ANN003
-        if args:
-            return args[0]
-        return None
-
-    tv_utils.make_grid = _dummy_make_grid
-    tv.utils = tv_utils
-    sys.modules["torchvision"] = tv
-    sys.modules["torchvision.utils"] = tv_utils
 
 
 def _ensure_repo_on_path() -> Path:
@@ -87,7 +54,6 @@ def main() -> None:
         raise RuntimeError("CUDA is required for this benchmark.")
 
     _ensure_repo_on_path()
-    _install_torchvision_stub_if_needed()
     os.environ.setdefault("FASTVIDEO_VSA_256", "1")
     os.environ.setdefault("FASTVIDEO_VSA_256_BACKEND", "cute")
 
