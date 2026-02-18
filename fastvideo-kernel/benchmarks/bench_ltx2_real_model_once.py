@@ -99,6 +99,9 @@ def main() -> None:
         num_gpus=args.num_gpus,
         torch_dtype=torch_dtype,
         use_fsdp_inference=False,
+        dit_cpu_offload=False,
+        text_encoder_cpu_offload=False,
+        vae_cpu_offload=False,
         VSA_sparsity=args.vsa_sparsity,
     )
 
