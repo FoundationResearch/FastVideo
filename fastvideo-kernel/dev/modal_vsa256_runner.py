@@ -30,7 +30,7 @@ DEFAULT_FLASH_ATTN_WHEEL = "https://github.com/mjun0812/flash-attention-prebuild
 # DEFAULT_RUN_CMD = "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
 # DEFAULT_RUN_CMD = "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchmarks/bench_triton_vsa64_kernel.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5 --breakdown_rep 20"
 # DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward_cross.py -v -s"
-DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa_256_triton.py -v -s"
+DEFAULT_RUN_CMD = "python fastvideo-kernel/dev/test_env_read.py"
 
 
 def _resolve_image_tag() -> str:
@@ -51,7 +51,6 @@ REPO_DIR = os.environ.get("MODAL_SMOKE_REPO_DIR", DEFAULT_REPO_DIR)
 FLASH_ATTN_WHEEL = os.environ.get(
     "MODAL_SMOKE_FLASH_ATTN_WHEEL", DEFAULT_FLASH_ATTN_WHEEL
 )
-RUN_CMD = os.environ.get("MODAL_VSA256_RUN_CMD", DEFAULT_RUN_CMD)
 REPO_VOLUME = modal.Volume.from_name(
     os.environ.get("MODAL_SMOKE_VOLUME_NAME", DEFAULT_VOLUME_NAME),
     create_if_missing=True,
@@ -67,7 +66,7 @@ image = modal.Image.from_registry(IMAGE_TAG, add_python="3.12")
     volumes={"/cache": REPO_VOLUME},
     secrets=[modal.Secret.from_name(DEFAULT_SECRET_NAME)],
 )
-def run_remote() -> dict:
+def run_remote(run_cmd: str) -> dict:
     cmd = dedent(
         """
         set -euo pipefail
@@ -123,7 +122,7 @@ def run_remote() -> dict:
             "REPO_BRANCH": REPO_BRANCH,
             "REPO_DIR": REPO_DIR,
             "FLASH_ATTN_WHEEL": FLASH_ATTN_WHEEL,
-            "RUN_CMD": RUN_CMD,
+            "RUN_CMD": run_cmd,
         }
     )
     proc = subprocess.run(
@@ -142,13 +141,14 @@ def run_remote() -> dict:
         "gpu": GPU_SPEC,
         "repo_url": REPO_URL,
         "repo_branch": REPO_BRANCH,
-        "run_cmd": RUN_CMD,
+        "run_cmd": run_cmd,
     }
 
 
 @app.local_entrypoint()
 def main() -> None:
-    result = run_remote.remote()
+    run_cmd = os.environ.get("MODAL_VSA256_RUN_CMD", DEFAULT_RUN_CMD)
+    result = run_remote.remote(run_cmd)
     print("=== Modal VSA256 run result ===")
     print(f"image: {result['image_tag']}")
     print(f"gpu: {result['gpu']}")

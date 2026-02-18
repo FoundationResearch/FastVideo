@@ -1,0 +1,86 @@
+我先读一下 `modal_vsa256_runner.py` 的 CLI 入口参数，然后给你一套可直接复制的全量命令；同时我会补上 `dev/test_env_read.py` 用来验证环境变量读取。
+
+[2 tools called]
+
+我会先补 `test_env_read.py`（可在 Modal 里直接跑），输出关键环境变量和可选自定义变量名；然后给你一组按用途分好的 fish 命令清单（正确性/速度/CuTe/Triton）。
+
+[3 tools called]
+
+已补好环境变量读取脚本：`fastvideo-kernel/dev/test_env_read.py`。  
+它会打印关键 env，方便确认 fish -> Modal -> 容器内的传递链路是否生效。
+
+下面给你一套可直接复制的 **fish** 命令清单（都通过同一个 runner 执行）：
+
+### 0) 先验证环境变量能否读到（强烈建议先跑）
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/dev/test_env_read.py"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+如果你想测自定义变量（例如 `MY_FLAG`）：
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "MY_FLAG=hello python fastvideo-kernel/dev/test_env_read.py --keys MY_FLAG FASTVIDEO_VSA_256 FASTVIDEO_VSA_256_BACKEND MODAL_VSA256_RUN_CMD PYTHONPATH"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+### 1) CuTe forward 正确性（VSA256）
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "pytest fastvideo-kernel/tests/test_vsa256_forward.py -v -s"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+### 2) 三方 forward 交叉验证（torch / cute / triton）
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "pytest fastvideo-kernel/tests/test_vsa256_forward_cross.py -v -s"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+### 3) Triton VSA256 forward + backward 正确性
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "pytest fastvideo-kernel/tests/test_vsa_256_triton.py -v -s"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+### 4) CuTe VSA256 速度（含分解耗时）
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+### 5) Triton VSA256（Route-A）速度
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/benchmarks/bench_triton_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+### 6) Triton 64 裸 kernel 速度（对照）
+
+> 这个是 vsa64 基线，命令里显式关掉 vsa256。
+
+```bash
+set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchmarks/bench_triton_vsa64_kernel.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5 --breakdown_rep 20"
+modal run fastvideo-kernel/dev/modal_vsa256_runner.py
+```
+
+---
+
+如果你愿意，我下一步可以再给你一个“一键全跑”的 fish 脚本（按上面顺序串行执行，每步失败即停止，并自动保存每一步日志到本地文件）。
