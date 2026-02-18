@@ -1,32 +1,3 @@
-我先读一下 `modal_vsa256_runner.py` 的 CLI 入口参数，然后给你一套可直接复制的全量命令；同时我会补上 `dev/test_env_read.py` 用来验证环境变量读取。
-
-[2 tools called]
-
-我会先补 `test_env_read.py`（可在 Modal 里直接跑），输出关键环境变量和可选自定义变量名；然后给你一组按用途分好的 fish 命令清单（正确性/速度/CuTe/Triton）。
-
-[3 tools called]
-
-已补好环境变量读取脚本：`fastvideo-kernel/dev/test_env_read.py`。  
-它会打印关键 env，方便确认 fish -> Modal -> 容器内的传递链路是否生效。
-
-下面给你一套可直接复制的 **fish** 命令清单（都通过同一个 runner 执行）：
-
-### 0) 先验证环境变量能否读到（强烈建议先跑）
-
-```bash
-set -x MODAL_VSA256_RUN_CMD "python fastvideo-kernel/dev/test_env_read.py"
-modal run fastvideo-kernel/dev/modal_vsa256_runner.py
-```
-
-如果你想测自定义变量（例如 `MY_FLAG`）：
-
-```bash
-set -x MODAL_VSA256_RUN_CMD "MY_FLAG=hello python fastvideo-kernel/dev/test_env_read.py --keys MY_FLAG FASTVIDEO_VSA_256 FASTVIDEO_VSA_256_BACKEND MODAL_VSA256_RUN_CMD PYTHONPATH"
-modal run fastvideo-kernel/dev/modal_vsa256_runner.py
-```
-
----
-
 ### 1) CuTe forward 正确性（VSA256）
 
 ```bash
