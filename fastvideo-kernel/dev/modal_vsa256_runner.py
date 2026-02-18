@@ -106,6 +106,8 @@ def run_remote() -> dict:
         python -m pip install -e "${REPO_DIR}/fastvideo-kernel/include/flash-attention/flash_attn/cute"
 
         export FASTVIDEO_VSA_256=1
+        export PYTHONPATH="${REPO_DIR}/fastvideo-kernel/python:${PYTHONPATH:-}"
+        echo "PYTHONPATH=${PYTHONPATH}"
         eval "${RUN_CMD}"
         """
     ).strip()

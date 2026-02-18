@@ -3,12 +3,28 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import sys
+from pathlib import Path
 from typing import Tuple
 
 import pytest
 import torch
 
 from .utils import create_full_mask_from_block_mask
+
+
+def _ensure_local_fastvideo_kernel() -> None:
+    repo_python = Path(__file__).resolve().parents[1] / "python"
+    repo_python_str = str(repo_python)
+    if repo_python_str not in sys.path:
+        sys.path.insert(0, repo_python_str)
+    loaded = sys.modules.get("fastvideo_kernel")
+    if loaded is not None:
+        loaded_file = getattr(loaded, "__file__", "") or ""
+        if repo_python_str not in loaded_file:
+            for mod_name in list(sys.modules.keys()):
+                if mod_name == "fastvideo_kernel" or mod_name.startswith("fastvideo_kernel."):
+                    del sys.modules[mod_name]
 
 
 def _dense_reference(
@@ -36,6 +52,7 @@ def _run_case(
 ) -> Tuple[float, float]:
     assert torch.cuda.is_available()
     os.environ["FASTVIDEO_VSA_256"] = "1"
+    _ensure_local_fastvideo_kernel()
     import fastvideo_kernel.ops as fv_ops
 
     importlib.reload(fv_ops)
