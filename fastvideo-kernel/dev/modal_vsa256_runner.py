@@ -27,7 +27,8 @@ DEFAULT_VOLUME_NAME = "fastvideo-repo-cache"
 DEFAULT_SECRET_NAME = "FR-FV"
 DEFAULT_FLASH_ATTN_WHEEL = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp310-cp310-linux_x86_64.whl"
 # DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward.py -v -s"
-DEFAULT_RUN_CMD = "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
+# DEFAULT_RUN_CMD = "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
+DEFAULT_RUN_CMD = "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchmarks/bench_triton_vsa64_kernel.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5 --breakdown_rep 20"
 
 
 def _resolve_image_tag() -> str:
