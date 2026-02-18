@@ -27,6 +27,7 @@ DEFAULT_REPO_DIR = "/cache/FastVideo"
 DEFAULT_VOLUME_NAME = "fastvideo-repo-cache"
 DEFAULT_SECRET_NAME = "FR-FV"
 DEFAULT_FLASH_ATTN_WHEEL = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp310-cp310-linux_x86_64.whl"
+DEFAULT_HF_HOME = "/cache/.cache/huggingface"
 # DEFAULT_RUN_CMD = "pytest fastvideo-kernel/tests/test_vsa256_forward.py -v -s"
 # DEFAULT_RUN_CMD = "python fastvideo-kernel/benchmarks/bench_vsa256.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5"
 # DEFAULT_RUN_CMD = "FASTVIDEO_VSA_256=0 python fastvideo-kernel/benchmarks/bench_triton_vsa64_kernel.py --q_seq_lens 49152 --kv_seq_lens 49152 --rep 20 --warmup 5 --breakdown_rep 20"
@@ -52,6 +53,7 @@ REPO_DIR = os.environ.get("MODAL_SMOKE_REPO_DIR", DEFAULT_REPO_DIR)
 FLASH_ATTN_WHEEL = os.environ.get(
     "MODAL_SMOKE_FLASH_ATTN_WHEEL", DEFAULT_FLASH_ATTN_WHEEL
 )
+HF_HOME = os.environ.get("MODAL_SMOKE_HF_HOME", DEFAULT_HF_HOME)
 REPO_VOLUME = modal.Volume.from_name(
     os.environ.get("MODAL_SMOKE_VOLUME_NAME", DEFAULT_VOLUME_NAME),
     create_if_missing=True,
@@ -106,12 +108,21 @@ def run_remote(run_cmd: str) -> dict:
           git submodule update --init --recursive
         fi
 
+        export HF_HOME="${HF_HOME}"
+        export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
+        export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
+        mkdir -p "${HUGGINGFACE_HUB_CACHE}" "${TRANSFORMERS_CACHE}"
+        if [ -n "${HF_API_KEY:-}" ] && command -v hf >/dev/null 2>&1; then
+          hf auth login --token "${HF_API_KEY}" >/dev/null 2>&1 || true
+        fi
+
         python -m pip install --upgrade "${FLASH_ATTN_WHEEL}"
         python -m pip install -e "${REPO_DIR}/fastvideo-kernel/include/flash-attention/flash_attn/cute"
 
         export FASTVIDEO_VSA_256=1
         export PYTHONPATH="${REPO_DIR}/fastvideo-kernel/include/flash-attention:${REPO_DIR}/fastvideo-kernel/python:${PYTHONPATH:-}"
         echo "PYTHONPATH=${PYTHONPATH}"
+        echo "HF_HOME=${HF_HOME}"
         eval "${RUN_CMD}"
         """
     ).strip()
@@ -123,6 +134,7 @@ def run_remote(run_cmd: str) -> dict:
             "REPO_BRANCH": REPO_BRANCH,
             "REPO_DIR": REPO_DIR,
             "FLASH_ATTN_WHEEL": FLASH_ATTN_WHEEL,
+            "HF_HOME": HF_HOME,
             "RUN_CMD": run_cmd,
         }
     )

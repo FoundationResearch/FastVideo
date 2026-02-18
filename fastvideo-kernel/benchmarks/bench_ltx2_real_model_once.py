@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rep", type=int, default=10)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
+        "--vsa_sparsity",
+        type=float,
+        default=0.7,
+        help="VSA sparsity for VIDEO_SPARSE_ATTN backend.",
+    )
+    p.add_argument(
         "--dtype",
         type=str,
         default="bf16",
@@ -93,6 +99,7 @@ def main() -> None:
         num_gpus=args.num_gpus,
         torch_dtype=torch_dtype,
         use_fsdp_inference=False,
+        VSA_sparsity=args.vsa_sparsity,
     )
 
     def _generate_once():
@@ -137,7 +144,8 @@ def main() -> None:
     print(f"model_path: {args.model_path}")
     print(
         f"frames={args.num_frames}, hw={args.height}x{args.width}, "
-        f"steps={args.num_inference_steps}, dtype={args.dtype}, num_gpus={args.num_gpus}"
+        f"steps={args.num_inference_steps}, dtype={args.dtype}, "
+        f"num_gpus={args.num_gpus}, vsa_sparsity={args.vsa_sparsity}"
     )
     print(f"finite_check(samples): {finite_ok}")
     print(f"latency_avg: {avg_ms:.3f} ms")
