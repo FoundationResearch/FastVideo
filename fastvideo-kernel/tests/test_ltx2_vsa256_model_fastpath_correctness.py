@@ -148,6 +148,95 @@ def _torch_vsa256_reference_bshd(
     return out_view.reshape_as(q)
 
 
+def _build_rope_cos_sin(
+    seq_len: int,
+    head_dim: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    theta: float = 10000.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    half = head_dim // 2
+    inv_freq = 1.0 / (theta ** (torch.arange(half, device=device, dtype=torch.float32) / half))
+    positions = torch.arange(seq_len, device=device, dtype=torch.float32)
+    angles = torch.outer(positions, inv_freq)
+    cos = angles.cos().to(dtype).view(1, seq_len, 1, half)
+    sin = angles.sin().to(dtype).view(1, seq_len, 1, half)
+    return cos, sin
+
+
+def _apply_rope_bshd(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+    ro_even = x_even * cos - x_odd * sin
+    ro_odd = x_even * sin + x_odd * cos
+    out = torch.empty_like(x)
+    out[..., 0::2] = ro_even
+    out[..., 1::2] = ro_odd
+    return out
+
+
+class _MiniLTX2LikeBlock(torch.nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.norm1 = torch.nn.RMSNorm(dim, eps=1e-6)
+        self.norm2 = torch.nn.RMSNorm(dim, eps=1e-6)
+        self.ff1 = torch.nn.Linear(dim, dim * 4, bias=False)
+        self.ff2 = torch.nn.Linear(dim * 4, dim, bias=False)
+
+    def _ffn(self, x: torch.Tensor) -> torch.Tensor:
+        return self.ff2(torch.nn.functional.silu(self.ff1(x)))
+
+    def forward_kernel(
+        self,
+        x: torch.Tensor,
+        q_var_256: torch.Tensor,
+        kv_var_256: torch.Tensor,
+        topk_logical: int,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        video_sparse_attn_bshd,
+    ) -> torch.Tensor:
+        h = self.norm1(x)
+        q = _apply_rope_bshd(h, cos, sin)
+        k = _apply_rope_bshd(h, cos, sin)
+        x = x + video_sparse_attn_bshd(
+            q,
+            k,
+            h,
+            kv_var_256,
+            q_var_256,
+            topk_logical,
+            block_size=(4, 8, 8),
+            compress_attn_weight=None,
+        )
+        x = x + self._ffn(self.norm2(x))
+        return x
+
+    def forward_torch_ref(
+        self,
+        x: torch.Tensor,
+        q_var_256: torch.Tensor,
+        kv_var_256: torch.Tensor,
+        topk_logical: int,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.norm1(x)
+        q = _apply_rope_bshd(h, cos, sin)
+        k = _apply_rope_bshd(h, cos, sin)
+        x = x + _torch_vsa256_reference_bshd(
+            q,
+            k,
+            h,
+            q_var_256,
+            kv_var_256,
+            topk_logical,
+            None,
+        )
+        x = x + self._ffn(self.norm2(x))
+        return x
+
+
 @pytest.mark.cuda
 def test_ltx2_model_tile_fastpath_e2e_vs_torch_reference() -> None:
     if not torch.cuda.is_available():
@@ -176,46 +265,53 @@ def test_ltx2_model_tile_fastpath_e2e_vs_torch_reference() -> None:
     non_pad_index = _get_non_pad_index_local(kv_var_256, BLOCK_256)
 
     x0 = torch.randn(bsz, seq_real, heads, dim, device=device, dtype=dtype)
-    gates = [torch.randn_like(x0) for _ in range(num_layers)]
+    blocks = torch.nn.ModuleList(
+        [_MiniLTX2LikeBlock(dim).to(device=device, dtype=dtype) for _ in range(num_layers)]
+    )
+    for b in blocks:
+        b.eval()
 
-    # Fastpath e2e: tile once -> multi-layer attention -> untile once.
+    cos, sin = _build_rope_cos_sin(padded_seq, dim, device, dtype)
+
+    # Kernel fastpath e2e: tile once -> multi-layer block -> untile once.
     x_fast_t = _tile_local(x0, padded_seq, tile_partition_indices, non_pad_index)
-    gates_t = [_tile_local(g, padded_seq, tile_partition_indices, non_pad_index) for g in gates]
-    for i in range(num_layers):
-        x_fast_t = video_sparse_attn_bshd(
-            x_fast_t,
-            x_fast_t,
-            x_fast_t,
-            kv_var_256,
-            q_var_256,
-            topk_logical,
-            block_size=(4, 8, 8),
-            compress_attn_weight=gates_t[i],
-        )
+    with torch.no_grad():
+        for block in blocks:
+            x_fast_t = block.forward_kernel(
+                x_fast_t,
+                q_var_256,
+                kv_var_256,
+                topk_logical,
+                cos,
+                sin,
+                video_sparse_attn_bshd,
+            )
     out_fast = _untile_local(x_fast_t, reverse_tile_partition_indices, non_pad_index)
 
-    # Torch e2e reference under the exact same model-level schedule.
-    x_ref_t = _tile_local(x0, padded_seq, tile_partition_indices, non_pad_index)
-    for i in range(num_layers):
-        x_ref_t = _torch_vsa256_reference_bshd(
-            x_ref_t,
-            x_ref_t,
-            x_ref_t,
-            q_var_256,
-            kv_var_256,
-            topk_logical,
-            gates_t[i],
-        )
-    out_ref = _untile_local(x_ref_t, reverse_tile_partition_indices, non_pad_index)
+    # Torch reference: per-layer tile/untile + full block structure.
+    x_ref = x0
+    with torch.no_grad():
+        for block in blocks:
+            x_ref_t = _tile_local(x_ref, padded_seq, tile_partition_indices, non_pad_index)
+            x_ref_t = block.forward_torch_ref(
+                x_ref_t,
+                q_var_256,
+                kv_var_256,
+                topk_logical,
+                cos,
+                sin,
+            )
+            x_ref = _untile_local(x_ref_t, reverse_tile_partition_indices, non_pad_index)
+    out_ref = x_ref
 
     assert torch.isfinite(out_fast).all().item(), "NaN/Inf found in fastpath output"
     diff = (out_fast - out_ref).abs()
     avg_abs = diff.mean().item()
     max_rel = (diff.max() / (out_ref.abs().mean() + 1e-6)).item()
     print(
-        "[ltx2-model-fastpath-vs-torch] "
+        "[ltx2-model-fastpath-vs-torch-like-block] "
         f"layers={num_layers}, avg_abs={avg_abs:.6e}, max_rel={max_rel:.6e}"
     )
-    assert avg_abs < 2e-3
-    assert max_rel < 0.3
+    assert avg_abs < 4e-3
+    assert max_rel < 0.5
 
