@@ -63,6 +63,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--topk_logical", type=int, default=16)
     p.add_argument("--warmup", type=int, default=5)
     p.add_argument("--rep", type=int, default=20)
+    p.add_argument("--breakdown_rep", type=int, default=20)
+    p.add_argument("--wrapper_breakdown_rep", type=int, default=20)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--dtype", type=str, default="bf16", choices=["bf16", "fp16"])
     return p.parse_args()
@@ -173,7 +175,16 @@ def main() -> None:
     os.environ["FASTVIDEO_VSA_256_BACKEND"] = "cute"
 
     from flash_attn.cute import flash_attn_func
+    from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
+    from flash_attn.cute.interface import _flash_attn_fwd
     from fastvideo_kernel.block_sparse_attn_256 import block_sparse_attn_256
+    from fastvideo_kernel.block_sparse_attn_256 import _expand_vsa256_mask_and_sizes_to_128
+    from fastvideo_kernel.block_sparse_attn_cute_fwd import (
+        _aggregate_q_block_map,
+        _choose_q_sparse_block_size,
+        _get_vbs_mask_mod,
+        _map_to_index as _map_to_index_cute,
+    )
     from fastvideo_kernel.ops import video_sparse_attn
 
     args = parse_args()
@@ -252,6 +263,259 @@ def main() -> None:
             compress_attn_weight=None,
         )
 
+    logical_mask_fixed = logical_mask
+    mask_128_fixed = mask_128
+    sizes_256_fixed = kv_var_256
+
+    def _prep_logical_mask_only():
+        return _make_logical_mask(bs, h, q_blocks_256, kv_blocks_256, topk_logical)
+
+    def _prep_split_mask_only():
+        return _expand_mask_256_to_128(logical_mask_fixed)
+
+    def _prep_split_sizes_only():
+        return _expand_sizes_256_to_128(sizes_256_fixed)
+
+    def _prep_index_only():
+        return _map_to_index(mask_128_fixed)
+
+    def _prep_kernel_inputs_only():
+        m256 = _make_logical_mask(bs, h, q_blocks_256, kv_blocks_256, topk_logical)
+        m128 = _expand_mask_256_to_128(m256)
+        idx, cnt = _map_to_index(m128)
+        zcnt = torch.zeros_like(cnt)
+        zidx = torch.zeros_like(idx)
+        return idx, cnt, zidx, zcnt
+
+    # Wrapper-internal staged breakdown (block_sparse_attn_256 + cute_fwd).
+    def _wb_expand_256_to_128():
+        return _expand_vsa256_mask_and_sizes_to_128(logical_mask, kv_var_256)
+
+    mask_128_wb, sizes_128_wb = _wb_expand_256_to_128()
+    q_sparse_candidate = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+    q_block_size = q.shape[2] // mask_128_wb.shape[2]
+    kv_block_size = k.shape[2] // mask_128_wb.shape[3]
+    q_sparse_block_size = max(
+        q_block_size,
+        ((q_sparse_candidate + q_block_size - 1) // q_block_size) * q_block_size,
+    )
+
+    def _wb_aggregate_q_sparse_map():
+        return _aggregate_q_block_map(
+            mask_128_wb, q_sparse_block_size=q_sparse_block_size, q_block_size=q_block_size
+        )
+
+    sparse_map_wb = _wb_aggregate_q_sparse_map()
+
+    def _wb_split_full_partial():
+        kv_full = (sizes_128_wb == kv_block_size).view(1, 1, 1, -1)
+        kv_partial = ((sizes_128_wb > 0) & (sizes_128_wb < kv_block_size)).view(1, 1, 1, -1)
+        full_map = sparse_map_wb & kv_full
+        mask_map = sparse_map_wb & kv_partial
+        return full_map, mask_map
+
+    full_map_wb, mask_map_wb = _wb_split_full_partial()
+
+    def _wb_map_to_index_full():
+        return _map_to_index_cute(full_map_wb)
+
+    def _wb_map_to_index_mask():
+        return _map_to_index_cute(mask_map_wb)
+
+    full_idx_wb, full_cnt_wb = _wb_map_to_index_full()
+    mask_idx_wb, mask_cnt_wb = _wb_map_to_index_mask()
+    full_idx_wb = full_idx_wb.to(torch.int32).contiguous()
+    full_cnt_wb = full_cnt_wb.to(torch.int32).contiguous()
+    mask_idx_wb = mask_idx_wb.to(torch.int32).contiguous()
+    mask_cnt_wb = mask_cnt_wb.to(torch.int32).contiguous()
+
+    def _wb_build_sparse_tensors():
+        return BlockSparseTensorsTorch(
+            full_block_cnt=full_cnt_wb,
+            full_block_idx=full_idx_wb,
+            mask_block_cnt=mask_cnt_wb,
+            mask_block_idx=mask_idx_wb,
+            block_size=(q_sparse_block_size, kv_block_size),
+        )
+
+    sparse_tensors_wb = _wb_build_sparse_tensors()
+
+    def _wb_layout_transpose():
+        q_c_local = q.transpose(1, 2).contiguous()
+        k_c_local = k.transpose(1, 2).contiguous()
+        v_c_local = v.transpose(1, 2).contiguous()
+        return q_c_local, k_c_local, v_c_local
+
+    q_cute_wb, k_cute_wb, v_cute_wb = _wb_layout_transpose()
+
+    def _wb_flash_fwd_only():
+        return _flash_attn_fwd(
+            q_cute_wb,
+            k_cute_wb,
+            v_cute_wb,
+            m_block_size=128,
+            n_block_size=kv_block_size,
+            mask_mod=_get_vbs_mask_mod(kv_block_size),
+            block_sparse_tensors=sparse_tensors_wb,
+            aux_tensors=[sizes_128_wb],
+            causal=False,
+            return_lse=True,
+        )
+
+    out_wb_once, _lse_wb_once = _wb_flash_fwd_only()
+
+    def _wb_output_transpose():
+        return out_wb_once.transpose(1, 2).contiguous()
+
+    def _wb_pipeline_replay_total():
+        mask_128_local, sizes_128_local = _expand_vsa256_mask_and_sizes_to_128(
+            logical_mask, kv_var_256
+        )
+        q_sparse_candidate_local = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+        q_block_size_local = q.shape[2] // mask_128_local.shape[2]
+        kv_block_size_local = k.shape[2] // mask_128_local.shape[3]
+        q_sparse_block_size_local = max(
+            q_block_size_local,
+            ((q_sparse_candidate_local + q_block_size_local - 1) // q_block_size_local) * q_block_size_local,
+        )
+        sparse_map_local = _aggregate_q_block_map(
+            mask_128_local,
+            q_sparse_block_size=q_sparse_block_size_local,
+            q_block_size=q_block_size_local,
+        )
+        kv_full_local = (sizes_128_local == kv_block_size_local).view(1, 1, 1, -1)
+        kv_partial_local = ((sizes_128_local > 0) & (sizes_128_local < kv_block_size_local)).view(1, 1, 1, -1)
+        full_map_local = sparse_map_local & kv_full_local
+        mask_map_local = sparse_map_local & kv_partial_local
+        full_idx_local, full_cnt_local = _map_to_index_cute(full_map_local)
+        mask_idx_local, mask_cnt_local = _map_to_index_cute(mask_map_local)
+        full_idx_local = full_idx_local.to(torch.int32).contiguous()
+        full_cnt_local = full_cnt_local.to(torch.int32).contiguous()
+        mask_idx_local = mask_idx_local.to(torch.int32).contiguous()
+        mask_cnt_local = mask_cnt_local.to(torch.int32).contiguous()
+        sparse_tensors_local = BlockSparseTensorsTorch(
+            full_block_cnt=full_cnt_local,
+            full_block_idx=full_idx_local,
+            mask_block_cnt=mask_cnt_local,
+            mask_block_idx=mask_idx_local,
+            block_size=(q_sparse_block_size_local, kv_block_size_local),
+        )
+        q_c_local = q.transpose(1, 2).contiguous()
+        k_c_local = k.transpose(1, 2).contiguous()
+        v_c_local = v.transpose(1, 2).contiguous()
+        out_local, _lse_local = _flash_attn_fwd(
+            q_c_local,
+            k_c_local,
+            v_c_local,
+            m_block_size=128,
+            n_block_size=kv_block_size_local,
+            mask_mod=_get_vbs_mask_mod(kv_block_size_local),
+            block_sparse_tensors=sparse_tensors_local,
+            aux_tensors=[sizes_128_local],
+            causal=False,
+            return_lse=True,
+        )
+        return out_local.transpose(1, 2).contiguous()
+
+    def _wb_stage_events_avg(rep: int) -> dict:
+        keys = [
+            "expand_256_to_128",
+            "aggregate_q_sparse_map",
+            "split_full_partial_map",
+            "map_to_index_full",
+            "map_to_index_mask",
+            "index_to_int_contiguous",
+            "build_sparse_tensors",
+            "layout_transpose",
+            "flash_attn_fwd_only",
+            "output_transpose",
+        ]
+        accum = {k: 0.0 for k in keys}
+        for _ in range(rep):
+            torch.cuda.synchronize()
+            t0 = torch.cuda.Event(enable_timing=True)
+            t1 = torch.cuda.Event(enable_timing=True)
+            t2 = torch.cuda.Event(enable_timing=True)
+            t3 = torch.cuda.Event(enable_timing=True)
+            t4 = torch.cuda.Event(enable_timing=True)
+            t5 = torch.cuda.Event(enable_timing=True)
+            t6 = torch.cuda.Event(enable_timing=True)
+            t7 = torch.cuda.Event(enable_timing=True)
+            t8 = torch.cuda.Event(enable_timing=True)
+            t9 = torch.cuda.Event(enable_timing=True)
+            t10 = torch.cuda.Event(enable_timing=True)
+
+            t0.record()
+            mask_128_local, sizes_128_local = _expand_vsa256_mask_and_sizes_to_128(logical_mask, kv_var_256)
+            t1.record()
+            q_sparse_candidate_local = _choose_q_sparse_block_size(q.shape[2], m_block_size=128)
+            q_block_size_local = q.shape[2] // mask_128_local.shape[2]
+            kv_block_size_local = k.shape[2] // mask_128_local.shape[3]
+            q_sparse_block_size_local = max(
+                q_block_size_local,
+                ((q_sparse_candidate_local + q_block_size_local - 1) // q_block_size_local) * q_block_size_local,
+            )
+            sparse_map_local = _aggregate_q_block_map(
+                mask_128_local,
+                q_sparse_block_size=q_sparse_block_size_local,
+                q_block_size=q_block_size_local,
+            )
+            t2.record()
+            kv_full_local = (sizes_128_local == kv_block_size_local).view(1, 1, 1, -1)
+            kv_partial_local = ((sizes_128_local > 0) & (sizes_128_local < kv_block_size_local)).view(1, 1, 1, -1)
+            full_map_local = sparse_map_local & kv_full_local
+            mask_map_local = sparse_map_local & kv_partial_local
+            t3.record()
+            full_idx_local, full_cnt_local = _map_to_index_cute(full_map_local)
+            t4.record()
+            mask_idx_local, mask_cnt_local = _map_to_index_cute(mask_map_local)
+            t5.record()
+            full_idx_local = full_idx_local.to(torch.int32).contiguous()
+            full_cnt_local = full_cnt_local.to(torch.int32).contiguous()
+            mask_idx_local = mask_idx_local.to(torch.int32).contiguous()
+            mask_cnt_local = mask_cnt_local.to(torch.int32).contiguous()
+            t6.record()
+            sparse_tensors_local = BlockSparseTensorsTorch(
+                full_block_cnt=full_cnt_local,
+                full_block_idx=full_idx_local,
+                mask_block_cnt=mask_cnt_local,
+                mask_block_idx=mask_idx_local,
+                block_size=(q_sparse_block_size_local, kv_block_size_local),
+            )
+            t7.record()
+            q_c_local = q.transpose(1, 2).contiguous()
+            k_c_local = k.transpose(1, 2).contiguous()
+            v_c_local = v.transpose(1, 2).contiguous()
+            t8.record()
+            out_local, _lse_local = _flash_attn_fwd(
+                q_c_local,
+                k_c_local,
+                v_c_local,
+                m_block_size=128,
+                n_block_size=kv_block_size_local,
+                mask_mod=_get_vbs_mask_mod(kv_block_size_local),
+                block_sparse_tensors=sparse_tensors_local,
+                aux_tensors=[sizes_128_local],
+                causal=False,
+                return_lse=True,
+            )
+            t9.record()
+            _ = out_local.transpose(1, 2).contiguous()
+            t10.record()
+            torch.cuda.synchronize()
+
+            accum["expand_256_to_128"] += t0.elapsed_time(t1)
+            accum["aggregate_q_sparse_map"] += t1.elapsed_time(t2)
+            accum["split_full_partial_map"] += t2.elapsed_time(t3)
+            accum["map_to_index_full"] += t3.elapsed_time(t4)
+            accum["map_to_index_mask"] += t4.elapsed_time(t5)
+            accum["index_to_int_contiguous"] += t5.elapsed_time(t6)
+            accum["build_sparse_tensors"] += t6.elapsed_time(t7)
+            accum["layout_transpose"] += t7.elapsed_time(t8)
+            accum["flash_attn_fwd_only"] += t8.elapsed_time(t9)
+            accum["output_transpose"] += t9.elapsed_time(t10)
+        return {k: v / rep for k, v in accum.items()}
+
     out, lse = _kernel_only()
     out_finite = torch.isfinite(out).all().item()
     lse_finite = True if lse is None else torch.isfinite(lse).all().item()
@@ -263,6 +527,52 @@ def main() -> None:
     manual_e2e_ms = bench_ms(_manual_e2e, warmup=args.warmup, rep=args.rep)
     wrapper_sparse_ms = bench_ms(_wrapper_sparse_only, warmup=args.warmup, rep=args.rep)
     wrapper_e2e_ms = bench_ms(_wrapper_e2e, warmup=args.warmup, rep=args.rep)
+    prep_logical_ms = bench_ms(
+        _prep_logical_mask_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+    )
+    prep_split_mask_ms = bench_ms(
+        _prep_split_mask_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+    )
+    prep_split_sizes_ms = bench_ms(
+        _prep_split_sizes_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+    )
+    prep_index_ms = bench_ms(
+        _prep_index_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+    )
+    prep_kernel_inputs_ms = bench_ms(
+        _prep_kernel_inputs_only, warmup=max(1, args.warmup // 2), rep=args.breakdown_rep
+    )
+    wb_expand_ms = bench_ms(
+        _wb_expand_256_to_128, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_aggregate_ms = bench_ms(
+        _wb_aggregate_q_sparse_map, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_split_full_partial_ms = bench_ms(
+        _wb_split_full_partial, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_map_full_ms = bench_ms(
+        _wb_map_to_index_full, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_map_mask_ms = bench_ms(
+        _wb_map_to_index_mask, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_sparse_tensor_ms = bench_ms(
+        _wb_build_sparse_tensors, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_layout_ms = bench_ms(
+        _wb_layout_transpose, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_flash_ms = bench_ms(
+        _wb_flash_fwd_only, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_out_transpose_ms = bench_ms(
+        _wb_output_transpose, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_pipeline_replay_total_ms = bench_ms(
+        _wb_pipeline_replay_total, warmup=max(1, args.warmup // 2), rep=args.wrapper_breakdown_rep
+    )
+    wb_stage_evt = _wb_stage_events_avg(max(1, args.wrapper_breakdown_rep))
 
     kernel_tflops = flops / kernel_ms * 1e-12 * 1e3
     manual_tflops = flops / manual_e2e_ms * 1e-12 * 1e3
@@ -287,6 +597,39 @@ def main() -> None:
     print(f"manual_e2e:  {manual_e2e_ms:.3f} ms | {manual_tflops:.2f} TFLOPs (approx)")
     print(f"wrapper_sparse_only: {wrapper_sparse_ms:.3f} ms | {wrapper_sparse_tflops:.2f} TFLOPs (approx)")
     print(f"wrapper_e2e(video_sparse_attn): {wrapper_e2e_ms:.3f} ms | {wrapper_e2e_tflops:.2f} TFLOPs (approx)")
+    print("breakdown(prep+kernel):")
+    print(f"  prep.logical_mask(topk):         {prep_logical_ms:.3f} ms")
+    print(f"  prep.split_kv_mask(256->128):    {prep_split_mask_ms:.3f} ms")
+    print(f"  prep.split_kv_sizes(256->128):   {prep_split_sizes_ms:.3f} ms")
+    print(f"  prep.map_to_index:               {prep_index_ms:.3f} ms")
+    print(f"  prep.kernel_inputs_total:        {prep_kernel_inputs_ms:.3f} ms")
+    print(f"  kernel_only:                     {kernel_ms:.3f} ms")
+    print("wrapper_internal_breakdown(block_sparse_attn_256 + cute_fwd):")
+    print(f"  wb.expand_256_to_128(mask+sizes): {wb_expand_ms:.3f} ms")
+    print(f"  wb.aggregate_q_sparse_map:        {wb_aggregate_ms:.3f} ms")
+    print(f"  wb.split_full_partial_map:        {wb_split_full_partial_ms:.3f} ms")
+    print(f"  wb.map_to_index(full):            {wb_map_full_ms:.3f} ms")
+    print(f"  wb.map_to_index(mask):            {wb_map_mask_ms:.3f} ms")
+    print(f"  wb.build_sparse_tensors:          {wb_sparse_tensor_ms:.3f} ms")
+    print(f"  wb.layout_transpose:              {wb_layout_ms:.3f} ms")
+    print(f"  wb.flash_attn_fwd_only:           {wb_flash_ms:.3f} ms")
+    print(f"  wb.output_transpose:              {wb_out_transpose_ms:.3f} ms")
+    print(
+        f"  wb.pipeline_replay_total:         {wb_pipeline_replay_total_ms:.3f} ms "
+        "(single-call staged replay)"
+    )
+    print("wrapper_internal_stage_events(single-call, additive):")
+    print(f"  evt.expand_256_to_128:            {wb_stage_evt['expand_256_to_128']:.3f} ms")
+    print(f"  evt.aggregate_q_sparse_map:       {wb_stage_evt['aggregate_q_sparse_map']:.3f} ms")
+    print(f"  evt.split_full_partial_map:       {wb_stage_evt['split_full_partial_map']:.3f} ms")
+    print(f"  evt.map_to_index_full:            {wb_stage_evt['map_to_index_full']:.3f} ms")
+    print(f"  evt.map_to_index_mask:            {wb_stage_evt['map_to_index_mask']:.3f} ms")
+    print(f"  evt.index_to_int_contiguous:      {wb_stage_evt['index_to_int_contiguous']:.3f} ms")
+    print(f"  evt.build_sparse_tensors:         {wb_stage_evt['build_sparse_tensors']:.3f} ms")
+    print(f"  evt.layout_transpose:             {wb_stage_evt['layout_transpose']:.3f} ms")
+    print(f"  evt.flash_attn_fwd_only:          {wb_stage_evt['flash_attn_fwd_only']:.3f} ms")
+    print(f"  evt.output_transpose:             {wb_stage_evt['output_transpose']:.3f} ms")
+    print(f"  evt.stage_sum:                    {sum(wb_stage_evt.values()):.3f} ms")
 
 
 if __name__ == "__main__":
