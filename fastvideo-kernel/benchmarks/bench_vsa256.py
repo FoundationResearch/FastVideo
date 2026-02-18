@@ -159,7 +159,7 @@ def main() -> None:
     from flash_attn.cute.block_sparsity import BlockSparseTensorsTorch
     from flash_attn.cute.interface import _flash_attn_fwd
     from fastvideo_kernel.block_sparse_attn_256 import (
-        block_sparse_attn_256,
+        block_sparse_attn_256_bshd,
         _expand_vsa256_mask_and_sizes_to_128,
     )
     from fastvideo_kernel.block_sparse_attn_cute_fwd import (
@@ -168,7 +168,7 @@ def main() -> None:
         _get_vbs_mask_mod,
         _map_to_index as _map_to_index_cute,
     )
-    from fastvideo_kernel.ops import video_sparse_attn
+    from fastvideo_kernel.ops import video_sparse_attn_bshd
 
     args = parse_args()
     if not (1 <= args.vbs_min <= args.vbs_max <= KV_BLOCK_LOGICAL):
@@ -284,19 +284,19 @@ def main() -> None:
             return idx, cnt, zidx, zcnt
 
         def _wrapper_sparse_only():
-            return block_sparse_attn_256(
-                q,
-                k,
-                v,
+            return block_sparse_attn_256_bshd(
+                q_c,
+                k_c,
+                v_c,
                 logical_mask,
                 variable_block_sizes_256,
             )
 
         def _wrapper_e2e():
-            return video_sparse_attn(
-                q,
-                k,
-                v,
+            return video_sparse_attn_bshd(
+                q_c,
+                k_c,
+                v_c,
                 variable_block_sizes_256,
                 q_variable_block_sizes_256,
                 topk_logical,
@@ -304,7 +304,7 @@ def main() -> None:
                 compress_attn_weight=None,
             )
 
-        # Wrapper-internal staged breakdown (block_sparse_attn_256 + cute_fwd).
+        # Wrapper-internal staged breakdown (block_sparse_attn_256_bshd + cute_fwd_bshd).
         def _wb_expand_256_to_128():
             return _expand_vsa256_mask_and_sizes_to_128(logical_mask, variable_block_sizes_256)
 
@@ -359,10 +359,8 @@ def main() -> None:
         use_vbs_mask = bool((sizes_128_wb > 0).any().item() and (sizes_128_wb < kv_block_size).any().item())
 
         def _wb_layout_transpose():
-            q_c = q.transpose(1, 2).contiguous()
-            k_c2 = k.transpose(1, 2).contiguous()
-            v_c2 = v.transpose(1, 2).contiguous()
-            return q_c, k_c2, v_c2
+            # BSHD fast path: layout conversion is bypassed.
+            return q_c, k_c, v_c
 
         q_cute_wb, k_cute_wb, v_cute_wb = _wb_layout_transpose()
 
@@ -383,7 +381,8 @@ def main() -> None:
         out_wb_once, _lse_wb_once = _wb_flash_fwd_only()
 
         def _wb_output_transpose():
-            return out_wb_once.transpose(1, 2).contiguous()
+            # BSHD fast path: output is already in desired layout.
+            return out_wb_once
 
         def _wb_pipeline_replay_total():
             mask_128_local, sizes_128_local = _expand_vsa256_mask_and_sizes_to_128(
@@ -421,9 +420,9 @@ def main() -> None:
                 mask_block_idx=mask_idx_local,
                 block_size=(q_sparse_block_size_local, kv_block_size_local),
             )
-            q_c_local = q.transpose(1, 2).contiguous()
-            k_c_local = k.transpose(1, 2).contiguous()
-            v_c_local = v.transpose(1, 2).contiguous()
+            q_c_local = q_c
+            k_c_local = k_c
+            v_c_local = v_c
             use_vbs_mask_local = bool(
                 (sizes_128_local > 0).any().item()
                 and (sizes_128_local < kv_block_size_local).any().item()
@@ -440,7 +439,7 @@ def main() -> None:
                 causal=False,
                 return_lse=True,
             )
-            return out_local.transpose(1, 2).contiguous()
+            return out_local
 
         def _wb_stage_events_avg(rep: int) -> dict:
             keys = [
@@ -514,9 +513,9 @@ def main() -> None:
                     block_size=(q_sparse_block_size_local, kv_block_size_local),
                 )
                 t7.record()
-                q_c_local = q.transpose(1, 2).contiguous()
-                k_c_local = k.transpose(1, 2).contiguous()
-                v_c_local = v.transpose(1, 2).contiguous()
+                q_c_local = q_c
+                k_c_local = k_c
+                v_c_local = v_c
                 t8.record()
                 use_vbs_mask_local = bool(
                     (sizes_128_local > 0).any().item()
@@ -535,7 +534,7 @@ def main() -> None:
                     return_lse=True,
                 )
                 t9.record()
-                _ = out_local.transpose(1, 2).contiguous()
+                _ = out_local
                 t10.record()
                 torch.cuda.synchronize()
                 t11.record()
@@ -634,7 +633,7 @@ def main() -> None:
             f"{wrapper_sparse_tflops:.2f} TFLOPs (approx)"
         )
         print(
-            f"wrapper_e2e(video_sparse_attn): {wrapper_e2e_ms:.3f} ms | "
+            f"wrapper_e2e(video_sparse_attn_bshd): {wrapper_e2e_ms:.3f} ms | "
             f"{wrapper_e2e_tflops:.2f} TFLOPs (approx)"
         )
         print("breakdown(prep+kernel):")
@@ -644,7 +643,7 @@ def main() -> None:
         print(f"  prep.map_to_index:               {prep_index_ms:.3f} ms")
         print(f"  prep.kernel_inputs_total:        {prep_kernel_inputs_ms:.3f} ms")
         print(f"  kernel_only:                     {kernel_ms:.3f} ms")
-        print("wrapper_internal_breakdown(block_sparse_attn_256 + cute_fwd):")
+        print("wrapper_internal_breakdown(block_sparse_attn_256_bshd + cute_fwd_bshd):")
         print(f"  wb.expand_256_to_128(mask+sizes): {wb_expand_ms:.3f} ms")
         print(f"  wb.aggregate_q_sparse_map:        {wb_aggregate_ms:.3f} ms")
         print(f"  wb.split_full_partial_map:        {wb_split_full_partial_ms:.3f} ms")
