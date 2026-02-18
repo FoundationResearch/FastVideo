@@ -215,12 +215,29 @@ def video_sparse_attn_bshd(
         e4 = torch.cuda.Event(enable_timing=True)
         e0.record()
 
+    token_idx = torch.arange(block_elements, device=q.device, dtype=torch.int32)
+    q_token_valid = (
+        token_idx.view(1, -1) < q_variable_block_sizes.view(-1, 1)
+    ).view(1, q_num_blocks, block_elements, 1, 1)
+    kv_token_valid = (
+        token_idx.view(1, -1) < variable_block_sizes.view(-1, 1)
+    ).view(1, kv_num_blocks, block_elements, 1, 1)
+
     q_c = q.view(batch, q_num_blocks, block_elements, heads, dim)
     k_c = k.view(batch, kv_num_blocks, block_elements, heads, dim)
     v_c = v.view(batch, kv_num_blocks, block_elements, heads, dim)
-    q_c = (q_c.float().sum(dim=2) / q_variable_block_sizes.view(1, -1, 1, 1)).to(q.dtype)
-    k_c = (k_c.float().sum(dim=2) / variable_block_sizes.view(1, -1, 1, 1)).to(k.dtype)
-    v_c = (v_c.float().sum(dim=2) / variable_block_sizes.view(1, -1, 1, 1)).to(v.dtype)
+    q_c = (
+        (q_c.float() * q_token_valid).sum(dim=2) /
+        q_variable_block_sizes.view(1, -1, 1, 1)
+    ).to(q.dtype)
+    k_c = (
+        (k_c.float() * kv_token_valid).sum(dim=2) /
+        variable_block_sizes.view(1, -1, 1, 1)
+    ).to(k.dtype)
+    v_c = (
+        (v_c.float() * kv_token_valid).sum(dim=2) /
+        variable_block_sizes.view(1, -1, 1, 1)
+    ).to(v.dtype)
     q_ch = q_c.permute(0, 2, 1, 3).contiguous()
     k_ch = k_c.permute(0, 2, 1, 3).contiguous()
     v_ch = v_c.permute(0, 2, 1, 3).contiguous()

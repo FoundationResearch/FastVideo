@@ -106,12 +106,20 @@ def _torch_vsa256_reference_bshd(
     q_block = seq // q_blocks
     kv_block = k.shape[1] // kv_blocks
 
+    token_idx = torch.arange(q_block, device=q.device, dtype=torch.int32)
+    q_token_valid = (
+        token_idx.view(1, -1) < q_var.view(-1, 1)
+    ).view(1, q_blocks, q_block, 1, 1)
+    kv_token_idx = torch.arange(kv_block, device=k.device, dtype=torch.int32)
+    kv_token_valid_2d = kv_token_idx.view(1, -1) < kv_var.view(-1, 1)
+    kv_token_valid = kv_token_valid_2d.view(1, kv_blocks, kv_block, 1, 1)
+
     q_c = q.view(bsz, q_blocks, q_block, heads, dim)
     k_c = k.view(bsz, kv_blocks, kv_block, heads, dim)
     v_c = v.view(bsz, kv_blocks, kv_block, heads, dim)
-    q_c = (q_c.float().sum(dim=2) / q_var.view(1, -1, 1, 1)).to(q.dtype)
-    k_c = (k_c.float().sum(dim=2) / kv_var.view(1, -1, 1, 1)).to(k.dtype)
-    v_c = (v_c.float().sum(dim=2) / kv_var.view(1, -1, 1, 1)).to(v.dtype)
+    q_c = ((q_c.float() * q_token_valid).sum(dim=2) / q_var.view(1, -1, 1, 1)).to(q.dtype)
+    k_c = ((k_c.float() * kv_token_valid).sum(dim=2) / kv_var.view(1, -1, 1, 1)).to(k.dtype)
+    v_c = ((v_c.float() * kv_token_valid).sum(dim=2) / kv_var.view(1, -1, 1, 1)).to(v.dtype)
     q_ch = q_c.permute(0, 2, 1, 3).contiguous()
     k_ch = k_c.permute(0, 2, 1, 3).contiguous()
     v_ch = v_c.permute(0, 2, 1, 3).contiguous()
@@ -124,9 +132,7 @@ def _torch_vsa256_reference_bshd(
     topk_idx = torch.topk(scores, topk_logical, dim=-1).indices
     block_mask = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, topk_idx, True)
 
-    token_idx = torch.arange(kv_block, device=kv_var.device, dtype=torch.int32)
-    kv_token_valid_by_block = (token_idx.view(1, -1) < kv_var.view(-1, 1)).to(torch.bool)
-    kv_token_valid = kv_token_valid_by_block.reshape(1, 1, 1, kv_blocks * kv_block)
+    kv_token_valid = kv_token_valid_2d.to(torch.bool).reshape(1, 1, 1, kv_blocks * kv_block)
     token_mask = block_mask.repeat_interleave(q_block, dim=2).repeat_interleave(kv_block, dim=3)
     token_mask = token_mask & kv_token_valid
 
