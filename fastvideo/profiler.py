@@ -38,15 +38,15 @@ logger = init_logger(__name__)
 _GLOBAL_PROFILER: torch.profiler.profile | None = None
 _GLOBAL_CONTROLLER: TorchProfilerController | None = None
 
-os.environ["FASTVIDEO_TORCH_PROFILER_DIR"] = "/mnt/weka/home/hao.zhang/mhuo/FastVideo/profiling"
-os.environ["FASTVIDEO_TORCH_PROFILE_REGIONS"] = "profiler_region_inference_denoising_step"
-os.environ["FASTVIDEO_TORCH_PROFILER_RECORD_SHAPES"] = "0"
-os.environ["FASTVIDEO_TORCH_PROFILER_WITH_PROFILE_MEMORY"] = "0"
-os.environ["FASTVIDEO_TORCH_PROFILER_WITH_STACK"] = "0"
-os.environ["FASTVIDEO_TORCH_PROFILER_WITH_FLOPS"] = "0"
-os.environ["FASTVIDEO_TORCH_PROFILER_WAIT_STEPS"] = "0"
-os.environ["FASTVIDEO_TORCH_PROFILER_WARMUP_STEPS"] = "0"
-os.environ["FASTVIDEO_TORCH_PROFILER_ACTIVE_STEPS"] = "1"
+# os.environ["FASTVIDEO_TORCH_PROFILER_DIR"] = "/tmp/profiling"
+# os.environ["FASTVIDEO_TORCH_PROFILE_REGIONS"] = "profiler_region_inference_denoising_step"
+# os.environ["FASTVIDEO_TORCH_PROFILER_RECORD_SHAPES"] = "0"
+# os.environ["FASTVIDEO_TORCH_PROFILER_WITH_PROFILE_MEMORY"] = "0"
+# os.environ["FASTVIDEO_TORCH_PROFILER_WITH_STACK"] = "0"
+# os.environ["FASTVIDEO_TORCH_PROFILER_WITH_FLOPS"] = "0"
+# os.environ["FASTVIDEO_TORCH_PROFILER_WAIT_STEPS"] = "0"
+# os.environ["FASTVIDEO_TORCH_PROFILER_WARMUP_STEPS"] = "0"
+# os.environ["FASTVIDEO_TORCH_PROFILER_ACTIVE_STEPS"] = "1"
 
 
 @dataclass(frozen=True)
@@ -107,10 +107,14 @@ def list_profiler_regions() -> list[ProfilerRegion]:
     return [_REGISTERED_REGIONS[name] for name in sorted(_REGISTERED_REGIONS)]
 
 
-_DEFAULT_ACTIVITIES: tuple[torch.profiler.ProfilerActivity, ...] = (
-    torch.profiler.ProfilerActivity.CPU,
-    torch.profiler.ProfilerActivity.CUDA,
-)
+def _get_profiler_activities() -> tuple[torch.profiler.ProfilerActivity, ...]:
+    """CUDA-only avoids Kineto 'toggling CPU/GPU' warning and trace-export hangs."""
+    if envs.FASTVIDEO_TORCH_PROFILER_CUDA_ONLY:
+        return (torch.profiler.ProfilerActivity.CUDA,)
+    return (
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.CUDA,
+    )
 
 
 def get_global_profiler() -> torch.profiler.profile | None:
@@ -204,8 +208,9 @@ def get_or_create_profiler(trace_dir: str | None) -> TorchProfilerController:
 
     if not trace_dir:
         logger.info("Torch profiler disabled; returning no-op controller")
-        return TorchProfilerController(None, _DEFAULT_ACTIVITIES, disabled=True)
+        return TorchProfilerController(None, _get_profiler_activities(), disabled=True)
 
+    activities = _get_profiler_activities()
     logger.info("Profiling enabled. Traces will be saved to: %s", trace_dir)
     logger.info(
         "Profiler config: record_shapes=%s, profile_memory=%s, with_stack=%s, with_flops=%s",
@@ -218,7 +223,7 @@ def get_or_create_profiler(trace_dir: str | None) -> TorchProfilerController:
                 envs.FASTVIDEO_TORCH_PROFILE_REGIONS)
 
     profiler = torch.profiler.profile(
-        activities=_DEFAULT_ACTIVITIES,
+        activities=activities,
         record_shapes=envs.FASTVIDEO_TORCH_PROFILER_RECORD_SHAPES,
         profile_memory=envs.FASTVIDEO_TORCH_PROFILER_WITH_PROFILE_MEMORY,
         with_stack=envs.FASTVIDEO_TORCH_PROFILER_WITH_STACK,
@@ -231,7 +236,7 @@ def get_or_create_profiler(trace_dir: str | None) -> TorchProfilerController:
         on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir,
                                                                 use_gzip=True),
     )
-    controller = TorchProfilerController(profiler, _DEFAULT_ACTIVITIES)
+    controller = TorchProfilerController(profiler, activities)
     controller.start()
     logger.info("Torch profiler started")
     return controller
@@ -410,8 +415,10 @@ class TorchProfilerController:
                         "PROFILER: Setting collection to False upon exiting region %s",
                         region)
                     self._set_collection(False)
-                    # Advance the profiler schedule to trigger trace export
-                    self._profiler.step()
+                    # Export on shutdown (FASTVIDEO_TORCH_PROFILER_EXPORT_ON_SHUTDOWN=1)
+                    # to avoid blocking inference; otherwise trigger export here.
+                    if not envs.FASTVIDEO_TORCH_PROFILER_EXPORT_ON_SHUTDOWN:
+                        self._profiler.step()
 
     def start(self) -> None:
         """Start the profiler and pause collection until a region is entered."""
@@ -433,6 +440,9 @@ class TorchProfilerController:
             return
 
         logger.info("PROFILER: Stopping profiler...")
+        if envs.FASTVIDEO_TORCH_PROFILER_EXPORT_ON_SHUTDOWN:
+            self._set_collection(False)
+            self._profiler.step()
         self._profiler.stop()
         logger.info("PROFILER: Profiler stopped")
         self._active_region_depth = 0

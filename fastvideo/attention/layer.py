@@ -99,13 +99,15 @@ class DistributedAttention(nn.Module):
         ctx_attn_metadata = forward_context.attn_metadata
 
         # Stack QKV
-        qkv = torch.cat([q, k, v],
-                        dim=0)  # [3*batch, seq_len, num_heads, head_dim]
+        with torch.cuda.nvtx.range("attn::cat_qkv"):
+            qkv = torch.cat([q, k, v],
+                            dim=0)  # [3*batch, seq_len, num_heads, head_dim]
 
         # Redistribute heads across sequence dimension
-        qkv = sequence_model_parallel_all_to_all_4D(qkv,
-                                                    scatter_dim=2,
-                                                    gather_dim=1)
+        with torch.cuda.nvtx.range("attn::all_to_all_scatter_heads"):
+            qkv = sequence_model_parallel_all_to_all_4D(qkv,
+                                                        scatter_dim=2,
+                                                        gather_dim=1)
 
         # After all-to-all, each rank has the full sequence but only a subset of heads
         # The attention mask should now apply to the full sequence length
@@ -118,13 +120,13 @@ class DistributedAttention(nn.Module):
             qkv = qkv[:, :valid_seq_len, :, :]
 
         if freqs_cis is not None:
-            cos, sin = freqs_cis
-            qkv[:batch_size * 2] = _apply_rotary_emb(qkv[:batch_size * 2],
-                                                     cos,
-                                                     sin,
-                                                     is_neox_style=False)
+            with torch.cuda.nvtx.range("attn::rotary_emb"):
+                cos, sin = freqs_cis
+                qkv[:batch_size * 2] = _apply_rotary_emb(
+                    qkv[:batch_size * 2], cos, sin, is_neox_style=False)
         # Apply backend-specific preprocess_qkv
-        qkv = self.attn_impl.preprocess_qkv(qkv, ctx_attn_metadata)
+        with torch.cuda.nvtx.range("attn::preprocess_qkv"):
+            qkv = self.attn_impl.preprocess_qkv(qkv, ctx_attn_metadata)
 
         # Concatenate with replicated QKV if provided
         if replicated_q is not None:
@@ -140,7 +142,8 @@ class DistributedAttention(nn.Module):
 
         q, k, v = qkv.chunk(3, dim=0)
 
-        output = self.attn_impl.forward(q, k, v, ctx_attn_metadata)
+        with torch.cuda.nvtx.range("attn::flash_attn_forward"):
+            output = self.attn_impl.forward(q, k, v, ctx_attn_metadata)
 
         # Redistribute back if using sequence parallelism
         replicated_output = None
@@ -149,18 +152,22 @@ class DistributedAttention(nn.Module):
             replicated_output = output[:, split_idx:]
             output = output[:, :split_idx]
             # TODO: make this asynchronous
-            replicated_output = sequence_model_parallel_all_gather(
-                replicated_output.contiguous(), dim=2)
+            with torch.cuda.nvtx.range("attn::all_gather_replicated"):
+                replicated_output = sequence_model_parallel_all_gather(
+                    replicated_output.contiguous(), dim=2)
         # Apply backend-specific postprocess_output
-        output = self.attn_impl.postprocess_output(output, ctx_attn_metadata)
+        with torch.cuda.nvtx.range("attn::postprocess_output"):
+            output = self.attn_impl.postprocess_output(output,
+                                                       ctx_attn_metadata)
 
         if attention_mask is not None:
             pad_len = (attention_mask[0] == 0).sum().item()
             output = torch.nn.functional.pad(output, (0, 0, 0, 0, 0, pad_len))
 
-        output = sequence_model_parallel_all_to_all_4D(output,
-                                                       scatter_dim=1,
-                                                       gather_dim=2)
+        with torch.cuda.nvtx.range("attn::all_to_all_gather_heads"):
+            output = sequence_model_parallel_all_to_all_4D(output,
+                                                           scatter_dim=1,
+                                                           gather_dim=2)
 
         return output, replicated_output
 

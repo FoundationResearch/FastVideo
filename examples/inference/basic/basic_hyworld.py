@@ -134,7 +134,7 @@ class HYWorldVideoGenerator(VideoGenerator):
         for x in videos:
             x = torchvision.utils.make_grid(x, nrow=6)
             x = x.transpose(0, 1).transpose(1, 2).squeeze(-1)
-            frames.append((x * 255).numpy().astype(np.uint8))
+            frames.append((x.cpu() * 255).numpy().astype(np.uint8))
 
         # Save video if requested
         if batch.save_video:
@@ -176,6 +176,9 @@ def main():
     parser.add_argument("--resolution", type=str, default="480p", help="Only support 480p for now")
     args = parser.parse_args()
 
+# 15 61
+# 31 125
+# 63 253
     # Automatically determine resolution from input image
     HEIGHT, WIDTH = get_resolution_from_image(args.image, args.resolution)
     print(f"Image: {args.image}")
@@ -214,6 +217,7 @@ def main():
         seed=args.seed,
         pose=args.pose,
         num_inference_steps=1,
+        sigmas=None,
     )
     elapsed = time.time() - start_time
 

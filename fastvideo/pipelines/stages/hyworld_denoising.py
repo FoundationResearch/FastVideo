@@ -173,8 +173,10 @@ class HYWorldDenoisingStage(DenoisingStage):
         trace_dir = envs.FASTVIDEO_TORCH_PROFILER_DIR
         profiler_controller = get_or_create_profiler(trace_dir)
 
-        # Wrap entire denoising loop with profiler
-        with profiler_controller.region("profiler_region_inference_denoising_step"):
+        # Wrap entire denoising loop with profiler + NVTX range for nsys capture
+        # with profiler_controller.region("profiler_region_inference_denoising_step"):
+        torch.cuda.cudart().cudaProfilerStart()
+        with torch.cuda.nvtx.range("dit_noise"):
             # Main chunk processing loop
             for chunk_i in range(chunk_num):
                 if chunk_i > 0:
@@ -381,6 +383,8 @@ class HYWorldDenoisingStage(DenoisingStage):
                             (i + 1) % self.scheduler.order == 0
                                 and progress_bar is not None):
                             progress_bar.update()
+
+        torch.cuda.cudart().cudaProfilerStop()
 
         # Handle trajectory output
         trajectory_tensor: torch.Tensor | None = None

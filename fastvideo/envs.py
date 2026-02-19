@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     FASTVIDEO_TORCH_PROFILER_WAIT_STEPS: int = 2
     FASTVIDEO_TORCH_PROFILER_WARMUP_STEPS: int = 1
     FASTVIDEO_TORCH_PROFILER_ACTIVE_STEPS: int = 2
+    FASTVIDEO_TORCH_PROFILER_CUDA_ONLY: bool = True
+    FASTVIDEO_TORCH_PROFILER_EXPORT_ON_SHUTDOWN: bool = True
     FASTVIDEO_TORCH_PROFILE_REGIONS: str = ""
     FASTVIDEO_SERVER_DEV_MODE: bool = False
     FASTVIDEO_STAGE_LOGGING: bool = False
@@ -262,6 +264,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Defaults to 2 if not set.
     "FASTVIDEO_TORCH_PROFILER_ACTIVE_STEPS":
     lambda: int(os.getenv("FASTVIDEO_TORCH_PROFILER_ACTIVE_STEPS", "2")),
+    # CUDA-only avoids "Toggling CPU/GPU activity" and trace-export hangs.
+    "FASTVIDEO_TORCH_PROFILER_CUDA_ONLY":
+    lambda: bool(os.getenv("FASTVIDEO_TORCH_PROFILER_CUDA_ONLY", "1") != "0"),
+    # Export trace on shutdown instead of when region exits (avoids blocking inference).
+    "FASTVIDEO_TORCH_PROFILER_EXPORT_ON_SHUTDOWN":
+    lambda: bool(os.getenv("FASTVIDEO_TORCH_PROFILER_EXPORT_ON_SHUTDOWN", "1") != "0"),
     "FASTVIDEO_TORCH_PROFILE_REGIONS":
     lambda: os.getenv("FASTVIDEO_TORCH_PROFILE_REGIONS", ""),
 
