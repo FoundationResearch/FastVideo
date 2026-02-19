@@ -110,19 +110,19 @@ def _measure_mode(
 
     times_ms: list[float] = []
     last_out: dict | None = None
-    for _ in range(args.rep):
+    for rep_idx in range(args.rep):
         reset_dispatch_log()
         t0 = time.perf_counter()
-        last_out = _generate_once(generator, args, mode_name, save_video=False)
+        save_this_rep = args.save_video and (rep_idx == args.rep - 1)
+        last_out = _generate_once(
+            generator,
+            args,
+            mode_name,
+            save_video=save_this_rep,
+        )
         torch.cuda.synchronize()
         t1 = time.perf_counter()
         times_ms.append((t1 - t0) * 1000.0)
-
-    # Optional video save is done once after timing to avoid I/O skewing e2e latency.
-    if args.save_video:
-        reset_dispatch_log()
-        _ = _generate_once(generator, args, mode_name, save_video=True)
-        torch.cuda.synchronize()
 
     assert last_out is not None and "samples" in last_out
     stats = {
@@ -205,13 +205,6 @@ def main() -> None:
         VSA_sparsity=args.vsa_sparsity,
     )
 
-    old_stats, old_out = _measure_mode(
-        generator=generator,
-        args=args,
-        mode_name="tile_old_way",
-        tile_fastpath=False,
-        reset_dispatch_log=reset_vsa_dispatch_log,
-    )
     fast_stats, fast_out = _measure_mode(
         generator=generator,
         args=args,
@@ -219,10 +212,17 @@ def main() -> None:
         tile_fastpath=True,
         reset_dispatch_log=reset_vsa_dispatch_log,
     )
+    old_stats, old_out = _measure_mode(
+        generator=generator,
+        args=args,
+        mode_name="tile_old_way",
+        tile_fastpath=False,
+        reset_dispatch_log=reset_vsa_dispatch_log,
+    )
 
     ssim_stats = _compute_video_ssim(
-        old_out["samples"],
         fast_out["samples"],
+        old_out["samples"],
         use_ms_ssim=args.use_ms_ssim,
     )
 
@@ -237,19 +237,19 @@ def main() -> None:
         f"steps={args.num_inference_steps}, dtype={args.dtype}, "
         f"num_gpus={args.num_gpus}, vsa_sparsity={args.vsa_sparsity}"
     )
-    print("mode: tile_old_way (FASTVIDEO_LTX2_TILE_FASTPATH=0)")
-    print(
-        f"  avg: {old_stats['avg']:.3f} ms, p50: {old_stats['p50']:.3f} ms, "
-        f"p90: {old_stats['p90']:.3f} ms, min: {old_stats['min']:.3f} ms"
-    )
     print("mode: tile_fastpath (FASTVIDEO_LTX2_TILE_FASTPATH=1)")
     print(
         f"  avg: {fast_stats['avg']:.3f} ms, p50: {fast_stats['p50']:.3f} ms, "
         f"p90: {fast_stats['p90']:.3f} ms, min: {fast_stats['min']:.3f} ms"
     )
+    print("mode: tile_old_way (FASTVIDEO_LTX2_TILE_FASTPATH=0)")
+    print(
+        f"  avg: {old_stats['avg']:.3f} ms, p50: {old_stats['p50']:.3f} ms, "
+        f"p90: {old_stats['p90']:.3f} ms, min: {old_stats['min']:.3f} ms"
+    )
     print(f"speedup(old_avg / fast_avg): {speedup:.3f}x")
     print(
-        f"{metric_name}(old vs fast): mean={ssim_stats['mean']:.6f}, "
+        f"{metric_name}(fast vs old): mean={ssim_stats['mean']:.6f}, "
         f"min={ssim_stats['min']:.6f}@frame{int(ssim_stats['min_frame_idx'])}, "
         f"max={ssim_stats['max']:.6f}@frame{int(ssim_stats['max_frame_idx'])}"
     )
