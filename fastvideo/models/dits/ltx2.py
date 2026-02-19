@@ -36,6 +36,10 @@ from fastvideo.platforms import AttentionBackendEnum
 logger = init_logger(__name__)
 
 
+def _use_ltx2_tile_fastpath() -> bool:
+    return os.getenv("FASTVIDEO_LTX2_TILE_FASTPATH", "0") == "1"
+
+
 def get_timestep_embedding(
     timesteps: torch.Tensor,
     embedding_dim: int,
@@ -2333,6 +2337,7 @@ class LTX2Transformer3DModel(CachableDiT):
         self.num_attention_heads = arch.num_attention_heads
         self.num_channels_latents = arch.num_channels_latents
         self._logged_attention_mask = False
+        self._logged_ltx2_tile_fastpath = False
 
         if os.getenv("LTX2_DEBUG_DETAIL", "0") == "1":
             detail_path = os.getenv("LTX2_PIPELINE_DEBUG_DETAIL_PATH", "")
@@ -2478,6 +2483,64 @@ class LTX2Transformer3DModel(CachableDiT):
             last_pos = positions[:, :, -1:, :].expand(-1, -1, padding_needed, -1)
             positions = torch.cat([positions, last_pos], dim=2)
 
+        # Model-level one-tile fastpath for LTX2 VSA:
+        # tile latent/timestep/positions once here, and untile once before unpatchify.
+        ltx2_one_tile_reverse_index = None
+        ltx2_one_tile_non_pad_index = None
+        if (_use_ltx2_tile_fastpath() and sp_world_size == 1
+                and os.getenv("FASTVIDEO_ATTENTION_BACKEND", "") == "VIDEO_SPARSE_ATTN"):
+            attn_metadata = getattr(forward_ctx, "attn_metadata", None) if forward_ctx is not None else None
+            has_tile_metadata = (
+                attn_metadata is not None
+                and hasattr(attn_metadata, "tile_partition_indices")
+                and hasattr(attn_metadata, "non_pad_index")
+                and hasattr(attn_metadata, "reverse_tile_partition_indices")
+            )
+            if has_tile_metadata:
+                tile_partition_indices = attn_metadata.tile_partition_indices
+                non_pad_index = attn_metadata.non_pad_index
+                reverse_tile_partition_indices = attn_metadata.reverse_tile_partition_indices
+                src_seq_len = int(tile_partition_indices.shape[0])
+                dst_seq_len = int(non_pad_index.shape[0])
+                if latents.shape[1] == src_seq_len and video_timestep.shape[1] == src_seq_len:
+                    latents_tiled = latents.new_zeros((latents.shape[0], dst_seq_len, latents.shape[2]))
+                    latents_tiled[:, non_pad_index] = latents[:, tile_partition_indices]
+                    latents = latents_tiled
+
+                    timestep_tiled = video_timestep.new_zeros((video_timestep.shape[0], dst_seq_len))
+                    timestep_tiled[:, non_pad_index] = video_timestep[:, tile_partition_indices]
+                    video_timestep = timestep_tiled
+
+                    positions_tiled = positions.new_zeros(
+                        (positions.shape[0], positions.shape[1], dst_seq_len, positions.shape[3]))
+                    positions_tiled[:, :, non_pad_index] = positions[:, :, tile_partition_indices]
+                    positions = positions_tiled
+
+                    ltx2_one_tile_reverse_index = reverse_tile_partition_indices
+                    ltx2_one_tile_non_pad_index = non_pad_index
+                    if not self._logged_ltx2_tile_fastpath:
+                        logger.info(
+                            "LTX2 one-tile fastpath enabled: seq_len %d -> %d",
+                            src_seq_len,
+                            dst_seq_len,
+                        )
+                        self._logged_ltx2_tile_fastpath = True
+                elif not self._logged_ltx2_tile_fastpath:
+                    logger.warning(
+                        "LTX2 one-tile fastpath skipped due to seq_len mismatch: "
+                        "latents=%d timestep=%d metadata=%d",
+                        latents.shape[1],
+                        video_timestep.shape[1],
+                        src_seq_len,
+                    )
+                    self._logged_ltx2_tile_fastpath = True
+            elif not self._logged_ltx2_tile_fastpath:
+                logger.warning(
+                    "LTX2 one-tile fastpath requested but VSA tile metadata is unavailable; "
+                    "falling back to per-layer tile/untile."
+                )
+                self._logged_ltx2_tile_fastpath = True
+
         video_modality = Modality(
             enabled=True,
             latent=latents,
@@ -2580,6 +2643,9 @@ class LTX2Transformer3DModel(CachableDiT):
                 audio_out,
                 audio_modality.timesteps,
             )
+
+        if video_out is not None and ltx2_one_tile_non_pad_index is not None and ltx2_one_tile_reverse_index is not None:
+            video_out = video_out[:, ltx2_one_tile_non_pad_index][:, ltx2_one_tile_reverse_index]
 
         # Gather and unpad video output
         if sp_world_size > 1 and video_out is not None:

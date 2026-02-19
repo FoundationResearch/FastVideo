@@ -40,6 +40,10 @@ def _dispatch_log_enabled() -> bool:
     return os.environ.get("FASTVIDEO_VSA_DISPATCH_LOG", "0") == "1"
 
 
+def _use_ltx2_tile_fastpath() -> bool:
+    return os.environ.get("FASTVIDEO_LTX2_TILE_FASTPATH", "0") == "1"
+
+
 def _log_dispatch_once(route_key: str, message: str) -> None:
     if (not _dispatch_log_enabled()) or route_key in _VSA_DISPATCH_LOGGED:
         return
@@ -266,6 +270,12 @@ class VideoSparseAttentionImpl(AttentionImpl):
         qkv: torch.Tensor,
         attn_metadata: VideoSparseAttentionMetadata,
     ) -> torch.Tensor:
+        if _use_ltx2_tile_fastpath():
+            _log_dispatch_once(
+                "ltx2_model_level_one_tile_preprocess_skip",
+                "route=ltx2_model_level_one_tile preprocess_qkv=skip_per_layer_tile",
+            )
+            return qkv
         return self.tile(qkv, attn_metadata.num_tiles,
                          attn_metadata.tile_partition_indices,
                          attn_metadata.non_pad_index)
@@ -275,6 +285,12 @@ class VideoSparseAttentionImpl(AttentionImpl):
         output: torch.Tensor,
         attn_metadata: VideoSparseAttentionMetadata,
     ) -> torch.Tensor:
+        if _use_ltx2_tile_fastpath():
+            _log_dispatch_once(
+                "ltx2_model_level_one_tile_postprocess_skip",
+                "route=ltx2_model_level_one_tile postprocess_output=skip_per_layer_untile",
+            )
+            return output
         return self.untile(output, attn_metadata.reverse_tile_partition_indices,
                            attn_metadata.non_pad_index)
 
