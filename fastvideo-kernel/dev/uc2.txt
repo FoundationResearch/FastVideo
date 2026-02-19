@@ -79,7 +79,3 @@ modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 ### 11) VSA vs Full attention e2e
 set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_STAGE_LOGGING=1 python fastvideo-kernel/benchmarks/bench_ltx2_upstream_e2e_compare.py --num_frames 121 --height 1088 --width 1920 --num_inference_steps 8 --warmup 1 --rep 1 --dtype bf16"
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
-
----
-
-如果你愿意，我下一步可以再给你一个“一键全跑”的 fish 脚本（按上面顺序串行执行，每步失败即停止，并自动保存每一步日志到本地文件）。
