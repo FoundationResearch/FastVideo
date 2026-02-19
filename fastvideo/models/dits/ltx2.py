@@ -2501,18 +2501,20 @@ class LTX2Transformer3DModel(CachableDiT):
                 non_pad_index = attn_metadata.non_pad_index
                 reverse_tile_partition_indices = attn_metadata.reverse_tile_partition_indices
                 src_seq_len = int(tile_partition_indices.shape[0])
-                dst_seq_len = int(non_pad_index.shape[0])
+                # non_pad_index stores positions in the padded layout, so its
+                # values can be much larger than its length.
+                padded_seq_len = int(non_pad_index.max().item()) + 1
                 if latents.shape[1] == src_seq_len and video_timestep.shape[1] == src_seq_len:
-                    latents_tiled = latents.new_zeros((latents.shape[0], dst_seq_len, latents.shape[2]))
+                    latents_tiled = latents.new_zeros((latents.shape[0], padded_seq_len, latents.shape[2]))
                     latents_tiled[:, non_pad_index] = latents[:, tile_partition_indices]
                     latents = latents_tiled
 
-                    timestep_tiled = video_timestep.new_zeros((video_timestep.shape[0], dst_seq_len))
+                    timestep_tiled = video_timestep.new_zeros((video_timestep.shape[0], padded_seq_len))
                     timestep_tiled[:, non_pad_index] = video_timestep[:, tile_partition_indices]
                     video_timestep = timestep_tiled
 
                     positions_tiled = positions.new_zeros(
-                        (positions.shape[0], positions.shape[1], dst_seq_len, positions.shape[3]))
+                        (positions.shape[0], positions.shape[1], padded_seq_len, positions.shape[3]))
                     positions_tiled[:, :, non_pad_index] = positions[:, :, tile_partition_indices]
                     positions = positions_tiled
 
@@ -2522,7 +2524,7 @@ class LTX2Transformer3DModel(CachableDiT):
                         logger.info(
                             "LTX2 one-tile fastpath enabled: seq_len %d -> %d",
                             src_seq_len,
-                            dst_seq_len,
+                            padded_seq_len,
                         )
                         self._logged_ltx2_tile_fastpath = True
                 elif not self._logged_ltx2_tile_fastpath:
