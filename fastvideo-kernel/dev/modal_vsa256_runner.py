@@ -107,6 +107,9 @@ def run_remote(run_cmd: str) -> dict:
         if [ -f .gitmodules ]; then
           git submodule update --init --recursive
         fi
+        FINAL_SHA="$(git -C "${REPO_DIR}" rev-parse HEAD)"
+        FINAL_SUBJECT="$(git -C "${REPO_DIR}" log -1 --pretty=%s)"
+        echo "CHECKED_OUT_COMMIT=${FINAL_SHA} ${FINAL_SUBJECT}"
 
         export HF_HOME="${HF_HOME}"
         export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"

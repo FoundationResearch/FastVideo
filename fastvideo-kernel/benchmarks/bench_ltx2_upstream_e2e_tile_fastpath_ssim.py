@@ -95,13 +95,25 @@ def _generate_once(
 
 
 def _measure_mode(
-    generator,
     args: argparse.Namespace,
     mode_name: str,
     tile_fastpath: bool,
+    torch_dtype: torch.dtype,
     reset_dispatch_log,
 ) -> tuple[dict[str, float], dict]:
+    from fastvideo import VideoGenerator
+
     os.environ["FASTVIDEO_LTX2_TILE_FASTPATH"] = "1" if tile_fastpath else "0"
+    generator = VideoGenerator.from_pretrained(
+        args.model_path,
+        num_gpus=args.num_gpus,
+        torch_dtype=torch_dtype,
+        use_fsdp_inference=False,
+        dit_cpu_offload=False,
+        text_encoder_cpu_offload=False,
+        vae_cpu_offload=False,
+        VSA_sparsity=args.vsa_sparsity,
+    )
 
     for _ in range(args.warmup):
         reset_dispatch_log()
@@ -131,6 +143,9 @@ def _measure_mode(
         "p90": float(np.percentile(times_ms, 90)),
         "min": float(np.min(times_ms)),
     }
+    generator.shutdown()
+    del generator
+    torch.cuda.empty_cache()
     return stats, last_out
 
 
@@ -190,33 +205,22 @@ def main() -> None:
     os.environ.setdefault("FASTVIDEO_VSA_256", "1")
     os.environ.setdefault("FASTVIDEO_VSA_256_BACKEND", "cute")
 
-    from fastvideo import VideoGenerator
     from fastvideo.attention.backends.video_sparse_attn import reset_vsa_dispatch_log
 
     torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
-    generator = VideoGenerator.from_pretrained(
-        args.model_path,
-        num_gpus=args.num_gpus,
-        torch_dtype=torch_dtype,
-        use_fsdp_inference=False,
-        dit_cpu_offload=False,
-        text_encoder_cpu_offload=False,
-        vae_cpu_offload=False,
-        VSA_sparsity=args.vsa_sparsity,
-    )
 
     fast_stats, fast_out = _measure_mode(
-        generator=generator,
         args=args,
         mode_name="tile_fastpath",
         tile_fastpath=True,
+        torch_dtype=torch_dtype,
         reset_dispatch_log=reset_vsa_dispatch_log,
     )
     old_stats, old_out = _measure_mode(
-        generator=generator,
         args=args,
         mode_name="tile_old_way",
         tile_fastpath=False,
+        torch_dtype=torch_dtype,
         reset_dispatch_log=reset_vsa_dispatch_log,
     )
 
@@ -253,9 +257,6 @@ def main() -> None:
         f"min={ssim_stats['min']:.6f}@frame{int(ssim_stats['min_frame_idx'])}, "
         f"max={ssim_stats['max']:.6f}@frame{int(ssim_stats['max_frame_idx'])}"
     )
-
-    generator.shutdown()
-
 
 if __name__ == "__main__":
     main()
