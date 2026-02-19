@@ -40,21 +40,16 @@ def _dispatch_log_enabled() -> bool:
     return os.environ.get("FASTVIDEO_VSA_DISPATCH_LOG", "0") == "1"
 
 
-def _dispatch_log_always() -> bool:
-    return os.environ.get("FASTVIDEO_VSA_DISPATCH_LOG_ALWAYS", "0") == "1"
-
-
 def _use_ltx2_tile_fastpath() -> bool:
     return os.environ.get("FASTVIDEO_LTX2_TILE_FASTPATH", "0") == "1"
 
 
+def reset_vsa_dispatch_log() -> None:
+    _VSA_DISPATCH_LOGGED.clear()
+
+
 def _log_dispatch_once(route_key: str, message: str) -> None:
-    if not _dispatch_log_enabled():
-        return
-    if _dispatch_log_always():
-        logger.warning("=== [VSA DISPATCH] %s ===", message)
-        return
-    if route_key in _VSA_DISPATCH_LOGGED:
+    if (not _dispatch_log_enabled()) or route_key in _VSA_DISPATCH_LOGGED:
         return
     _VSA_DISPATCH_LOGGED.add(route_key)
     logger.warning("=== [VSA DISPATCH] %s ===", message)

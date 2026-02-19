@@ -99,16 +99,19 @@ def _measure_mode(
     args: argparse.Namespace,
     mode_name: str,
     tile_fastpath: bool,
+    reset_dispatch_log,
 ) -> tuple[dict[str, float], dict]:
     os.environ["FASTVIDEO_LTX2_TILE_FASTPATH"] = "1" if tile_fastpath else "0"
 
     for _ in range(args.warmup):
+        reset_dispatch_log()
         _ = _generate_once(generator, args, mode_name, save_video=False)
         torch.cuda.synchronize()
 
     times_ms: list[float] = []
     last_out: dict | None = None
     for _ in range(args.rep):
+        reset_dispatch_log()
         t0 = time.perf_counter()
         last_out = _generate_once(generator, args, mode_name, save_video=False)
         torch.cuda.synchronize()
@@ -117,6 +120,7 @@ def _measure_mode(
 
     # Optional video save is done once after timing to avoid I/O skewing e2e latency.
     if args.save_video:
+        reset_dispatch_log()
         _ = _generate_once(generator, args, mode_name, save_video=True)
         torch.cuda.synchronize()
 
@@ -185,10 +189,9 @@ def main() -> None:
     os.environ["FASTVIDEO_ATTENTION_BACKEND"] = "VIDEO_SPARSE_ATTN"
     os.environ.setdefault("FASTVIDEO_VSA_256", "1")
     os.environ.setdefault("FASTVIDEO_VSA_256_BACKEND", "cute")
-    # Force dispatch logs to print on every generate call (no dedup).
-    os.environ.setdefault("FASTVIDEO_VSA_DISPATCH_LOG_ALWAYS", "1")
 
     from fastvideo import VideoGenerator
+    from fastvideo.attention.backends.video_sparse_attn import reset_vsa_dispatch_log
 
     torch_dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
     generator = VideoGenerator.from_pretrained(
@@ -207,12 +210,14 @@ def main() -> None:
         args=args,
         mode_name="tile_old_way",
         tile_fastpath=False,
+        reset_dispatch_log=reset_vsa_dispatch_log,
     )
     fast_stats, fast_out = _measure_mode(
         generator=generator,
         args=args,
         mode_name="tile_fastpath",
         tile_fastpath=True,
+        reset_dispatch_log=reset_vsa_dispatch_log,
     )
 
     ssim_stats = _compute_video_ssim(
