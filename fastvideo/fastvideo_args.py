@@ -133,7 +133,7 @@ class FastVideoArgs:
     # CPU offload parameters
     dit_cpu_offload: bool = True
     use_fsdp_inference: bool = False
-    dit_layerwise_offload: bool = True
+    dit_layerwise_offload: bool = False
     text_encoder_cpu_offload: bool = True
     image_encoder_cpu_offload: bool = True
     vae_cpu_offload: bool = True
@@ -911,6 +911,13 @@ class TrainingArgs(FastVideoArgs):
     min_timestep_ratio: float = 0.2
     max_timestep_ratio: float = 0.98
     real_score_guidance_scale: float = 3.5
+    real_score_guidance_scale_video: float | None = None
+    real_score_guidance_scale_audio: float | None = None
+    real_score_stg_scale_video: float = 1.0
+    real_score_stg_scale_audio: float = 1.0
+    real_score_modality_scale_video: float = 0.0
+    real_score_modality_scale_audio: float = 0.0
+    real_score_rescale_scale: float = 0.0
     fake_score_learning_rate: float = 0.0  # separate learning rate for fake_score_transformer, if 0.0, use learning_rate
     fake_score_lr_scheduler: str = "constant"  # separate lr scheduler for fake_score_transformer, if not set, use lr_scheduler
     fake_score_betas: str = "0.9,0.999"  # betas for fake score optimizer, format: "beta1,beta2"
@@ -1299,6 +1306,51 @@ class TrainingArgs(FastVideoArgs):
                             type=float,
                             default=TrainingArgs.real_score_guidance_scale,
                             help="Teacher guidance scale")
+        parser.add_argument(
+            "--real-score-guidance-scale-video",
+            type=float,
+            default=TrainingArgs.real_score_guidance_scale_video,
+            help=
+            "Teacher guidance scale for video branch (defaults to --real-score-guidance-scale)",
+        )
+        parser.add_argument(
+            "--real-score-guidance-scale-audio",
+            type=float,
+            default=TrainingArgs.real_score_guidance_scale_audio,
+            help=
+            "Teacher guidance scale for audio branch (defaults to --real-score-guidance-scale)",
+        )
+        parser.add_argument(
+            "--real-score-stg-scale-video",
+            type=float,
+            default=TrainingArgs.real_score_stg_scale_video,
+            help="Teacher STG scale for video branch",
+        )
+        parser.add_argument(
+            "--real-score-stg-scale-audio",
+            type=float,
+            default=TrainingArgs.real_score_stg_scale_audio,
+            help="Teacher STG scale for audio branch",
+        )
+        parser.add_argument(
+            "--real-score-modality-scale-video",
+            type=float,
+            default=TrainingArgs.real_score_modality_scale_video,
+            help="Teacher cross-modal guidance scale for video branch",
+        )
+        parser.add_argument(
+            "--real-score-modality-scale-audio",
+            type=float,
+            default=TrainingArgs.real_score_modality_scale_audio,
+            help="Teacher cross-modal guidance scale for audio branch",
+        )
+        parser.add_argument(
+            "--real-score-rescale-scale",
+            type=float,
+            default=TrainingArgs.real_score_rescale_scale,
+            help=
+            "Teacher guidance rescale factor to reduce saturation (0 disables)",
+        )
         parser.add_argument("--fake-score-learning-rate",
                             type=float,
                             default=TrainingArgs.fake_score_learning_rate,
