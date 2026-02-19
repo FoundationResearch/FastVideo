@@ -71,8 +71,8 @@ def _measure_backend(
     from fastvideo import VideoGenerator
 
     os.environ["FASTVIDEO_ATTENTION_BACKEND"] = backend
-    # Explicitly benchmark current upstream per-layer tile/untile route.
-    os.environ["FASTVIDEO_LTX2_TILE_FASTPATH"] = "0"
+    # Allow external override; default remains upstream per-layer tile/untile.
+    os.environ.setdefault("FASTVIDEO_LTX2_TILE_FASTPATH", "0")
     os.environ.setdefault("FASTVIDEO_VSA_256", "1")
     os.environ.setdefault("FASTVIDEO_VSA_256_BACKEND", "cute")
 
