@@ -185,6 +185,8 @@ def main() -> None:
     os.environ["FASTVIDEO_ATTENTION_BACKEND"] = "VIDEO_SPARSE_ATTN"
     os.environ.setdefault("FASTVIDEO_VSA_256", "1")
     os.environ.setdefault("FASTVIDEO_VSA_256_BACKEND", "cute")
+    # Force dispatch logs to print on every generate call (no dedup).
+    os.environ.setdefault("FASTVIDEO_VSA_DISPATCH_LOG_ALWAYS", "1")
 
     from fastvideo import VideoGenerator
 

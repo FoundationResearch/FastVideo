@@ -77,7 +77,7 @@ set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_STAGE_LOGGING=1 python fastvideo-kernel/b
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 
 ### 11) VSA vs Full attention e2e
-set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_STAGE_LOGGING=1 FASTVIDEO_VSA_DISPATCH_LOG=1 FASTVIDEO_VSA_WRAPPER_PRINT=1 python fastvideo-kernel/benchmarks/bench_ltx2_upstream_e2e_compare.py --num_frames 121 --height 1088 --width 1920 --num_inference_steps 8 --warmup 1 --rep 1 --dtype bf16"
+set -x MODAL_VSA256_RUN_CMD "FASTVIDEO_STAGE_LOGGING=1 FASTVIDEO_VSA_DISPATCH_LOG=1 FASTVIDEO_VSA_WRAPPER_PRINT=1 FASTVIDEO_LTX2_TILE_FASTPATH=1 python fastvideo-kernel/benchmarks/bench_ltx2_upstream_e2e_compare.py --num_frames 121 --height 1088 --width 1920 --num_inference_steps 8 --warmup 1 --rep 1 --dtype bf16"
 modal run fastvideo-kernel/dev/modal_vsa256_runner.py
 
 ### 12) LTX upstream e2e: tile old way vs one-tile fastpath + SSIM
