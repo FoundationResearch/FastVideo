@@ -1,6 +1,5 @@
 from fastvideo import VideoGenerator
 
-
 PROMPT = (
     "A warm sunny backyard. The camera starts in a tight cinematic close-up "
     "of a woman and a man in their 30s, facing each other with serious "
@@ -17,26 +16,16 @@ PROMPT = (
 
 
 def main() -> None:
-    # Uses FastVideo default sampling settings for LTX2 base.
     generator = VideoGenerator.from_pretrained(
-        "Davids048/LTX2-Base-Diffusers",
-        num_gpus=8,
+        "FastVideo/LTX2-Distilled-Diffusers",
+        num_gpus=1,
     )
 
-    output_path = "outputs_video/ltx2_basic/output_ltx2_base_t2v_1088_1920_1.4.mp4"
+    output_path = "outputs_video/ltx2_basic/output_ltx2_distilled_t2v.mp4"
     generator.generate_video(
         prompt=PROMPT,
         output_path=output_path,
         save_video=True,
-        num_frames=121,
-        height=1088,
-        width=1920,
-        # LTX2 uses these parameters for multi-modal CFG instead of guidance_scale
-        # ltx2_cfg_scale_video=3.0,
-        # ltx2_cfg_scale_audio=7.0,
-        # ltx2_modality_scale_video=3.0,
-        # ltx2_modality_scale_audio=3.0,
-        # ltx2_rescale_scale=0.7,
     )
     generator.shutdown()
 

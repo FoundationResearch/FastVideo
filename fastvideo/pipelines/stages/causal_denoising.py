@@ -436,9 +436,9 @@ class CausalDMDDenosingStage(DenoisingStage):
                             dtype=dtype,
                             device=device),
                 "global_end_index":
-                0,
+                torch.tensor([0], dtype=torch.long, device=device),
                 "local_end_index":
-                0,
+                torch.tensor([0], dtype=torch.long, device=device),
             })
 
         return kv_cache1

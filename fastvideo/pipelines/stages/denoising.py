@@ -173,14 +173,6 @@ class DenoisingStage(PipelineStage):
             {
                 "mouse_cond": batch.mouse_cond,
                 "keyboard_cond": batch.keyboard_cond,
-                "c2ws_plucker_emb": batch.c2ws_plucker_emb,
-            },
-        )
-
-        camera_kwargs = self.prepare_extra_func_kwargs(
-            self.transformer.forward,
-            {
-                "camera_states": batch.camera_states,
             },
         )
 
@@ -435,7 +427,6 @@ class DenoisingStage(PipelineStage):
                             **image_kwargs,
                             **pos_cond_kwargs,
                             **action_kwargs,
-                            **camera_kwargs,
                             **timesteps_r_kwarg,
                         )
 
@@ -454,7 +445,6 @@ class DenoisingStage(PipelineStage):
                                 **image_kwargs,
                                 **neg_cond_kwargs,
                                 **action_kwargs,
-                                **camera_kwargs,
                                 **timesteps_r_kwarg,
                             )
 
