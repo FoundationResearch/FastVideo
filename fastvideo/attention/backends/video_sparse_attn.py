@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import functools
 import math
+import os
 from dataclasses import dataclass
 
 import torch
@@ -9,6 +10,10 @@ try:
     from fastvideo_kernel import video_sparse_attn
 except ImportError:
     video_sparse_attn = None
+try:
+    from fastvideo_kernel import video_sparse_attn_bshd
+except ImportError:
+    video_sparse_attn_bshd = None
 
 from typing import Any
 
@@ -20,7 +25,29 @@ from fastvideo.distributed import get_sp_group
 from fastvideo.logger import init_logger
 
 logger = init_logger(__name__)
-VSA_TILE_SIZE = (4, 4, 4)
+_VSA_DISPATCH_LOGGED: set[str] = set()
+
+
+def _use_vsa_256() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_256", "0") == "1"
+
+
+def _force_triton_vsa() -> bool:
+    return os.environ.get("FASTVIDEO_KERNEL_VSA_FORCE_TRITON", "0") == "1"
+
+
+def _dispatch_log_enabled() -> bool:
+    return os.environ.get("FASTVIDEO_VSA_DISPATCH_LOG", "0") == "1"
+
+
+def _log_dispatch_once(route_key: str, message: str) -> None:
+    if (not _dispatch_log_enabled()) or route_key in _VSA_DISPATCH_LOGGED:
+        return
+    _VSA_DISPATCH_LOGGED.add(route_key)
+    logger.warning("=== [VSA DISPATCH] %s ===", message)
+
+
+VSA_TILE_SIZE = (4, 8, 8) if _use_vsa_256() else (4, 4, 4)
 
 
 @functools.lru_cache(maxsize=10)
@@ -259,11 +286,6 @@ class VideoSparseAttentionImpl(AttentionImpl):
         gate_compress: torch.Tensor,
         attn_metadata: VideoSparseAttentionMetadata,
     ) -> torch.Tensor:
-        query = query.transpose(1, 2).contiguous()
-        key = key.transpose(1, 2).contiguous()
-        value = value.transpose(1, 2).contiguous()
-        gate_compress = gate_compress.transpose(1, 2).contiguous()
-
         VSA_sparsity = attn_metadata.VSA_sparsity
 
         cur_topk = math.ceil(
@@ -272,14 +294,50 @@ class VideoSparseAttentionImpl(AttentionImpl):
 
         if video_sparse_attn is None:
             raise NotImplementedError("video_sparse_attn is not installed")
-        hidden_states = video_sparse_attn(
-            query,
-            key,
-            value,
-            attn_metadata.variable_block_sizes,
-            attn_metadata.variable_block_sizes,
-            cur_topk,
-            block_size=VSA_TILE_SIZE,
-            compress_attn_weight=gate_compress).transpose(1, 2)
+        if _use_vsa_256() and (not _force_triton_vsa()) and video_sparse_attn_bshd is not None:
+            _log_dispatch_once(
+                "vsa256_bshd_fastpath",
+                "route=vsa256_bshd_fastpath backend=VIDEO_SPARSE_ATTN kernel=cute_bshd",
+            )
+            # Fast path: keep BSHD layout end-to-end for CuTe VSA256.
+            hidden_states = video_sparse_attn_bshd(
+                query,
+                key,
+                value,
+                attn_metadata.variable_block_sizes,
+                attn_metadata.variable_block_sizes,
+                cur_topk,
+                block_size=VSA_TILE_SIZE,
+                compress_attn_weight=gate_compress,
+            )
+        else:
+            if _use_vsa_256() and _force_triton_vsa():
+                _log_dispatch_once(
+                    "vsa256_forced_triton_legacy",
+                    "route=vsa256_legacy_path backend=VIDEO_SPARSE_ATTN kernel=forced_triton",
+                )
+            elif _use_vsa_256() and video_sparse_attn_bshd is None:
+                _log_dispatch_once(
+                    "vsa256_missing_bshd_legacy",
+                    "route=vsa256_legacy_path backend=VIDEO_SPARSE_ATTN reason=missing_video_sparse_attn_bshd",
+                )
+            else:
+                _log_dispatch_once(
+                    "vsa64_or_legacy_bhsd",
+                    "route=legacy_bhsd_path backend=VIDEO_SPARSE_ATTN",
+                )
+            query = query.transpose(1, 2).contiguous()
+            key = key.transpose(1, 2).contiguous()
+            value = value.transpose(1, 2).contiguous()
+            gate_compress = gate_compress.transpose(1, 2).contiguous()
+            hidden_states = video_sparse_attn(
+                query,
+                key,
+                value,
+                attn_metadata.variable_block_sizes,
+                attn_metadata.variable_block_sizes,
+                cur_topk,
+                block_size=VSA_TILE_SIZE,
+                compress_attn_weight=gate_compress).transpose(1, 2)
 
         return hidden_states
