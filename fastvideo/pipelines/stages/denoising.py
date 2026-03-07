@@ -175,7 +175,7 @@ class DenoisingStage(PipelineStage):
                                                   dtype=target_dtype),
                 },
             )
-            # from fastvideo.models.dits.wangame_lingbot.cam_utils import process_custom_actions as process_lingbot_actions
+            # Legacy action-conditioning helper removed.
             # num_frames = batch.num_frames
             # latent_height = batch.height // 8
             # latent_width = batch.width // 8

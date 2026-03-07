@@ -725,7 +725,7 @@ class MatrixGameCausalDenoisingStage(DenoisingStage):
 
 
 class MatrixGameCausalOdeDenoisingStage(MatrixGameCausalDenoisingStage):
-    """Causal ODE denoising for WanGame/MatrixGame.
+    """Causal ODE denoising for MatrixGame.
 
     This is the deterministic counterpart of `MatrixGameCausalDenoisingStage`.
     It performs block-by-block causal rollout, but uses the scheduler's ODE-style

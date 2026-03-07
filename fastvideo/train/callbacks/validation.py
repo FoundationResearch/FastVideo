@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Validation callback (unified replacement for WanValidator
-and WanGameValidator).
+"""Validation callback for inference-pipeline driven validation.
 
 All configuration is read from the YAML ``callbacks.validation``
 section.  The pipeline class is resolved from
@@ -56,7 +55,7 @@ class ValidationCallback(Callback):
 
     Works with any pipeline that follows the
     ``PipelineCls.from_pretrained(...)`` + ``pipeline.forward()``
-    contract (Wan, WanGame parallel, WanGame causal/DMD, etc.).
+    contract.
     """
 
     def __init__(
@@ -498,7 +497,7 @@ class ValidationCallback(Callback):
         )
         batch._inference_args = inference_args  # type: ignore[attr-defined]
 
-        # Conditionally set I2V / WanGame fields.
+        # Conditionally set I2V / action-conditioning fields.
         if (
             "image" in validation_batch
             and validation_batch["image"] is not None

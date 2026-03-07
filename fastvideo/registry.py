@@ -36,7 +36,7 @@ from fastvideo.configs.pipelines.wan import (
     MatrixGameI2V480PConfig, SelfForcingWan2_2_T2V480PConfig,
     SelfForcingWanT2V480PConfig, WANV2VConfig, Wan2_2_I2V_A14B_Config,
     Wan2_2_T2V_A14B_Config, Wan2_2_TI2V_5B_Config, WanI2V480PConfig,
-    WanI2V720PConfig, WanT2V480PConfig, WanT2V720PConfig, WanGameI2V480PConfig)
+    WanI2V720PConfig, WanT2V480PConfig, WanT2V720PConfig)
 from fastvideo.configs.pipelines.sd35 import SD35Config
 from fastvideo.configs.sample.base import SamplingParam
 from fastvideo.configs.sample.cosmos import (
@@ -549,15 +549,6 @@ def _register_configs() -> None:
             "FastVideo/SFWan2.2-I2V-A14B-Preview-Diffusers",
         ],
     )
-    register_configs(
-        sampling_param_cls=Wan2_1_Fun_1_3B_InP_SamplingParam,
-        pipeline_config_cls=WanGameI2V480PConfig,
-        hf_model_paths=[
-            "weizhou03/Wan2.1-Game-Fun-1.3B-InP-Diffusers",
-        ],
-    )
-    # TODO: Need to add Lingbot
-
     # SD3.5
     register_configs(
         sampling_param_cls=SD35SamplingParam,

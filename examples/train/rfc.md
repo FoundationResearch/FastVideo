@@ -8,9 +8,6 @@ fastvideo/train/
       base.py              # BaseModel ABC: predict_x0, add_noise, backward, ...
       wan/
           wan.py           # Wan model loader
-      wangame/
-          wangame.py       # WanGame model loader
-          wangame_causal.py
   methods/
       base.py              # DistillMethod base; methods provide train_one_step
       distribution_matching/
@@ -46,9 +43,9 @@ By this design, we only need a YAML config to train different models using diffe
 Models declare `_target_` to select the model class; methods declare `_target_` to select the method class.
 Current code: https://github.com/FoundationResearch/FastVideo/tree/distill1/fastvideo/train
 
-DMD2 Distillation, Self-Forcing, SFT, and DFSFT are tested on Wan / WanGame.
+DMD2 Distillation, Self-Forcing, SFT, and DFSFT are tested on Wan.
 
-Current supported models: Wan, WanGame.
+Current supported models: Wan.
 Current supported methods: DMD2, Self-Forcing, SFT, DFSFT.
 
 Feedbacks are highly welcome!
