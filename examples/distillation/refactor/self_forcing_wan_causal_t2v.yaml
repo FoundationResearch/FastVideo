@@ -1,11 +1,13 @@
 # Self-Forcing distillation: Wan 2.1 T2V 1.3B
 #   - Teacher: frozen bidirectional WanModel (40-step)
 #   - Student: trainable causal WanCausalModel (4-step)
-#   - Critic:  trainable causal WanCausalModel
+#   - Critic:  trainable bidirectional WanModel
 #
 # The teacher is bidirectional (WanModel) to provide high-quality
-# guidance, while the student and critic are causal (WanCausalModel)
-# for streaming inference.
+# guidance, while the student is causal (WanCausalModel) for
+# streaming inference. The critic is bidirectional (WanModel)
+# following the FastGen reference — it only needs to learn a
+# score function on full video, not stream autoregressively.
 
 models:
   student:
@@ -18,7 +20,7 @@ models:
     trainable: false
     disable_custom_init_weights: true
   critic:
-    _target_: fastvideo.train.models.wan.WanCausalModel
+    _target_: fastvideo.train.models.wan.WanModel
     init_from: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
     trainable: true
     disable_custom_init_weights: true
@@ -89,7 +91,7 @@ training:
     run_name: wan2.1_self_forcing_causal_4steps
 
   model:
-    enable_gradient_checkpointing_type: null
+    enable_gradient_checkpointing_type: full
 
 callbacks:
   grad_clip:
@@ -104,7 +106,7 @@ callbacks:
     sampler_kind: sde
     rollout_mode: streaming
     guidance_scale: 6.0
-    num_frames: 77
+    num_frames: 69
     dmd_denoising_steps: [1000, 750, 500, 250]
 
 pipeline:

@@ -68,6 +68,50 @@ class WanCausalModel(WanModel, CausalModelBase):
         self._streaming_caches.pop(
             (id(self), str(cache_tag)), None)
 
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    # IMPORTANT: _build_distill_input_kwargs override
+    #
+    # CausalWanTransformer3DModel._forward_train reshapes
+    # timestep_proj via:
+    #   timestep_proj.unflatten(dim=0, sizes=timestep.shape)
+    #
+    # This means it uses the TIMESTEP TENSOR'S OWN SHAPE to
+    # determine (batch_size, num_frames). If timestep is 1-D
+    # (e.g. [B] or [1]), unflatten produces the wrong shape
+    # and the downstream assertion fails:
+    #   assert e.shape == (bs, num_frames, 6, self.hidden_dim)
+    #
+    # This is unlike the other two DITs:
+    # - WanTransformer3DModel uses unflatten(1, (6, -1))
+    #   which is shape-agnostic.
+    # - CausalWanGameActionTransformer3DModel uses
+    #   .view(batch_size, post_patch_num_frames, 6, dim)
+    #   which derives B and T from hidden_states.
+    #
+    # We override here to always expand timestep to [B, T]
+    # before passing it to the causal DIT.
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    def _build_distill_input_kwargs(
+        self,
+        noise_input: torch.Tensor,
+        timestep: torch.Tensor,
+        text_dict: dict[str, torch.Tensor] | None,
+    ) -> dict[str, Any]:
+        # noise_input is [B, T, C, H, W] (BTCHW).
+        batch_size = int(noise_input.shape[0])
+        num_frames = int(noise_input.shape[1])
+        if timestep.ndim == 0:
+            timestep = (
+                timestep.view(1, 1)
+                .expand(batch_size, num_frames))
+        elif timestep.ndim == 1:
+            timestep = (
+                timestep.view(-1, 1)
+                .expand(batch_size, num_frames))
+        # ndim == 2: already [B, T], nothing to do.
+        return super()._build_distill_input_kwargs(
+            noise_input, timestep, text_dict)
+
     # --- CausalModelBase override: predict_noise_streaming ---
     def predict_noise_streaming(
         self,
