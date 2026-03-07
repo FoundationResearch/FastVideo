@@ -482,3 +482,361 @@ class CausalDMDDenosingStage(DenoisingStage):
             "negative_prompt_embeds", batch.negative_prompt_embeds, lambda x:
             not batch.do_classifier_free_guidance or V.list_not_empty(x))
         return result
+
+
+class CausalOdeDenoisingStage(CausalDMDDenosingStage):
+    """Causal ODE denoising for T2V.
+
+    Deterministic counterpart of ``CausalDMDDenosingStage``.
+    Performs block-by-block causal rollout using the scheduler's
+    ODE-style ``step()`` update (no re-noising between steps).
+    """
+
+    def forward(
+        self,
+        batch: ForwardBatch,
+        fastvideo_args: FastVideoArgs,
+    ) -> ForwardBatch:
+        timesteps = batch.timesteps
+        if timesteps is None:
+            raise ValueError(
+                "CausalOdeDenoisingStage requires batch.timesteps. "
+                "Make sure TimestepPreparationStage runs before "
+                "this stage.")
+
+        target_dtype = torch.bfloat16
+        autocast_enabled = (
+            target_dtype != torch.float32
+        ) and not fastvideo_args.disable_autocast
+
+        latent_seq_length = (
+            batch.latents.shape[-1] * batch.latents.shape[-2])
+        patch_ratio = (
+            self.transformer.config.arch_config.patch_size[-1]
+            * self.transformer.config.arch_config.patch_size[-2])
+        self.frame_seq_length = latent_seq_length // patch_ratio
+
+        timesteps = timesteps.to(get_local_torch_device())
+
+        boundary_ratio = getattr(
+            fastvideo_args.pipeline_config.dit_config,
+            "boundary_ratio", None)
+        if boundary_ratio is not None:
+            boundary_timestep = (
+                boundary_ratio
+                * self.scheduler.num_train_timesteps)
+        else:
+            boundary_timestep = None
+
+        image_kwargs: dict = {}
+        pos_cond_kwargs = self.prepare_extra_func_kwargs(
+            self.transformer.forward,
+            {
+                "encoder_attention_mask":
+                batch.prompt_attention_mask,
+            },
+        )
+
+        assert batch.latents is not None, (
+            "latents must be provided")
+        latents = batch.latents  # [B, C, T, H, W]
+        b, c, t, h, w = latents.shape
+        prompt_embeds = batch.prompt_embeds
+        assert torch.isnan(prompt_embeds[0]).sum() == 0
+
+        # Initialize caches
+        kv_cache1 = self._initialize_kv_cache(
+            batch_size=b, dtype=target_dtype,
+            device=latents.device)
+        kv_cache2 = None
+        if boundary_timestep is not None:
+            kv_cache2 = self._initialize_kv_cache(
+                batch_size=b, dtype=target_dtype,
+                device=latents.device)
+
+        def _get_kv_cache(ts: float) -> list[dict]:
+            if boundary_timestep is not None:
+                if ts >= boundary_timestep:
+                    return kv_cache1
+                else:
+                    assert kv_cache2 is not None
+                    return kv_cache2
+            return kv_cache1
+
+        crossattn_cache = self._initialize_crossattn_cache(
+            batch_size=b,
+            max_text_len=(
+                fastvideo_args.pipeline_config
+                .text_encoder_configs[0]
+                .arch_config.text_len),
+            dtype=target_dtype,
+            device=latents.device)
+
+        if t % self.num_frames_per_block != 0:
+            raise ValueError(
+                "num_frames must be divisible by "
+                "num_frames_per_block for causal ODE "
+                "denoising")
+        num_blocks = t // self.num_frames_per_block
+        block_sizes = [self.num_frames_per_block] * num_blocks
+        start_index = 0
+
+        if boundary_timestep is not None:
+            block_sizes[0] = 1
+
+        # Handle first frame (I2V)
+        first_frame_latent = None
+        if batch.pil_image is not None:
+            assert self.vae is not None, (
+                "VAE is not provided for causal video gen")
+            self.vae = self.vae.to(get_local_torch_device())
+            first_frame_latent = (
+                self.vae.encode(batch.pil_image).mean.float())
+            if (hasattr(self.vae, "shift_factor")
+                    and self.vae.shift_factor is not None):
+                if isinstance(
+                    self.vae.shift_factor, torch.Tensor
+                ):
+                    first_frame_latent -= (
+                        self.vae.shift_factor.to(
+                            first_frame_latent.device,
+                            first_frame_latent.dtype))
+                else:
+                    first_frame_latent -= self.vae.shift_factor
+            if isinstance(
+                self.vae.scaling_factor, torch.Tensor
+            ):
+                first_frame_latent = (
+                    first_frame_latent
+                    * self.vae.scaling_factor.to(
+                        first_frame_latent.device,
+                        first_frame_latent.dtype))
+            else:
+                first_frame_latent = (
+                    first_frame_latent
+                    * self.vae.scaling_factor)
+            if fastvideo_args.vae_cpu_offload:
+                self.vae = self.vae.to("cpu")
+
+            t_zero = torch.zeros(
+                [b, 1], device=latents.device,
+                dtype=torch.long)
+            with torch.autocast(
+                device_type="cuda",
+                dtype=target_dtype,
+                enabled=autocast_enabled,
+            ), set_forward_context(
+                current_timestep=0,
+                attn_metadata=None,
+                forward_batch=batch,
+            ):
+                self.transformer(
+                    first_frame_latent.to(target_dtype),
+                    prompt_embeds, t_zero,
+                    kv_cache=kv_cache1,
+                    crossattn_cache=crossattn_cache,
+                    current_start=(
+                        start_index * self.frame_seq_length),
+                    start_frame=start_index,
+                    **image_kwargs, **pos_cond_kwargs)
+                if boundary_timestep is not None:
+                    self.transformer_2(
+                        first_frame_latent.to(target_dtype),
+                        prompt_embeds, t_zero,
+                        kv_cache=kv_cache2,
+                        crossattn_cache=crossattn_cache,
+                        current_start=(
+                            start_index
+                            * self.frame_seq_length),
+                        start_frame=start_index,
+                        **image_kwargs, **pos_cond_kwargs)
+
+            start_index += 1
+            block_sizes.pop(0)
+            latents[:, :, :1, :, :] = first_frame_latent
+
+        extra_step_kwargs = self.prepare_extra_func_kwargs(
+            self.scheduler.step,
+            {
+                "generator": batch.generator,
+                "eta": batch.eta,
+            },
+        )
+
+        context_noise = getattr(
+            fastvideo_args.pipeline_config,
+            "context_noise", 0)
+
+        # ODE loop in causal blocks
+        with self.progress_bar(
+            total=len(block_sizes) * len(timesteps),
+        ) as progress_bar:
+            for current_num_frames in block_sizes:
+                current_latents = latents[
+                    :, :,
+                    start_index:start_index
+                    + current_num_frames, :, :]
+
+                self._reset_scheduler_state()
+
+                for i, t_cur in enumerate(timesteps):
+                    if (boundary_timestep is not None
+                            and t_cur < boundary_timestep):
+                        current_model = (
+                            self.transformer_2
+                            if self.transformer_2
+                            is not None
+                            else self.transformer)
+                    else:
+                        current_model = self.transformer
+
+                    latent_model_input = (
+                        current_latents.to(target_dtype))
+                    latent_model_input = (
+                        self.scheduler.scale_model_input(
+                            latent_model_input, t_cur))
+
+                    attn_metadata = None
+
+                    with torch.autocast(
+                        device_type="cuda",
+                        dtype=target_dtype,
+                        enabled=autocast_enabled,
+                    ), set_forward_context(
+                        current_timestep=i,
+                        attn_metadata=attn_metadata,
+                        forward_batch=batch,
+                    ):
+                        t_expanded = t_cur * torch.ones(
+                            (b, current_num_frames),
+                            device=latent_model_input.device,
+                            dtype=t_cur.dtype)
+
+                        model_kwargs = {
+                            "kv_cache": _get_kv_cache(t_cur),
+                            "crossattn_cache":
+                            crossattn_cache,
+                            "current_start": (
+                                start_index
+                                * self.frame_seq_length),
+                            "start_frame": start_index,
+                        }
+
+                        noise_pred = current_model(
+                            latent_model_input,
+                            prompt_embeds,
+                            t_expanded,
+                            **image_kwargs,
+                            **pos_cond_kwargs,
+                            **model_kwargs,
+                        )
+
+                    current_latents = self.scheduler.step(
+                        noise_pred,
+                        t_cur,
+                        current_latents,
+                        **extra_step_kwargs,
+                        return_dict=False,
+                    )[0]
+
+                    if progress_bar is not None:
+                        progress_bar.update()
+
+                latents[
+                    :, :,
+                    start_index:start_index
+                    + current_num_frames, :, :
+                ] = current_latents
+
+                # Update KV cache with clean context
+                t_context = torch.ones(
+                    [b], device=latents.device,
+                    dtype=torch.long) * int(context_noise)
+                context_bcthw = current_latents.to(
+                    target_dtype)
+                with torch.autocast(
+                    device_type="cuda",
+                    dtype=target_dtype,
+                    enabled=autocast_enabled,
+                ), set_forward_context(
+                    current_timestep=0,
+                    attn_metadata=None,
+                    forward_batch=batch,
+                ):
+                    t_expanded_ctx = t_context.unsqueeze(1)
+                    if boundary_timestep is not None:
+                        self.transformer_2(
+                            context_bcthw, prompt_embeds,
+                            t_expanded_ctx,
+                            kv_cache=kv_cache2,
+                            crossattn_cache=crossattn_cache,
+                            current_start=(
+                                start_index
+                                * self.frame_seq_length),
+                            start_frame=start_index,
+                            **image_kwargs,
+                            **pos_cond_kwargs)
+                    self.transformer(
+                        context_bcthw, prompt_embeds,
+                        t_expanded_ctx,
+                        kv_cache=kv_cache1,
+                        crossattn_cache=crossattn_cache,
+                        current_start=(
+                            start_index
+                            * self.frame_seq_length),
+                        start_frame=start_index,
+                        **image_kwargs,
+                        **pos_cond_kwargs)
+
+                start_index += current_num_frames
+
+        if boundary_timestep is not None:
+            num_frames_to_remove = (
+                self.num_frames_per_block - 1)
+            if num_frames_to_remove > 0:
+                latents = latents[
+                    :, :, :-num_frames_to_remove, :, :]
+
+        batch.latents = latents
+        return batch
+
+    def _reset_scheduler_state(self) -> None:
+        """Reset scheduler state for a new per-block
+        rollout."""
+        scheduler = self.scheduler
+        if hasattr(scheduler, "_step_index"):
+            scheduler._step_index = None
+        if hasattr(scheduler, "_begin_index"):
+            scheduler._begin_index = None
+        if hasattr(scheduler, "model_outputs") and hasattr(
+            scheduler, "config"
+        ):
+            try:
+                solver_order = int(
+                    getattr(
+                        scheduler.config,
+                        "solver_order", 0,
+                    ) or 0)
+            except Exception:
+                solver_order = 0
+            if solver_order > 0:
+                scheduler.model_outputs = [
+                    None] * solver_order
+        if hasattr(scheduler, "timestep_list") and hasattr(
+            scheduler, "config"
+        ):
+            try:
+                solver_order = int(
+                    getattr(
+                        scheduler.config,
+                        "solver_order", 0,
+                    ) or 0)
+            except Exception:
+                solver_order = 0
+            if solver_order > 0:
+                scheduler.timestep_list = [
+                    None] * solver_order
+        if hasattr(scheduler, "lower_order_nums"):
+            scheduler.lower_order_nums = 0
+        if hasattr(scheduler, "last_sample"):
+            scheduler.last_sample = None
