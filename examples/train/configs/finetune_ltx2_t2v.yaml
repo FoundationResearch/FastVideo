@@ -10,7 +10,7 @@
 models:
   student:
     _target_: fastvideo.train.models.ltx2.LTX2Model
-    init_from: Lightricks/LTX-Video-0.9.7-dev
+    init_from: FastVideo/LTX2-Diffusers
     trainable: true
     first_frame_conditioning_p: 0.0
     with_audio: false

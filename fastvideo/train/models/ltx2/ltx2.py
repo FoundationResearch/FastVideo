@@ -292,8 +292,7 @@ class LTX2Model(ModelBase):
         cfg_uncond: dict[str, Any] | None = None,
         attn_kind: Literal["dense", "vsa"] = "dense",
     ) -> torch.Tensor:
-        # LTX-2 directly outputs denoised, so we convert:
-        # x0 = noisy - velocity * sigma
+        # TODO: directly call forward here. so that avoid two f(f^-1(x)) call
         pred_velocity = self.predict_noise(
             noisy_latents, timestep, batch,
             conditional=conditional,
@@ -320,7 +319,7 @@ class LTX2Model(ModelBase):
             (loss / max(1, int(grad_accum_rounds))).backward()
 
     # ------------------------------------------------------------------
-    # Audio loss helper (called by LTX2-aware methods)
+    # Audio loss helper (currently unused)
     # ------------------------------------------------------------------
 
     def compute_audio_loss(
