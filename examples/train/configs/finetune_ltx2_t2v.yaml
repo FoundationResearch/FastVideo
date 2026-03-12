@@ -27,14 +27,14 @@ training:
     hsdp_shard_dim: 1
 
   data:
-    data_path: data/ltx2_training_data
+    data_path: data/ltx2_training_data_david/data
     dataloader_num_workers: 4
     train_batch_size: 1
     training_cfg_rate: 0.0
     seed: 1000
     num_latent_t: 16
-    num_height: 512
-    num_width: 768
+    num_height: 1088
+    num_width: 1920
     num_frames: 121
 
   optimizer:
@@ -66,3 +66,9 @@ callbacks:
   grad_clip:
     _target_: fastvideo.train.callbacks.grad_clip.GradNormClipCallback
     max_grad_norm: 1.0
+  validation:
+    _target_: fastvideo.train.callbacks.validation.ValidationCallback
+    pipeline_target: fastvideo.pipelines.basic.ltx2.ltx2_pipeline.LTX2Pipeline
+    dataset_file: data/ltx2_training_data_david/data/validation_prompts.json
+    every_steps: 100
+    sampling_steps: [8]

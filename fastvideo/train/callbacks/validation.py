@@ -279,11 +279,25 @@ class ValidationCallback(Callback):
             None,
         )
 
+        loaded_modules: dict[str, Any] = {
+            "transformer": transformer,
+        }
+        # Share already-loaded modules from the student
+        # (e.g. text_encoder for LTX-2) to avoid reloading.
+        student = getattr(self.method, "student", None)
+        if student is not None:
+            for attr in (
+                "text_encoder",
+                "vae",
+            ):
+                mod = getattr(student, attr, None)
+                if (mod is not None
+                        and isinstance(mod, torch.nn.Module)):
+                    loaded_modules[attr] = mod
+
         kwargs: dict[str, Any] = {
             "inference_mode": True,
-            "loaded_modules": {
-                "transformer": transformer,
-            },
+            "loaded_modules": loaded_modules,
             "tp_size": tc.distributed.tp_size,
             "sp_size": tc.distributed.sp_size,
             "num_gpus": tc.distributed.num_gpus,
@@ -335,10 +349,16 @@ class ValidationCallback(Callback):
         else:
             sampling_param.num_frames = int(default_num_frames)
 
+        vae_arch = (
+            tc.pipeline_config.vae_config.arch_config  # type: ignore[union-attr]
+        )
+        spatial_compression = int(
+            vae_arch.spatial_compression_ratio)
         latents_size = [
-            (sampling_param.num_frames - 1) // 4 + 1,
-            sampling_param.height // 8,
-            sampling_param.width // 8,
+            (sampling_param.num_frames - 1)
+            // temporal_compression_factor + 1,
+            sampling_param.height // spatial_compression,
+            sampling_param.width // spatial_compression,
         ]
         n_tokens = (latents_size[0] * latents_size[1] * latents_size[2])
 
