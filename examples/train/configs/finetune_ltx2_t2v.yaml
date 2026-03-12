@@ -1,0 +1,68 @@
+# LTX-2 T2V finetune config (video-only, precomputed data).
+#
+# Stress-test: LTX-2 uses continuous sigmas (not discrete scheduler),
+# per-token 2D timesteps, denoised output (not noise/velocity), and
+# optionally joint audio+video denoising.
+#
+# For audio training, set models.student.with_audio: true and provide
+# data with audio_latents/ directory.
+
+models:
+  student:
+    _target_: fastvideo.train.models.ltx2.LTX2Model
+    init_from: Lightricks/LTX-Video-0.9.7-dev
+    trainable: true
+    first_frame_conditioning_p: 0.0
+    with_audio: false
+
+method:
+  _target_: fastvideo.train.methods.fine_tuning.finetune.FineTuneMethod
+
+training:
+  distributed:
+    num_gpus: 8
+    sp_size: 1
+    tp_size: 1
+    hsdp_replicate_dim: 8
+    hsdp_shard_dim: 1
+
+  data:
+    data_path: data/ltx2_training_data
+    dataloader_num_workers: 4
+    train_batch_size: 1
+    training_cfg_rate: 0.0
+    seed: 1000
+    num_latent_t: 16
+    num_height: 512
+    num_width: 768
+    num_frames: 121
+
+  optimizer:
+    learning_rate: 1.0e-5
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+    lr_scheduler: constant
+    lr_warmup_steps: 0
+
+  loop:
+    max_train_steps: 5000
+    gradient_accumulation_steps: 1
+
+  checkpoint:
+    output_dir: outputs/ltx2_finetune
+    training_state_checkpointing_steps: 500
+    checkpoints_total_limit: 3
+    resume_from_checkpoint: latest
+
+  tracker:
+    project_name: fastvideo_ltx2
+    run_name: ltx2_finetune
+
+  model:
+    enable_gradient_checkpointing_type: full
+    precondition_outputs: true
+
+callbacks:
+  grad_clip:
+    _target_: fastvideo.train.callbacks.grad_clip.GradNormClipCallback
+    max_grad_norm: 1.0
