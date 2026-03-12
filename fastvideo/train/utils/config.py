@@ -258,7 +258,7 @@ def _parse_pipeline_config(
 
     pipeline_raw = cfg.get("pipeline")
     if pipeline_raw is None:
-        return None
+        pipeline_raw = {}
 
     # Derive model_path from models.student.init_from —
     # needed by PipelineConfig.from_kwargs.
