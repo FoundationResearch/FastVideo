@@ -4,6 +4,7 @@ import os
 import pathlib
 
 import datasets
+import numpy as np
 from torch.utils.data import IterableDataset
 
 from fastvideo.distributed import (get_sp_world_size, get_world_rank,
@@ -159,6 +160,40 @@ class ValidationDataset(IterableDataset):
                                    control_video_path)
                 else:
                     sample["control_video"] = load_video(control_video_path)
+
+            # Action conditioning (MatrixGame): load .npy with
+            # keyboard_cond and mouse_cond arrays.
+            if sample.get("action_path", None) is not None:
+                action_path = sample["action_path"]
+                if not os.path.isabs(action_path):
+                    action_path = os.path.join(self.dir, action_path)
+                sample["action_path"] = action_path
+                if pathlib.Path(action_path).is_file():
+                    try:
+                        action_data = np.load(action_path,
+                                              allow_pickle=True)
+                        if isinstance(action_data, np.ndarray):
+                            if action_data.dtype == object:
+                                action_data = action_data.item()
+                        if isinstance(action_data, dict):
+                            if "keyboard_cond" in action_data:
+                                sample["keyboard_cond"] = (
+                                    action_data["keyboard_cond"].tolist()
+                                    if hasattr(
+                                        action_data["keyboard_cond"],
+                                        "tolist") else
+                                    action_data["keyboard_cond"])
+                            if "mouse_cond" in action_data:
+                                sample["mouse_cond"] = (
+                                    action_data["mouse_cond"].tolist()
+                                    if hasattr(
+                                        action_data["mouse_cond"],
+                                        "tolist") else
+                                    action_data["mouse_cond"])
+                    except Exception:
+                        logger.warning(
+                            "Failed to load action file %s",
+                            action_path)
 
             sample = {k: v for k, v in sample.items() if v is not None}
             yield sample

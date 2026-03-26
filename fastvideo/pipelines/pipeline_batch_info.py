@@ -292,6 +292,10 @@ class TrainingBatch:
     latent_vis_dict: dict[str, Any] = field(default_factory=dict)
     fake_score_latent_vis_dict: dict[str, Any] = field(default_factory=dict)
 
+    # Action conditioning (MatrixGame)
+    mouse_cond: torch.Tensor | None = None  # Shape: (B, T, 2)
+    keyboard_cond: torch.Tensor | None = None  # Shape: (B, T, K)
+
 
 @dataclass
 class PreprocessBatch(ForwardBatch):

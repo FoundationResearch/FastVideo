@@ -20,6 +20,10 @@ from fastvideo.train.utils.config import (
 )
 from fastvideo.models.schedulers.scheduling_self_forcing_flow_match import (
     SelfForcingFlowMatchScheduler, )
+from fastvideo.models.schedulers.denoising_schedule import (
+    build_block_denoising_steps,
+    resolve_denoising_steps,
+)
 from fastvideo.models.utils import pred_noise_to_pred_video
 
 if TYPE_CHECKING:
@@ -139,6 +143,23 @@ class SelfForcingMethod(DMD2Method):
                              f">= 0, got {start_grad_frame}")
         self._start_gradient_frame = int(start_grad_frame)
 
+        # Diagonal denoising warmup configuration
+        use_diag_raw = mcfg.get("use_diagonal_denoising", False)
+        if use_diag_raw is None:
+            use_diag_raw = False
+        self._use_diagonal_denoising = bool(use_diag_raw)
+
+        diag_warmup_raw = mcfg.get(
+            "diagonal_warmup_mid_steps", None
+        )
+        self._diagonal_warmup_mid_steps: torch.Tensor | None = None
+        if diag_warmup_raw is not None and diag_warmup_raw:
+            self._diagonal_warmup_mid_steps_raw = [
+                int(s) for s in diag_warmup_raw
+            ]
+        else:
+            self._diagonal_warmup_mid_steps_raw = None
+
         shift = float(getattr(
             self.training_config.pipeline_config,
             "flow_shift",
@@ -154,6 +175,7 @@ class SelfForcingMethod(DMD2Method):
         )
 
         self._sf_denoising_step_list: torch.Tensor | None = None
+        self._resolved_warmup_mid_steps: torch.Tensor | None = None
 
     def _get_denoising_step_list(self, device: torch.device) -> torch.Tensor:
         if (self._sf_denoising_step_list is not None and self._sf_denoising_step_list.device == device):
@@ -180,7 +202,41 @@ class SelfForcingMethod(DMD2Method):
             steps = timesteps[int(self.student.num_train_timesteps) - steps]
 
         self._sf_denoising_step_list = steps
+
+        # Also resolve warmup mid steps if configured
+        if (
+            self._diagonal_warmup_mid_steps_raw is not None
+            and self._resolved_warmup_mid_steps is None
+        ):
+            warmup_steps = torch.tensor(
+                self._diagonal_warmup_mid_steps_raw,
+                dtype=torch.long,
+                device=device,
+            )
+            if bool(warp):
+                warmup_steps = timesteps[
+                    int(self.student.num_train_timesteps)
+                    - warmup_steps
+                ]
+            self._resolved_warmup_mid_steps = warmup_steps
+
         return steps
+
+    def _get_block_denoising_step_list(
+        self,
+        block_index: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Get per-block denoising schedule (diagonal denoising)."""
+        base_steps = self._get_denoising_step_list(device)
+        if not self._use_diagonal_denoising:
+            return base_steps
+        return build_block_denoising_steps(
+            base_steps=base_steps,
+            block_index=block_index,
+            use_diagonal_denoising=self._use_diagonal_denoising,
+            warmup_mid_steps=self._resolved_warmup_mid_steps,
+        )
 
     def _predict_x0_with_scheduler(
         self,
@@ -300,8 +356,8 @@ class SelfForcingMethod(DMD2Method):
         batch_size = int(latents.shape[0])
         num_frames = int(latents.shape[1])
 
-        denoising_steps = self._get_denoising_step_list(device)
-        num_steps = int(denoising_steps.numel())
+        base_denoising_steps = self._get_denoising_step_list(device)
+        num_base_steps = int(base_denoising_steps.numel())
 
         noise_full = torch.randn_like(latents, device=device, dtype=dtype)
 
@@ -317,7 +373,7 @@ class SelfForcingMethod(DMD2Method):
 
         exit_indices = self._sample_exit_indices(
             num_blocks=num_blocks,
-            num_steps=num_steps,
+            num_steps=num_base_steps,
             device=device,
         )
 
@@ -339,9 +395,14 @@ class SelfForcingMethod(DMD2Method):
                 break
 
             noisy_block = noise_full[:, start:end]
-            exit_idx = int(exit_indices[block_idx])
+            block_steps = self._get_block_denoising_step_list(
+                block_idx, device
+            )
+            num_steps = int(block_steps.numel())
+            raw_exit_idx = int(exit_indices[block_idx])
+            exit_idx = min(raw_exit_idx, num_steps - 1)
 
-            for step_idx, current_timestep in enumerate(denoising_steps):
+            for step_idx, current_timestep in enumerate(block_steps):
                 exit_flag = step_idx == exit_idx
 
                 timestep_block = (current_timestep * torch.ones(
@@ -379,7 +440,7 @@ class SelfForcingMethod(DMD2Method):
 
                     if step_idx + 1 >= num_steps:
                         break
-                    next_timestep = denoising_steps[step_idx + 1]
+                    next_timestep = block_steps[step_idx + 1]
                     if self._student_sample_type == "sde":
                         noisy_block = self._sf_add_noise(
                             pred_x0_chunk,

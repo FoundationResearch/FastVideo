@@ -1,0 +1,70 @@
+# MatrixGame Solaris Fine-tuning (supervised I2V training)
+#
+# - Student: MatrixGameWanModel (trainable, non-causal)
+# - Training: standard flow-matching MSE loss
+
+models:
+  student:
+    _target_: fastvideo.train.models.matrixgame.MatrixGameModel
+    init_from: /mnt/weka/home/hao.zhang/kaiqin/mg_models/Solaris-30K-8K-18K
+    trainable: true
+    flow_shift: 5.0
+
+method:
+  _target_: fastvideo.train.methods.fine_tuning.finetune.FineTuneMethod
+
+training:
+  distributed:
+    num_gpus: 8
+    sp_size: 1
+    tp_size: 1
+    hsdp_replicate_dim: 1
+    hsdp_shard_dim: 8
+
+  data:
+    data_path: /mnt/weka/home/hao.zhang/kaiqin/solaris/datasets/train_81f
+    dataloader_num_workers: 4
+    train_batch_size: 1
+    training_cfg_rate: 0.0
+    seed: 1000
+    num_latent_t: 21
+    num_height: 352
+    num_width: 640
+    num_frames: 81
+
+  optimizer:
+    learning_rate: 1e-5
+    betas: [0.9, 0.95]
+    weight_decay: 0
+    lr_scheduler: constant
+    lr_warmup_steps: 100
+
+  loop:
+    max_train_steps: 5000
+    gradient_accumulation_steps: 4
+
+  checkpoint:
+    output_dir: outputs/matrixgame_finetune_solaris
+    training_state_checkpointing_steps: 1000
+    checkpoints_total_limit: 3
+
+  tracker:
+    project_name: matrixgame_finetune
+    run_name: matrixgame_finetune_solaris
+
+  model:
+    dit_precision: bf16
+    enable_gradient_checkpointing_type: full
+
+callbacks:
+  grad_clip:
+    max_grad_norm: 1.0
+  validation:
+    pipeline_target: fastvideo.pipelines.basic.matrixgame.matrixgame_i2v_pipeline.MatrixGamePipeline
+    dataset_file: examples/distill/MatrixGame2.0/validation.json
+    every_steps: 500
+    sampling_steps: [50]
+    guidance_scale: 6.0
+
+pipeline:
+  flow_shift: 5
