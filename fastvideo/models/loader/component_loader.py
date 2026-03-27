@@ -13,6 +13,7 @@ from typing import cast
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from safetensors import safe_open
 from safetensors.torch import load_file as safetensors_load_file
 from torch.distributed import init_device_mesh
 from transformers import AutoImageProcessor, AutoProcessor, AutoTokenizer
@@ -38,6 +39,87 @@ from fastvideo.utils import PRECISION_TO_TYPE, is_pin_memory_available
 from fastvideo.hooks.layerwise_offload import enable_layerwise_offload
 
 logger = init_logger(__name__)
+
+
+def _looks_like_matrixgame_transformer_checkpoint(
+    safetensors_list: list[str],
+) -> bool:
+    for safetensors_path in safetensors_list:
+        with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+            has_matrixgame_action_module = False
+            has_matrixgame_cross_attn = False
+            has_wangame_image_proj = False
+            for key in f.keys():
+                if ".action_model." in key:
+                    has_matrixgame_action_module = True
+                elif ".attn2.to_k." in key or ".attn2.to_v." in key:
+                    has_matrixgame_cross_attn = True
+                elif (
+                    ".attn2.add_k_proj." in key
+                    or ".attn2.add_v_proj." in key
+                    or ".attn2.norm_added_k." in key
+                    or ".attn2.norm_added_q." in key
+                ):
+                    has_wangame_image_proj = True
+            if has_matrixgame_action_module:
+                return True
+            if has_matrixgame_cross_attn and not has_wangame_image_proj:
+                return True
+    return False
+
+
+def _maybe_switch_wangame_to_matrixgame_mode(
+    dit_config,
+    hf_config: dict[str, object],
+    safetensors_list: list[str],
+    *,
+    reason: str,
+) -> None:
+    arch_config = getattr(dit_config, "arch_config", None)
+    if (
+        arch_config is None
+        or not hasattr(arch_config, "image_cross_attn_type")
+        or arch_config.image_cross_attn_type != "wangame"
+    ):
+        return
+    if not _looks_like_matrixgame_transformer_checkpoint(safetensors_list):
+        return
+
+    arch_config.image_cross_attn_type = "matrixgame"
+    hf_config["image_cross_attn_type"] = "matrixgame"
+    logger.info(
+        "Detected MatrixGame-style Wangame checkpoint during %s; "
+        "switching image cross-attention to matrixgame mode.",
+        reason,
+    )
+
+
+def _maybe_upgrade_to_wangame_config(dit_config, cls_name: str):
+    if "WanGame" not in cls_name and "WanLingBot" not in cls_name:
+        return dit_config
+
+    arch_config = getattr(dit_config, "arch_config", None)
+    if arch_config is None or hasattr(arch_config, "image_cross_attn_type"):
+        return dit_config
+
+    from fastvideo.configs.models.dits.wangamevideo import WanGameVideoConfig
+
+    upgraded = WanGameVideoConfig(
+        prefix=getattr(dit_config, "prefix", "WanGame"),
+        quant_config=getattr(dit_config, "quant_config", None),
+    )
+
+    for field_info in dataclasses.fields(arch_config):
+        if hasattr(upgraded.arch_config, field_info.name):
+            setattr(
+                upgraded.arch_config,
+                field_info.name,
+                getattr(arch_config, field_info.name),
+            )
+
+    if hasattr(upgraded.arch_config, "__post_init__"):
+        upgraded.arch_config.__post_init__()
+    return upgraded
 
 
 class ComponentLoader(ABC):
@@ -784,6 +866,7 @@ class TransformerLoader(ComponentLoader):
 
         # Config from Diffusers supersedes fastvideo's model config
         dit_config = deepcopy(fastvideo_args.pipeline_config.dit_config)
+        dit_config = _maybe_upgrade_to_wangame_config(dit_config, cls_name)
         dit_config.update_model_arch(config)
 
         model_cls, _ = ModelRegistry.resolve_model_cls(cls_name)
@@ -827,6 +910,13 @@ class TransformerLoader(ComponentLoader):
             "Loading model from %s safetensors files: %s",
             len(safetensors_list),
             safetensors_list,
+        )
+
+        _maybe_switch_wangame_to_matrixgame_mode(
+            dit_config,
+            hf_config,
+            safetensors_list,
+            reason="transformer load",
         )
 
         default_dtype = PRECISION_TO_TYPE[

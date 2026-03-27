@@ -28,6 +28,7 @@ from fastvideo.layers.rotary_embedding import (_apply_rotary_emb,
 from fastvideo.layers.visual_embedding import PatchEmbed
 from fastvideo.logger import init_logger
 from fastvideo.models.dits.base import BaseDiT
+from fastvideo.models.dits.matrixgame.model import MatrixGameCrossAttention
 from fastvideo.models.dits.wanvideo import WanI2VCrossAttention
 from fastvideo.platforms import AttentionBackendEnum, current_platform
 
@@ -371,6 +372,7 @@ class CausalWanGameActionTransformerBlock(nn.Module):
                  cross_attn_norm: bool = False,
                  eps: float = 1e-6,
                  added_kv_proj_dim: int | None = None,
+                 image_cross_attn_type: str = "wangame",
                  supported_attention_backends: tuple[AttentionBackendEnum, ...] | None = None,
                  prefix: str = ""):
         super().__init__()
@@ -412,11 +414,21 @@ class CausalWanGameActionTransformerBlock(nn.Module):
             elementwise_affine=True,
             compute_dtype=torch.float32)
 
-        # 2. Cross-attention (I2V only)
-        self.attn2 = CausalWanGameCrossAttention(dim,
+        # 2. Cross-attention
+        self.image_cross_attn_type = image_cross_attn_type
+        if image_cross_attn_type == "wangame":
+            self.attn2 = CausalWanGameCrossAttention(dim,
+                                                     num_heads,
+                                                     qk_norm=qk_norm,
+                                                     eps=eps)
+        elif image_cross_attn_type == "matrixgame":
+            self.attn2 = MatrixGameCrossAttention(dim,
                                                   num_heads,
                                                   qk_norm=qk_norm,
                                                   eps=eps)
+        else:
+            raise ValueError(
+                f"Unsupported image_cross_attn_type: {image_cross_attn_type}")
         # norm3 for FFN input
         self.norm3 = LayerNormScaleShift(dim, norm_type="layer", eps=eps,
                                          elementwise_affine=False)
@@ -499,10 +511,16 @@ class CausalWanGameActionTransformerBlock(nn.Module):
         norm_hidden_states = norm_hidden_states.type_as(attn_output)
 
         # 2. Cross-attention
-        attn_output = self.attn2(norm_hidden_states.to(orig_dtype),
-                                 context=encoder_hidden_states,
-                                 context_lens=None,
-                                 crossattn_cache=crossattn_cache)
+        if self.image_cross_attn_type == "matrixgame":
+            attn_output = self.attn2(norm_hidden_states.to(orig_dtype),
+                                     context=encoder_hidden_states,
+                                     context_lens=None,
+                                     crossattn_cache=crossattn_cache)
+        else:
+            attn_output = self.attn2(norm_hidden_states.to(orig_dtype),
+                                     context=encoder_hidden_states,
+                                     context_lens=None,
+                                     crossattn_cache=crossattn_cache)
         # Cross-attention residual in bfloat16
         hidden_states = hidden_states + attn_output
 
@@ -521,6 +539,7 @@ class CausalWanGameActionTransformerBlock(nn.Module):
 
 class CausalWanGameActionTransformer3DModel(BaseDiT):
     supports_action_input = True
+    kv_cache_head_dim_multiplier = 2
 
     _fsdp_shard_conditions = _DEFAULT_WANGAME_CONFIG._fsdp_shard_conditions
     _compile_conditions = _DEFAULT_WANGAME_CONFIG._compile_conditions
@@ -572,6 +591,7 @@ class CausalWanGameActionTransformer3DModel(BaseDiT):
                 config.cross_attn_norm,
                 config.eps,
                 config.added_kv_proj_dim,
+                getattr(config, "image_cross_attn_type", "wangame"),
                 supported_attention_backends=self._supported_attention_backends,
                 prefix=f"{config.prefix}.blocks.{i}")
             for i in range(config.num_layers)

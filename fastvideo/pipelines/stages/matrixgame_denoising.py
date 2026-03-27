@@ -383,6 +383,8 @@ class MatrixGameCausalDenoisingStage(DenoisingStage):
         attention_head_dim = getattr(
             self.transformer, 'attention_head_dim',
             self.transformer.hidden_size // num_attention_heads)
+        kv_cache_head_dim_multiplier = int(
+            getattr(self.transformer, 'kv_cache_head_dim_multiplier', 1))
         if self.local_attn_size != -1:
             kv_cache_size = self.local_attn_size * self.frame_seq_length
         else:
@@ -393,14 +395,14 @@ class MatrixGameCausalDenoisingStage(DenoisingStage):
                 "k":
                 torch.zeros([
                     batch_size, kv_cache_size, num_attention_heads,
-                    attention_head_dim
+                    attention_head_dim * kv_cache_head_dim_multiplier
                 ],
                             dtype=dtype,
                             device=device),
                 "v":
                 torch.zeros([
                     batch_size, kv_cache_size, num_attention_heads,
-                    attention_head_dim
+                    attention_head_dim * kv_cache_head_dim_multiplier
                 ],
                             dtype=dtype,
                             device=device),

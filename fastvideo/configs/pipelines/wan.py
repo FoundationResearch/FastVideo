@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import torch
 
 from fastvideo.configs.models import DiTConfig, EncoderConfig, VAEConfig
-from fastvideo.configs.models.dits import WanVideoConfig
+from fastvideo.configs.models.dits import WanGameVideoConfig, WanVideoConfig
 from fastvideo.configs.models.dits.matrixgame import MatrixGameWanVideoConfig
 from fastvideo.configs.models.encoders import (BaseEncoderOutput,
                                                CLIPVisionConfig, T5Config,
@@ -100,6 +100,16 @@ class WanI2V720PConfig(WanI2V480PConfig):
 
     # Denoising stage
     flow_shift: float | None = 5.0
+
+
+@dataclass
+class WanGameI2V480PConfig(WanI2V480PConfig):
+    """Configuration for WanGame image-to-video pipeline."""
+
+    dit_config: DiTConfig = field(default_factory=WanGameVideoConfig)
+    flow_shift: float | None = 3.0
+    dmd_denoising_steps: list[int] | None = field(
+        default_factory=lambda: [1000, 750, 500, 250, 0])
 
 
 @dataclass

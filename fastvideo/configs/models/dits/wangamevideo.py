@@ -9,7 +9,9 @@ from fastvideo.configs.models.dits.wanvideo import (
 
 @dataclass
 class WanGameVideoArchConfig(WanVideoArchConfig):
-    """Wangame keeps WanVideo architecture defaults and checkpoint mappings."""
+    """Wangame uses Wan defaults plus checkpoint-compat toggles."""
+
+    image_cross_attn_type: str = "wangame"
 
 
 @dataclass

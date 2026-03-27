@@ -6,7 +6,7 @@
 #
 # Examples:
 #   bash examples/train/run.sh examples/train/finetune_wan2.1_t2v_1.3B_vsa_phase3.4_0.9sparsity.yaml
-#   bash examples/train/run.sh examples/train/distill_wan2.1_t2v_1.3B_dmd2.yaml --dry-run
+#   bash examples/train/run.sh examples/train/configs/dfsft_wangame_causal_v3.yaml --dry-run
 #   bash examples/train/run.sh examples/train/distill_wan2.1_t2v_1.3B_dmd2.yaml \
 #       --training.distributed.num_gpus 4 \
 #       --training.optimizer.learning_rate 1e-5
@@ -22,14 +22,14 @@ shift
 
 # ── GPU / node settings ──────────────────────────────────────────
 NUM_GPUS="${NUM_GPUS:-$(nvidia-smi -L 2>/dev/null | wc -l)}"
-NUM_GPUS="${NUM_GPUS:-4}"
+NUM_GPUS="${NUM_GPUS:-8}"
 NNODES="${NNODES:-1}"
 NODE_RANK="${NODE_RANK:-0}"
 MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 MASTER_PORT="${MASTER_PORT:-29501}"
 export TOKENIZERS_PARALLELISM=false
 # ── W&B ──────────────────────────────────────────────────────────
-export WANDB_API_KEY="${WANDB_API_KEY:-7ff8b6e8356924f7a6dd51a0342dd1a422ea9352}"
+export WANDB_API_KEY="${WANDB_API_KEY:-d5b02b05e30d8cb34c7b31c6ae10416fc26dcb66}"
 export WANDB_MODE="${WANDB_MODE:-online}"
 
 
@@ -56,7 +56,7 @@ echo "Extra args:  $*"
 echo "Log file:    ${LOG_FILE}"
 echo "=============================="
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.run \
+python -m torch.distributed.run \
     --nnodes "${NNODES}" \
     --node_rank "${NODE_RANK}" \
     --nproc_per_node "${NUM_GPUS}" \

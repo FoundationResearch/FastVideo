@@ -88,7 +88,7 @@ class ValidationCallback(Callback):
         output_dir: str | None = None,
         sampling_timesteps: list[int] | None = None,
         evaluate_ptlflow: bool = False,
-        ptlflow_dir: str = "/mnt/weka/home/hao.zhang/mhuo/FastVideo/benchmarks/ptlflow",
+        ptlflow_dir: str | None = None,
         ptlflow_ckpt: str | None = None,
         ptlflow_calibration_path: str | None = None,
         ptlflow_use_depth: bool = True,
@@ -118,16 +118,43 @@ class ValidationCallback(Callback):
         self.sampling_timesteps = ([int(s) for s in sampling_timesteps] if sampling_timesteps is not None else None)
 
         self.evaluate_ptlflow = bool(evaluate_ptlflow)
-        self.ptlflow_dir = str(ptlflow_dir)
-        self.ptlflow_ckpt = (
+        requested_ptlflow_dir = (
+            Path(str(ptlflow_dir))
+            if ptlflow_dir is not None
+            else None
+        )
+        self.ptlflow_dir = (
+            str(requested_ptlflow_dir)
+            if requested_ptlflow_dir is not None
+            else ""
+        )
+        self._ptlflow_ckpt_override = (
             str(ptlflow_ckpt)
             if ptlflow_ckpt is not None
-            else str(Path(self.ptlflow_dir) / "dpflow-things-2012b5d6.ckpt")
+            else None
         )
-        self.ptlflow_calibration_path = (
+        self._ptlflow_calibration_override = (
             str(ptlflow_calibration_path)
             if ptlflow_calibration_path is not None
-            else str(Path(self.ptlflow_dir) / "calibration.json")
+            else None
+        )
+        self.ptlflow_ckpt = (
+            self._ptlflow_ckpt_override
+            if self._ptlflow_ckpt_override is not None
+            else (
+                str(requested_ptlflow_dir / "dpflow-things-2012b5d6.ckpt")
+                if requested_ptlflow_dir is not None
+                else ""
+            )
+        )
+        self.ptlflow_calibration_path = (
+            self._ptlflow_calibration_override
+            if self._ptlflow_calibration_override is not None
+            else (
+                str(requested_ptlflow_dir / "calibration.json")
+                if requested_ptlflow_dir is not None
+                else ""
+            )
         )
         self.ptlflow_use_depth = bool(ptlflow_use_depth)
         self.pipeline_kwargs = dict(pipeline_kwargs)
@@ -1029,11 +1056,44 @@ class ValidationCallback(Callback):
         self._flow_eval_init_done = True
         self._flow_eval_ready = False
 
-        ptlflow_dir = Path(self.ptlflow_dir)
+        os.environ.setdefault(
+            "MPLCONFIGDIR",
+            "/tmp/matplotlib-fastvideo",
+        )
         try:
+            if not self.ptlflow_dir:
+                raise FileNotFoundError(
+                    "PTLFlow directory is not configured. "
+                    "Set callbacks.validation.ptlflow_dir in the YAML."
+                )
+
+            ptlflow_dir = Path(self.ptlflow_dir).expanduser()
             ptlflow_dir_str = str(ptlflow_dir.resolve())
             if ptlflow_dir_str not in sys.path:
                 sys.path.insert(0, ptlflow_dir_str)
+
+            eval_module_path = ptlflow_dir / "eval_flow_divergence.py"
+            if not eval_module_path.is_file():
+                raise FileNotFoundError(
+                    "Missing PTLFlow evaluator module at "
+                    f"{eval_module_path}"
+                )
+
+            ckpt_path = Path(self.ptlflow_ckpt).expanduser()
+            if not ckpt_path.is_file():
+                raise FileNotFoundError(
+                    "Missing PTLFlow checkpoint at "
+                    f"{ckpt_path}"
+                )
+
+            calibration_path = Path(
+                self.ptlflow_calibration_path
+            ).expanduser()
+            if not calibration_path.is_file():
+                raise FileNotFoundError(
+                    "Missing PTLFlow calibration file at "
+                    f"{calibration_path}"
+                )
 
             from eval_flow_divergence import (
                 evaluate_pair_synthetic, )
@@ -1041,6 +1101,9 @@ class ValidationCallback(Callback):
             self._flow_eval_fn = (
                 evaluate_pair_synthetic
             )
+            self.ptlflow_dir = ptlflow_dir_str
+            self.ptlflow_ckpt = str(ckpt_path)
+            self.ptlflow_calibration_path = str(calibration_path)
             self._flow_eval_ready = True
             logger.info(
                 "Initialized flow divergence "

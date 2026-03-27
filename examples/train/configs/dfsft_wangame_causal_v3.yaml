@@ -71,7 +71,8 @@ training:
     run_name: wangame_dfsft_causal_v3
 
   model:
-    enable_gradient_checkpointing_type: full
+    enable_gradient_checkpointing_type: null
+    precondition_outputs: false
 
 callbacks:
   grad_clip:
@@ -89,7 +90,8 @@ callbacks:
     scheduler_target: fastvideo.models.schedulers.scheduling_flow_match_euler_discrete.FlowMatchEulerDiscreteScheduler
     guidance_scale: 1.0
     num_frames: 69
-    evaluate_ptlflow: false
+    evaluate_ptlflow: true
+    ptlflow_dir: /mnt/home/mhuo/ptlflow
 
 pipeline:
   flow_shift: 3

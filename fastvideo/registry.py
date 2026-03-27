@@ -38,6 +38,7 @@ from fastvideo.configs.pipelines.wan import (
     SelfForcingWan2_2_T2V480PConfig,
     SelfForcingWanT2V480PConfig,
     WANV2VConfig,
+    WanGameI2V480PConfig,
     Wan2_2_I2V_A14B_Config,
     Wan2_2_T2V_A14B_Config,
     Wan2_2_TI2V_5B_Config,
@@ -222,21 +223,27 @@ def _get_config_info(
     pipeline_name = config.get("_class_name", "").lower()
 
     matched_model_names: list[str] = []
+    path_matched_model_names: list[str] = []
     for model_id, detector in _MODEL_NAME_DETECTORS:
-        if detector(model_path.lower()) or detector(pipeline_name):
+        matched_by_path = detector(model_path.lower())
+        matched_by_pipeline = detector(pipeline_name)
+        if matched_by_path or matched_by_pipeline:
             logger.debug("Matched model name '%s' using a registered detector.",
                          model_id)
             matched_model_names.append(model_id)
+            if matched_by_path:
+                path_matched_model_names.append(model_id)
 
     if matched_model_names:
+        selected_model_names = path_matched_model_names or matched_model_names
         if len(matched_model_names) > 1:
             logger.warning(
                 "Multiple models matched for path '%s': %s. Using the first matched: '%s'.",
                 model_path,
                 matched_model_names,
-                matched_model_names[0],
+                selected_model_names[0],
             )
-        model_id = matched_model_names[0]
+        model_id = selected_model_names[0]
         return _CONFIG_REGISTRY.get(model_id)
 
     if raise_on_missing:
@@ -496,6 +503,14 @@ def _register_configs() -> None:
         hf_model_paths=[
             "weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers",
         ],
+    )
+    register_configs(
+        sampling_param_cls=Wan2_1_Fun_1_3B_InP_SamplingParam,
+        pipeline_config_cls=WanGameI2V480PConfig,
+        hf_model_paths=[
+            "weizhou03/Wan2.1-Game-Fun-1.3B-InP-Diffusers",
+        ],
+        model_detectors=[lambda path: "wangame" in path.lower()],
     )
     register_configs(
         sampling_param_cls=Wan2_1_Fun_1_3B_Control_SamplingParam,

@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from fastvideo.layers.visual_embedding import TimestepEmbedder, ModulateProjection, timestep_embedding
 from fastvideo.platforms import AttentionBackendEnum
-from fastvideo.attention import DistributedAttention
+from fastvideo.attention import DistributedAttention, LocalAttention
 from fastvideo.forward_context import set_forward_context
 from fastvideo.models.dits.wanvideo import WanImageEmbedding
 
@@ -239,7 +239,17 @@ class WanGameActionSelfAttention(nn.Module):
         # Check if Q and KV have different sequence lengths (KV cache mode)
         # In this case, use LocalAttention (supports different Q/KV lengths)
         if query_all.shape[1] != key_all.shape[1]:
-            raise ValueError("Q and KV have different sequence lengths")
+            if not hasattr(self, '_kv_cache_attn'):
+                self._kv_cache_attn = LocalAttention(
+                    num_heads=self.num_heads,
+                    head_size=self.head_dim,
+                    causal=False,
+                    supported_attention_backends=(AttentionBackendEnum.SAGE_ATTN,
+                                                  AttentionBackendEnum.FLASH_ATTN,
+                                                  AttentionBackendEnum.TORCH_SDPA)
+                )
+            hidden_states_all = self._kv_cache_attn(query_all, key_all,
+                                                    value_all)
         else:
             # Same sequence length: use DistributedAttention (supports SP)
             # Create default attention mask if not provided

@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # adapted from: https://github.com/a-r-r-o-w/finetrainers/blob/main/finetrainers/data/dataset.py
+import csv
+import json
 import os
 import pathlib
+from typing import Any
 
-import datasets
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 from torch.utils.data import IterableDataset
 
 from fastvideo.distributed import (get_sp_world_size, get_world_rank,
@@ -13,6 +17,43 @@ from fastvideo.logger import init_logger
 from fastvideo.models.vision_utils import load_image, load_video
 
 logger = init_logger(__name__)
+
+
+def _load_local_validation_data(filename: pathlib.Path) -> list[dict[str, Any]]:
+    suffix = filename.suffix
+
+    if suffix == ".csv":
+        with filename.open(newline="", encoding="utf-8") as fp:
+            return [dict(row) for row in csv.DictReader(fp)]
+
+    if suffix == ".json":
+        with filename.open(encoding="utf-8") as fp:
+            payload = json.load(fp)
+
+        if isinstance(payload, dict):
+            payload = payload.get("data", payload)
+
+        if not isinstance(payload, list):
+            raise ValueError(
+                "Validation JSON must contain either a top-level list or a"
+                " top-level 'data' list")
+        return [dict(row) for row in payload]
+
+    if suffix == ".parquet":
+        return pq.read_table(filename).to_pylist()
+
+    if suffix == ".arrow":
+        with pa.memory_map(str(filename), "r") as source:
+            try:
+                table = pa.ipc.open_file(source).read_all()
+            except pa.ArrowInvalid:
+                table = pa.ipc.open_stream(source).read_all()
+        return table.to_pylist()
+
+    supported_file_formats = [".csv", ".json", ".parquet", ".arrow"]
+    raise ValueError(
+        f"Unsupported file format {suffix} for validation dataset. "
+        f"Supported formats are: {supported_file_formats}")
 
 
 class ValidationDataset(IterableDataset):
@@ -29,28 +70,7 @@ class ValidationDataset(IterableDataset):
             raise FileNotFoundError(
                 f"File {self.filename.as_posix()} does not exist")
 
-        if self.filename.suffix == ".csv":
-            data = datasets.load_dataset("csv",
-                                         data_files=self.filename.as_posix(),
-                                         split="train")
-        elif self.filename.suffix == ".json":
-            data = datasets.load_dataset("json",
-                                         data_files=self.filename.as_posix(),
-                                         split="train",
-                                         field="data")
-        elif self.filename.suffix == ".parquet":
-            data = datasets.load_dataset("parquet",
-                                         data_files=self.filename.as_posix(),
-                                         split="train")
-        elif self.filename.suffix == ".arrow":
-            data = datasets.load_dataset("arrow",
-                                         data_files=self.filename.as_posix(),
-                                         split="train")
-        else:
-            _SUPPORTED_FILE_FORMATS = [".csv", ".json", ".parquet", ".arrow"]
-            raise ValueError(
-                f"Unsupported file format {self.filename.suffix} for validation dataset. Supported formats are: {_SUPPORTED_FILE_FORMATS}"
-            )
+        self.all_samples = _load_local_validation_data(self.filename)
 
         # Get distributed training info
         self.global_rank = get_world_rank()
@@ -58,14 +78,12 @@ class ValidationDataset(IterableDataset):
         self.sp_world_size = get_sp_world_size()
         self.num_sp_groups = self.world_size // self.sp_world_size
 
-        # Convert to list to get total samples
-        self.all_samples = list(data)
-        
         # Limit number of samples if specified
-        if self.num_samples is not None and self.num_samples < len(self.all_samples):
+        if (self.num_samples is not None
+                and self.num_samples < len(self.all_samples)):
             self.all_samples = self.all_samples[:self.num_samples]
             logger.info("Limiting validation samples to %s", self.num_samples)
-        
+
         self.original_total_samples = len(self.all_samples)
 
         # Extend samples to be a multiple of DP degree (num_sp_groups)
