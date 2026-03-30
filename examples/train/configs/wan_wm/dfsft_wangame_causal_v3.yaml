@@ -8,8 +8,7 @@ models:
     _target_: fastvideo.train.models.wangame.WanGameCausalModel
     init_from: /mnt/data/world_model/WanGame-2.1-0325-60k-steps
     trainable: true
-    transformer_override_safetensor: /mnt/data/world_model/zelda_runs/wangame_1.3b_zelda_clean_init_with_warm_up/checkpoint-60000/transformer/diffusion_pytorch_model.safetensors
-    # /mnt/data/world_model/zelda_runs/wangame_1.3b_zelda_wasd_with_warm_up/checkpoint-60000/transformer/diffusion_pytorch_model.safetensors
+    # transformer_override_safetensor: /mnt/data/world_model/zelda_runs/wangame_1.3b_zelda_wasd_with_warm_up/checkpoint-60000/transformer/diffusion_pytorch_model.safetensors
 
 method:
   _target_: fastvideo.train.methods.fine_tuning.dfsft.DiffusionForcingSFTMethod
