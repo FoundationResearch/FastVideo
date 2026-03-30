@@ -26,6 +26,7 @@ outputs_video
 checkpoints/
 sbatch.sh
 *.out
+*.err
 env
 *.o
 **/build/
