@@ -85,6 +85,7 @@ class ValidationCallback(Callback):
         scheduler_target: str | None = None,
         guidance_scale: float | None = None,
         num_frames: int | None = None,
+        num_samples: int | None = None,
         output_dir: str | None = None,
         sampling_timesteps: list[int] | None = None,
         evaluate_ptlflow: bool = False,
@@ -114,6 +115,7 @@ class ValidationCallback(Callback):
         )
         self.guidance_scale = (float(guidance_scale) if guidance_scale is not None else None)
         self.num_frames = (int(num_frames) if num_frames is not None else None)
+        self.num_samples = (int(num_samples) if num_samples is not None else None)
         self.output_dir = (str(output_dir) if output_dir is not None else None)
         self.sampling_timesteps = ([int(s) for s in sampling_timesteps] if sampling_timesteps is not None else None)
 
@@ -983,7 +985,10 @@ class ValidationCallback(Callback):
         pipeline = self._get_pipeline(transformer=transformer, )
         sampling_param = self._get_sampling_param()
 
-        dataset = ValidationDataset(self.dataset_file)
+        dataset = ValidationDataset(
+            self.dataset_file,
+            num_samples=self.num_samples,
+        )
         dataloader = DataLoader(
             dataset,
             batch_size=None,

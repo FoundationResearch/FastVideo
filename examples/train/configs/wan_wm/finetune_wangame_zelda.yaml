@@ -1,0 +1,82 @@
+# V3 config: WanGame 2.1 1.3B Zelda finetune for the refactored training stack.
+#
+# This mirrors the legacy wangame finetune launcher defaults while using the
+# YAML-driven trainer. The student is the non-causal WanGame I2V model, which
+# matches the original wangame_training_pipeline.py path.
+
+models:
+  student:
+    _target_: fastvideo.train.models.wangame.WanGameModel
+    init_from: weizhou03/Wan2.1-Game-Fun-1.3B-InP-Diffusers
+    trainable: true
+    action_warmup_steps: 0
+    transformer_override_safetensor: /mnt/data/world_model/ckpts/zelda_mc_warmup_20k.safetensors
+
+method:
+  _target_: fastvideo.train.methods.fine_tuning.finetune.FineTuneMethod
+
+training:
+  distributed:
+    num_gpus: 16
+    sp_size: 1
+    tp_size: 1
+    hsdp_replicate_dim: 1
+    hsdp_shard_dim: 16
+
+  data:
+    data_path: /mnt/data/world_model/zelda_data/zeldam2-v2
+    dataloader_num_workers: 1
+    train_batch_size: 1
+    training_cfg_rate: 0.1
+    seed: 1000
+    num_latent_t: 9
+    num_height: 480
+    num_width: 832
+    num_frames: 33
+    apply_bot_died_filter: false
+
+  optimizer:
+    learning_rate: 2.0e-5
+    betas: [0.9, 0.999]
+    weight_decay: 0.0
+    lr_scheduler: constant
+    lr_warmup_steps: 0
+
+  loop:
+    max_train_steps: 120000
+    gradient_accumulation_steps: 1
+
+  checkpoint:
+    output_dir: /mnt/data/world_model/zelda_runs/wangame_1.3b_zelda_clean_init_with_warm_up_81_frames
+    training_state_checkpointing_steps: 10000
+    checkpoints_total_limit: 3
+    best_checkpoint_start_step: 1
+    best_checkpoint_top_k: 15
+
+  tracker:
+    project_name: wangame_1.3b_zelda
+    run_name: Zelda_clean_init_with_warm_up_81_frames
+
+  model:
+    enable_gradient_checkpointing_type: full
+
+  dit_precision: fp32
+
+callbacks:
+  grad_clip:
+    _target_: fastvideo.train.callbacks.grad_clip.GradNormClipCallback
+    max_grad_norm: 1.0
+  validation:
+    _target_: fastvideo.train.callbacks.validation.ValidationCallback
+    pipeline_target: fastvideo.pipelines.basic.wan.wangame_i2v_pipeline.WanGameActionImageToVideoPipeline
+    dataset_file: examples/training/finetune/WanGame2.1_1.3b_i2v/validation_zelda.json
+    every_steps: 500
+    sampling_steps: [40]
+    guidance_scale: 1.0
+    num_frames: 33
+    num_samples: 16
+    evaluate_ptlflow: true
+    ptlflow_dir: /mnt/home/mhuo/ptlflow
+
+pipeline:
+  flow_shift: 3

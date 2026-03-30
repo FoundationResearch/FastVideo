@@ -57,6 +57,10 @@ class WanGameModel(ModelBase):
     """WanGame per-role model: owns transformer + noise_scheduler."""
 
     _transformer_cls_name: str = ("WanGameActionTransformer3DModel")
+    _ACTION_PARAM_PATTERNS: tuple[str, ...] = (
+        "condition_embedder.action_embedder",
+        "to_out_prope",
+    )
 
     def __init__(
         self,
@@ -64,6 +68,7 @@ class WanGameModel(ModelBase):
         init_from: str,
         training_config: TrainingConfig,
         trainable: bool = True,
+        action_warmup_steps: int = 0,
         disable_custom_init_weights: bool = False,
         flow_shift: float = 3.0,
         enable_gradient_checkpointing_type: str | None = None,
@@ -71,6 +76,8 @@ class WanGameModel(ModelBase):
     ) -> None:
         self._init_from = str(init_from)
         self._trainable = bool(trainable)
+        self._action_warmup_steps = max(0, int(action_warmup_steps))
+        self._action_params_frozen_for_warmup = False
 
         self.transformer = self._load_transformer(
             init_from=self._init_from,
@@ -136,6 +143,31 @@ class WanGameModel(ModelBase):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def on_train_start(self) -> None:
+        super().on_train_start()
+        if self._action_warmup_steps > 0:
+            count = self._set_action_params_grad(False)
+            self._action_params_frozen_for_warmup = True
+            logger.info(
+                "Action warmup enabled: freezing %d action parameter groups "
+                "for the first %d steps",
+                count,
+                self._action_warmup_steps,
+            )
+
+    def before_train_step(self, iteration: int) -> None:
+        if not self._action_params_frozen_for_warmup:
+            return
+        if int(iteration) <= self._action_warmup_steps:
+            return
+        count = self._set_action_params_grad(True)
+        self._action_params_frozen_for_warmup = False
+        logger.info(
+            "Action warmup complete: unfroze %d action parameter groups at step %d",
+            count,
+            int(iteration),
+        )
 
     def init_preprocessors(self, training_config: TrainingConfig) -> None:
         """Load VAE, build dataloader, seed RNGs."""
@@ -232,6 +264,18 @@ class WanGameModel(ModelBase):
         index = [slice(None)] * value.ndim
         index[dim] = slice(0, target_length)
         return value[tuple(index)]
+
+    def _is_action_parameter(self, name: str) -> bool:
+        return any(pattern in name for pattern in self._ACTION_PARAM_PATTERNS)
+
+    def _set_action_params_grad(self, requires_grad: bool) -> int:
+        count = 0
+        for name, param in self.transformer.named_parameters():
+            if not self._is_action_parameter(name):
+                continue
+            param.requires_grad_(requires_grad)
+            count += 1
+        return count
 
     def prepare_batch(
         self,

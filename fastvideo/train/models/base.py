@@ -46,6 +46,9 @@ class ModelBase(ABC):
     def on_train_start(self) -> None:  # noqa: B027
         """Called once before the training loop begins."""
 
+    def before_train_step(self, iteration: int) -> None:  # noqa: B027
+        """Called at the start of each training iteration."""
+
     # ------------------------------------------------------------------
     # Timestep helpers
     # ------------------------------------------------------------------

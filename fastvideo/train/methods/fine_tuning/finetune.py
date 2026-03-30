@@ -55,6 +55,7 @@ class FineTuneMethod(TrainingMethod):
             dict[str, Any],
             dict[str, LogScalar],
     ]:
+        self.student.before_train_step(int(iteration))
         del iteration
         training_batch = self.student.prepare_batch(
             batch,

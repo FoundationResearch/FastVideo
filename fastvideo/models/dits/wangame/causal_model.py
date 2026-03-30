@@ -304,13 +304,15 @@ class CausalWanGameActionSelfAttention(WanGameActionSelfAttention):
             cache_v_rope = kv_cache["v"][..., :self.head_dim]
             cache_v_prope = kv_cache["v"][..., self.head_dim:]
 
-            if self.local_attn_size != -1 and (current_end > kv_cache["global_end_index"].item()) and (
-                    num_new_tokens + kv_cache["local_end_index"].item() > kv_cache_size):
-                # Calculate the number of new tokens added in this step
-                # Shift existing cache content left to discard oldest tokens
-                # Clone the source slice to avoid overlapping memory error
-                num_evicted_tokens = num_new_tokens + kv_cache["local_end_index"].item() - kv_cache_size
-                num_rolled_tokens = kv_cache["local_end_index"].item() - num_evicted_tokens - sink_tokens
+            global_end_index = int(kv_cache["global_end_index"].item())
+            local_end_index_prev = int(kv_cache["local_end_index"].item())
+
+            if self.local_attn_size != -1 and (current_end > global_end_index) and (
+                    num_new_tokens + local_end_index_prev > kv_cache_size):
+                # Follow the MatrixGame cache update flow: evict oldest
+                # non-sink tokens, then append the current block.
+                num_evicted_tokens = num_new_tokens + local_end_index_prev - kv_cache_size
+                num_rolled_tokens = local_end_index_prev - num_evicted_tokens - sink_tokens
                 cache_k_rope[:, sink_tokens:sink_tokens + num_rolled_tokens] = \
                     cache_k_rope[:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
                 cache_v_rope[:, sink_tokens:sink_tokens + num_rolled_tokens] = \
@@ -319,25 +321,80 @@ class CausalWanGameActionSelfAttention(WanGameActionSelfAttention):
                     cache_k_prope[:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
                 cache_v_prope[:, sink_tokens:sink_tokens + num_rolled_tokens] = \
                     cache_v_prope[:, sink_tokens + num_evicted_tokens:sink_tokens + num_evicted_tokens + num_rolled_tokens].clone()
-                # Insert the new keys/values at the end
-                local_end_index = kv_cache["local_end_index"].item() + current_end - \
-                    kv_cache["global_end_index"].item() - num_evicted_tokens
-                local_start_index = local_end_index - num_new_tokens
-                cache_k_rope[:, local_start_index:local_end_index] = roped_key
-                cache_v_rope[:, local_start_index:local_end_index] = v
-                cache_k_prope[:, local_start_index:local_end_index] = key_prope
-                cache_v_prope[:, local_start_index:local_end_index] = value_prope
+                local_end_index = (
+                    local_end_index_prev
+                    + current_end
+                    - global_end_index
+                    - num_evicted_tokens
+                )
             else:
-                # Assign new keys/values directly up to current_end
-                local_end_index = kv_cache["local_end_index"].item() + current_end - kv_cache["global_end_index"].item()
+                local_end_index = (
+                    local_end_index_prev
+                    + current_end
+                    - global_end_index
+                )
+
+            local_start_index = local_end_index - num_new_tokens
+            if (
+                local_start_index < 0
+                or local_end_index > kv_cache_size
+                or (local_end_index - local_start_index) != num_new_tokens
+            ):
+                if num_new_tokens > kv_cache_size:
+                    raise ValueError(
+                        "WanGame causal KV cache block is larger than the "
+                        "allocated cache window: "
+                        f"num_new_tokens={num_new_tokens}, "
+                        f"kv_cache_size={kv_cache_size}"
+                    )
+
+                logger.warning(
+                    "Adjusting Wangame KV cache write window: "
+                    "current_start=%s current_end=%s global_end_index=%s "
+                    "local_end_index_prev=%s computed=[%s:%s] "
+                    "num_new_tokens=%s kv_cache_size=%s",
+                    current_start,
+                    current_end,
+                    global_end_index,
+                    local_end_index_prev,
+                    local_start_index,
+                    local_end_index,
+                    num_new_tokens,
+                    kv_cache_size,
+                )
+                local_end_index = min(
+                    kv_cache_size,
+                    max(num_new_tokens, local_end_index_prev, local_end_index),
+                )
                 local_start_index = local_end_index - num_new_tokens
+
+            if local_start_index < 0 or local_end_index > kv_cache_size:
+                raise ValueError(
+                    "Invalid Wangame causal KV cache write window after "
+                    "normalization: "
+                    f"local_start_index={local_start_index}, "
+                    f"local_end_index={local_end_index}, "
+                    f"kv_cache_size={kv_cache_size}"
+                )
+
+            if local_start_index == local_end_index:
+                logger.warning(
+                    "Skipping zero-width Wangame KV cache write: "
+                    "current_start=%s current_end=%s global_end_index=%s "
+                    "local_end_index_prev=%s num_new_tokens=%s",
+                    current_start,
+                    current_end,
+                    global_end_index,
+                    local_end_index_prev,
+                    num_new_tokens,
+                )
+            else:
                 kv_cache["k"] = kv_cache["k"].detach()
                 kv_cache["v"] = kv_cache["v"].detach()
                 cache_k_rope = kv_cache["k"][..., :self.head_dim]
                 cache_k_prope = kv_cache["k"][..., self.head_dim:]
                 cache_v_rope = kv_cache["v"][..., :self.head_dim]
                 cache_v_prope = kv_cache["v"][..., self.head_dim:]
-                # logger.info("kv_cache['k'] is in comp graph: %s", kv_cache["k"].requires_grad or kv_cache["k"].grad_fn is not None)
                 cache_k_rope[:, local_start_index:local_end_index] = roped_key
                 cache_v_rope[:, local_start_index:local_end_index] = v
                 cache_k_prope[:, local_start_index:local_end_index] = key_prope
