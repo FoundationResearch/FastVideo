@@ -68,6 +68,7 @@ class ValidationCallback(Callback):
         num_frames: int | None = None,
         output_dir: str | None = None,
         sampling_timesteps: list[int] | None = None,
+        stochastic_sampling: bool | None = None,
         **pipeline_kwargs: Any,
     ) -> None:
         self.pipeline_target = str(pipeline_target)
@@ -78,6 +79,10 @@ class ValidationCallback(Callback):
         self.num_frames = (int(num_frames) if num_frames is not None else None)
         self.output_dir = (str(output_dir) if output_dir is not None else None)
         self.sampling_timesteps = ([int(s) for s in sampling_timesteps] if sampling_timesteps is not None else None)
+        # None -> keep the pipeline's own scheduler default. True -> SDE
+        # (stochastic, re-noise each step; needed for DMD few-step sampling).
+        # False -> ODE (deterministic Euler; standard multi-step finetune).
+        self.stochastic_sampling = (bool(stochastic_sampling) if stochastic_sampling is not None else None)
         self.pipeline_kwargs = dict(pipeline_kwargs)
 
         # Set after on_train_start.
@@ -304,6 +309,15 @@ class ValidationCallback(Callback):
             scheduler.sigma_min = 0.0
             scheduler.extra_one_step = True
             scheduler.set_timesteps(num_inference_steps=1000, training=True)
+
+        # Let the config pick SDE vs ODE for validation sampling. DMD few-step
+        # students are distilled with stochastic (SDE) multi-step sampling, so
+        # validating them with deterministic Euler (ODE) degrades quality;
+        # finetune validation conversely wants ODE. Leaving it None keeps the
+        # pipeline's own default.
+        if (self.stochastic_sampling is not None and scheduler is not None
+                and "stochastic_sampling" in getattr(scheduler, "config", {})):
+            scheduler.register_to_config(stochastic_sampling=self.stochastic_sampling)
 
         self._pipeline_key = key
         return self._pipeline

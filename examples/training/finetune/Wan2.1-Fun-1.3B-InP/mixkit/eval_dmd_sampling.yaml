@@ -1,0 +1,64 @@
+# One-off eval to compare SDE vs ODE validation sampling for the DMD few-step
+# generator. Loads the DMD generator checkpoint as a single (student) model and
+# renders the crush validation prompts with the i2v DMD validation pipeline at
+# 4 steps. Toggle --callbacks.validation.stochastic_sampling true|false.
+# Run via the new-infra entrypoint (see eval command in the chat).
+
+models:
+  student:
+    _target_: fastvideo.train.models.wan.WanI2VModel
+    init_from: data/mixkit_processed_i2v_1_3b_inp/outputs/dmd_generator_model
+    trainable: true
+
+method:
+  _target_: fastvideo.train.methods.fine_tuning.finetune.FineTuneMethod
+
+training:
+  distributed:
+    num_gpus: 4
+    sp_size: 1
+    tp_size: 1
+    hsdp_replicate_dim: 4
+    hsdp_shard_dim: 1
+  data:
+    data_path: data/mixkit_processed_i2v_1_3b_inp/combined_parquet_dataset
+    dataloader_num_workers: 2
+    train_batch_size: 1
+    training_cfg_rate: 0.0
+    seed: 1000
+    num_latent_t: 20
+    num_height: 480
+    num_width: 832
+    num_frames: 77
+  optimizer:
+    learning_rate: 1.0e-8   # ~no-op; this config only renders validation
+    betas: [0.9, 0.999]
+    weight_decay: 0.0
+    lr_scheduler: constant
+    lr_warmup_steps: 0
+  loop:
+    max_train_steps: 2
+    gradient_accumulation_steps: 1
+  checkpoint:
+    output_dir: data/mixkit_processed_i2v_1_3b_inp/outputs/dmd_sampling_eval
+    training_state_checkpointing_steps: 100000
+    checkpoints_total_limit: 1
+  tracker:
+    project_name: fastvideo-i2v-distill
+    run_name: dmd-eval
+  model:
+    enable_gradient_checkpointing_type: full
+
+callbacks:
+  validation:
+    _target_: fastvideo.train.callbacks.validation.ValidationCallback
+    pipeline_target: fastvideo.pipelines.basic.wan.wan_i2v_dmd_pipeline.WanImageToVideoDmdPipeline
+    dataset_file: examples/training/finetune/Wan2.1-Fun-1.3B-InP/crush_smol/validation.json
+    every_steps: 1
+    sampling_steps: [4]
+    sampling_timesteps: [1000, 750, 500, 250]
+    guidance_scale: 6.0
+    stochastic_sampling: true
+
+pipeline:
+  flow_shift: 8

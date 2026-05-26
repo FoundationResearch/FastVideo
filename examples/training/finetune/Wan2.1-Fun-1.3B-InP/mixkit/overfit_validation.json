@@ -1,0 +1,76 @@
+{
+  "data": [
+    {
+      "caption": "The video captures an intricate close-up of a high-precision CNC machining tool operating with mechanical finesse. The tool head, prominently centered, rotates smoothly and rhythmically as it carefully hones a metal workpiece, demonstrating precise industrial craftsmanship. The metallic surface of the tool gleams under soft, diffuse lighting, highlighting its polished finish and utilitarian design. Shadows play across the surrounding machinery, adding depth and contrast to the industrial scene. Subtle reflections are visible on the pristine metal surface, emphasizing its high-quality engineering and maintenance. The cool, muted tones of the machining environment suggest a place of focused technical activity. This scene embodies a symphony of engineering precision and mechanical elegance, ideal for recreations geared towards industrial realism.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-industrial-machine-working-2230_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "In the video, a person sits at a round wooden table inside a modern office space filled with natural light coming through the large, patterned glass windows. They are focused intently on a laptop, typing with purpose, suggesting a state of deep concentration. The individual is dressed in a beige top and a checkered blazer, with a notebook and a mug nearby, hinting at a productive workspace setup. The background features geometric ceiling designs and a minimalistic interior, providing a contemporary and stylish ambiance.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-satisfied-woman-finishes-her-work-and-leaves-the-office-44750_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A sleek drone quietly ascends above a towering glass skyscraper, reflecting the sky and clouds as it goes. The building stretches vertically, with its mirrored surface capturing the dynamic interplay of light and shadow from the passing clouds. The drone moves with precision across the slowly panning scene, its dark silhouette contrasting against the building's bright reflections. The vastness of the sky provides a dramatic backdrop, emphasizing the sleek, modern aesthetics of the urban landscape and the advanced technology of the hovering drone.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-drone-flying-over-office-building-604_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A sleek, white drone hovers steadily in front of a modern skyscraper with reflective glass panels. The drone's propellers whir quietly as it maintains its position against the backdrop of the geometric patterns on the building. Each of its arms is extended outward, housing the rotating blades that are subtly blurred, conveying a sense of motion. The small, compact design of the drone is contrasted by the towering structure behind it. Soft lights on the drone's body blink rhythmically, adding a hint of color to its neutral palette. The scene captures a sense of technological harmony between the mechanical drone and the urban architecture. The overcast sky further emphasizes the drone's sharp outline, creating a serene yet futuristic ambiance.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-drone-flying-579_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "In a warmly lit recording studio, a man with long, wavy hair and facial hair sits at a round wooden table, dressed in a casual beige sweater. He is engaged in a conversation with another person, partially visible, who is adorned with headphones and sitting across from him. The atmosphere is intimate and relaxed, highlighted by the red glow of the microphones suspended before them. Glasses and studio equipment clutter the table, creating an authentic and dynamic podcast setting.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-couple-of-men-having-a-chat-for-a-podcast-44044_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A young man is sitting in a well-lit, modern office, wearing a beige turtleneck sweater that complements the warm tones of the room. He is focused and poised, gazing intently ahead while wearing sleek, white wireless earbuds in his ears. His dark hair frames his face, and he wears glasses that add an intellectual touch to his appearance. The office is spacious and airy, with large windows letting in ample natural light, creating a calming ambiance. As the sequence progresses, the man lifts his right hand, revealing a silver ring on his finger, and taps the earbud, perhaps to adjust the volume or answer a call. This small gesture suggests a moment of connection beyond the physical space, highlighting his engagement both in the environment and with unseen digital interactions. The visual emphasizes both his serene presence and the subtle interplay of technology with modern work life.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-man-listening-to-music-on-his-wireless-headphones-44742_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A sleek, modern smartphone rests calmly on a wooden slatted table, its screen turned off, reflecting subtle ambient light. The phone's smooth black surface contrasts starkly with the warm hues of the wooden table, drawing attention to its rounded edges and the single, circular home button at the bottom. The wood’s texture is visible, with its natural grains and lines intersecting the parallel slats, creating a sense of depth and simplicity in the scene. The lighting is soft, highlighting the natural beauty of the wood while providing a gentle sheen to the phone’s surface. There is a quiet, serene atmosphere, with no human presence, emphasizing the minimalist elegance of the scene. This setting conveys a perfect balance of technology and nature, ideal for recreating an image that speaks to both modernity and organic warmth.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-black-cellphone-on-a-wooden-table-1795_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A woman sits on a modern gray couch in a cozy, softly lit room, focused intently on a notepad in her hands. She wears a casual cream-colored cardigan over a white top, complementing her relaxed posture. Her short black hair frames her face as she occasionally glances at the notepad, deep in thought. A variety of notebooks and colorful pens are neatly arranged on the table in front of her, suggesting she is engaged in creative or academic work. The wall behind her is adorned with a minimalist artwork, adding a touch of sophistication to the setting. A pillow with abstract patterns rests beside her, adding warmth and comfort to the ambiance. The subtle interplay of natural light and shadows gives the scene a tranquil and contemplative atmosphere.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Business/mixkit-woman-in-her-living-room-working-writing-in-a-notepad-49914_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    }
+  ]
+}

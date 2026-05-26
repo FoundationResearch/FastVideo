@@ -1,23 +1,30 @@
-# DMD2 distillation: Wan 2.1 T2V 1.3B (teacher 50-step -> student 4-step).
+# DMD2 distillation: Wan2.1-Fun-1.3B-InP image-to-video (teacher 50-step ->
+# student few-step).
 #
-# - Teacher: frozen pretrained Wan 2.1 T2V 1.3B
+# - Teacher: frozen pretrained Wan2.1-Fun-1.3B-InP
 # - Student: trainable, initialized from the same pretrained weights
 # - Critic:  trainable, initialized from the same pretrained weights
-# - Validation: 4-step SDE sampling
+# - Validation: 4-step SDE sampling via the i2v DMD pipeline
+#
+# Uses WanI2VModel for all three roles (adds first-frame conditioning while
+# preserving text + negative-prompt CFG). The dataset must be preprocessed with
+# `--preprocess_task i2v`. sp_size MUST be 1 — the DMD rollout produces a
+# non-SP-split latent that is concatenated with the image conditioning, so
+# sequence-parallel temporal splitting would mismatch the channels/time dim.
 
 models:
   student:
-    _target_: fastvideo.train.models.wan.WanModel
-    init_from: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+    _target_: fastvideo.train.models.wan.WanI2VModel
+    init_from: weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
     trainable: true
   teacher:
-    _target_: fastvideo.train.models.wan.WanModel
-    init_from: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+    _target_: fastvideo.train.models.wan.WanI2VModel
+    init_from: weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
     trainable: false
     disable_custom_init_weights: true
   critic:
-    _target_: fastvideo.train.models.wan.WanModel
-    init_from: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+    _target_: fastvideo.train.models.wan.WanI2VModel
+    init_from: weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
     trainable: true
     disable_custom_init_weights: true
 
@@ -25,7 +32,7 @@ method:
   _target_: fastvideo.train.methods.distribution_matching.dmd2.DMD2Method
   rollout_mode: simulate
   generator_update_interval: 5
-  real_score_guidance_scale: 4.5
+  real_score_guidance_scale: 3.5
   dmd_denoising_steps: [1000, 750, 500, 250]
 
   # Critic optimizer (required — no fallback to training.optimizer)
@@ -38,17 +45,18 @@ training:
     num_gpus: 4
     sp_size: 1
     tp_size: 1
-    hsdp_replicate_dim: 1
-    hsdp_shard_dim: 4
+    hsdp_replicate_dim: 4
+    hsdp_shard_dim: 1
 
   data:
-    data_path: data/Wan-Syn_77x448x832_600k
+    # Preprocess with fastvideo/pipelines/preprocess/v1_preprocess.py --preprocess_task i2v
+    data_path: data/your_i2v_preprocessed/combined_parquet_dataset
     dataloader_num_workers: 4
     train_batch_size: 1
     training_cfg_rate: 0.0
     seed: 1000
     num_latent_t: 20
-    num_height: 448
+    num_height: 480
     num_width: 832
     num_frames: 77
 
@@ -64,13 +72,13 @@ training:
     gradient_accumulation_steps: 1
 
   checkpoint:
-    output_dir: outputs/wan2.1_dmd2_4steps
-    training_state_checkpointing_steps: 20
+    output_dir: outputs/wan_fun_inp_i2v_dmd2
+    training_state_checkpointing_steps: 500
     checkpoints_total_limit: 3
 
   tracker:
     project_name: distillation_wan
-    run_name: wan2.1_dmd2_4steps
+    run_name: wan_fun_inp_i2v_dmd2
 
   model:
     enable_gradient_checkpointing_type: full
@@ -79,19 +87,15 @@ callbacks:
   grad_clip:
     max_grad_norm: 1.0
   validation:
-    pipeline_target: fastvideo.pipelines.basic.wan.wan_dmd_pipeline.WanDMDPipeline
-    dataset_file: examples/training/finetune/Wan2.1-VSA/Wan-Syn-Data/validation_4.json
-    every_steps: 50
+    pipeline_target: fastvideo.pipelines.basic.wan.wan_i2v_dmd_pipeline.WanImageToVideoDmdPipeline
+    dataset_file: examples/training/finetune/Wan2.1-Fun-1.3B-InP/crush_smol/validation.json
+    every_steps: 200
     sampling_steps: [4]
     sampling_timesteps: [1000, 750, 500, 250]
     guidance_scale: 6.0
     # DMD students are distilled with SDE (stochastic) multi-step sampling;
     # validate the same way (true=SDE, false=ODE Euler).
     stochastic_sampling: true
-  ema:                                                                                                                     
-    _target_: fastvideo.train.callbacks.ema.EMACallback                                                                    
-    decay: 0.98                                                                                                          
-    start_iter: 0        # delay EMA updates until this iteration 
 
 pipeline:
   flow_shift: 8

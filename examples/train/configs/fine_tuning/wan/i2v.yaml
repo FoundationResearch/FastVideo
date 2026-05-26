@@ -1,0 +1,79 @@
+# Wan2.1-Fun-1.3B-InP image-to-video (i2v) finetune.
+#
+# Uses WanI2VModel, which concatenates a temporal mask + first-frame latent
+# onto the noisy video latent (=> 36 in_channels) and forwards CLIP image
+# features as encoder_hidden_states_image. The dataset must be preprocessed
+# with `--preprocess_task i2v` (i.e. carry clip_feature / first_frame_latent /
+# pil_image columns).
+#
+# NOTE: keep the default (precondition_outputs unset/false) loss — the
+# precondition path subtracts the 36-channel input from the 16-channel
+# prediction and would shape-mismatch for i2v.
+
+models:
+  student:
+    _target_: fastvideo.train.models.wan.WanI2VModel
+    init_from: weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+    trainable: true
+
+method:
+  _target_: fastvideo.train.methods.fine_tuning.finetune.FineTuneMethod
+
+training:
+  distributed:
+    num_gpus: 4
+    sp_size: 1
+    tp_size: 1
+    hsdp_replicate_dim: 4
+    hsdp_shard_dim: 1
+
+  data:
+    # Preprocess with fastvideo/pipelines/preprocess/v1_preprocess.py --preprocess_task i2v
+    data_path: data/your_i2v_preprocessed/combined_parquet_dataset
+    dataloader_num_workers: 4
+    train_batch_size: 1
+    training_cfg_rate: 0.1
+    seed: 1000
+    num_latent_t: 20
+    num_height: 480
+    num_width: 832
+    num_frames: 77
+
+  optimizer:
+    learning_rate: 1.0e-5
+    betas: [0.9, 0.999]
+    weight_decay: 1.0e-4
+    lr_scheduler: constant
+    lr_warmup_steps: 0
+
+  loop:
+    max_train_steps: 2000
+    gradient_accumulation_steps: 1
+
+  checkpoint:
+    output_dir: outputs/wan_fun_inp_i2v_finetune
+    training_state_checkpointing_steps: 500
+    checkpoints_total_limit: 3
+    resume_from_checkpoint: latest
+
+  tracker:
+    project_name: fastvideo
+    run_name: wan_fun_inp_i2v_finetune
+
+  model:
+    enable_gradient_checkpointing_type: full
+
+callbacks:
+  grad_clip:
+    _target_: fastvideo.train.callbacks.grad_clip.GradNormClipCallback
+    max_grad_norm: 1.0
+  validation:
+    _target_: fastvideo.train.callbacks.validation.ValidationCallback
+    pipeline_target: fastvideo.pipelines.basic.wan.wan_i2v_pipeline.WanImageToVideoPipeline
+    dataset_file: examples/training/finetune/Wan2.1-Fun-1.3B-InP/crush_smol/validation.json
+    every_steps: 100
+    sampling_steps: [40]
+    guidance_scale: 6.0
+
+pipeline:
+  flow_shift: 3

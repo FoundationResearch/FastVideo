@@ -1,0 +1,76 @@
+{
+  "data": [
+    {
+      "caption": "A serene cat with striking blue eyes gazes softly into the distance, its head framed against a plain background. The cat's fur is a delicate cream color with subtle orange accents around its eyes and ears, creating a gentle contrast. The close-up shot highlights its calm demeanor and the delicate texture of its whiskers, which twitch slightly with each breath. Its nose, a soft pink, stands out prominently on its face, drawing attention to its poised and peaceful expression. The cat wears a dark collar, adding a touch of contrast that signifies its domestic nature. Its ears flick occasionally, suggesting a heightened awareness of its surroundings despite its relaxed posture. The tranquil scene captures the essence of feline grace and serenity, emphasizing the cat's gentle presence and captivating gaze.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Cats/mixkit-white-blue-eyed-cat-1538_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A woman is captured in a serene moment of yoga practice, standing gracefully in front of a bright window. Her hands are pressed together in a prayer position against her chest, a sign of calm and focus. She has short, dark hair tied back, and her arm is adorned with intricate floral tattoos that stand out against her skin. She wears a dark athletic top, highlighting the fit and muscular tone of her upper body. The background is softly lit, with sunlight streaming in, casting a peaceful glow around her figure. Lush green plants are placed around the area, contributing to the tranquil and natural atmosphere of the scene.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Dogs/mixkit-upward-and-downward-facing-dog-892_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "In the dimly lit room, a lone figure stands facing a set of window blinds, casting a silhouette against the backdrop. As the figure moves gracefully, they begin to part the blinds, allowing slivers of morning light to filter through. The room slowly brightens, revealing subtle textures and shadows dancing across the floor. With deliberate motions, they pull the blinds open, revealing an expansive view of the ocean. The transition from shadow to light unveils the details of their form, draped in casual attire. The serene setting outside contrasts with the once-darkened room, creating a tranquil scene. Palm leaves sway gently in the breeze, framing the horizon where the sea meets the sky. The figure stands still, arms outstretched, absorbing the tranquil beauty before them. Their silhouette, now against the bright daylight, epitomizes a moment of peaceful solitude and contemplation.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/beach/mixkit-woman-taking-in-the-ocean-view-from-her-hotel-room-1123_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "The scene features a collection of vibrant guitar pedals prominently displayed on a sleek, flat surface. Dominating the foreground is a striking orange pedal, defined by its glossy finish and streamlined contours. It features a metal footswitch protruding prominently at the top, adjacent to a glowing, red indicator light encapsulated in a bulbous, transparent dome. In the slightly blurred background, additional pedals appear, one in white and another with orange accents, adding depth and context to the arrangement. Each pedal includes visible input and output jacks on the side, hinting at their connectivity and function. The overall composition suggests a dynamic yet orderly setup, ideal for an AI to recreate with precision and attention to detail.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Dance/mixkit-distortion-pedals-connected-2410_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "The scene opens on a long, empty highway stretching into the distance under a cloudy sky, flanked by dense forests on both sides. A solitary vehicle steadily makes its way along the road, its silhouette casting a faint shadow on the smooth pavement. The landscape around is a mix of lush green and brown tones, hinting at early autumn. The distant mountains provide a serene backdrop to the scene, under a sky painted with pastel hues from the setting sun. The road's straight lines and vanishing point create a sense of vastness and endless possibility. This peaceful, undisturbed environment conjures a feeling of solitude and introspection, perfectly suited for an AI to recreate a sense of calm and expansive journey.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Car/mixkit-highway-between-trees-506_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A woman stands tall and confidently in a captivating setting, bathed in soft, natural light. She wears a striking, flowing red dress that adds a vivid contrast to the muted background of bare-branched trees and overcast sky. The gentle sway of her dress enhances her elegant stance, while her hand reaches up to touch her hair, adding a sense of motion to the scene. This image beautifully captures her poised and serene demeanor amidst the tranquil, almost ethereal, outdoor environment.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Fashion/mixkit-woman-in-a-red-dress-viewed-from-below-with-the-18213_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "A lone climber is carefully adjusting gear atop a sunlit mountain peak, the golden rays of the sun casting a warm glow around them. They are crouched on the rocky surface, wearing a protective helmet and sunglasses, emphasizing safety and preparedness. The climber’s red shirt contrasts vividly with the natural backdrop, creating a striking visual focus for the scene. Below, the expansive landscape stretches out, showcasing fields and distant hills under a clear blue sky. A lens flare enhances the dramatic lighting effect, adding a touch of realism and intensity to the moment. The ropes and carabiners in their hands suggest a meticulous approach, reflecting the climber’s dedication and focus. The scene encapsulates an exhilarating blend of adventure and tranquility, inviting the viewer into a moment of serene perseverance amidst nature's grandeur.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/mountain/mixkit-laying-a-safety-rope-on-top-of-the-hill-34580_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    },
+    {
+      "caption": "In the video, a person is standing in the center of a dark, featureless space, illuminated by a spotlight that emphasizes their presence. The individual is dressed in a traditional martial arts uniform, known as a gi, which is predominantly white with a black belt tied around the waist, indicating a high level of expertise. The background remains pitch black, creating a stark contrast with the brightly lit figure, ensuring complete focus on them. The person's expression is serious and focused, reflecting a deep sense of discipline and concentration. Their hands move gracefully, transitioning through various martial arts stances, demonstrating practiced skill and fluidity. The uniform's crisp fabric folds and subtly reflects the light, further highlighting each precise movement. Despite the simplicity of the environment, the scene is dynamic, with each motion capturing the essence of martial arts practice. The video effectively conveys a sense of calm strength and mastery, making it ideal for an AI to recreate with attention to posture, lighting, and attire.",
+      "image_path": null,
+      "video_path": "/home/hal-alex/workspace/FastVideo/data/Mixkit-Src/Sport/mixkit-karate-fighter-bowing-to-the-front-49706_clip_1.mp4",
+      "num_inference_steps": 40,
+      "height": 480,
+      "width": 832,
+      "num_frames": 77
+    }
+  ]
+}
