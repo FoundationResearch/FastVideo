@@ -23,9 +23,9 @@ max_code_length: 20000           # this seed prompt is ~7KB; leave headroom
 # Frontier model via any OpenAI-compatible endpoint. Set the API key in env
 # (OpenEvolve reads OPENAI_API_KEY for the openai client). EDIT api_base + model.
 llm:
-  api_base: "https://api.openai.com/v1"     # <-- CHANGE to your frontier provider's OpenAI-compatible base
+  api_base: "https://api.openai.com/v1"     # OpenAI (frontier evolver + judge)
   models:
-    - name: "REPLACE_WITH_FRONTIER_MODEL"   # <-- CHANGE (e.g. a strong gpt/claude/gemini model id)
+    - name: "gpt-5.1"                        # strong frontier model for prompt mutation
       weight: 1.0
   temperature: 0.6
   max_tokens: 16000
