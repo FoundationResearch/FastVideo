@@ -1,0 +1,10 @@
+{"id": "case_coffee_argue", "prompt": "two roommates argue over the last cup of coffee in a tiny kitchen", "tags": ["comedy", "dialogue", "indoor"], "difficulty": "easy"}
+{"id": "case_dog_park", "prompt": "a golden retriever steals a frisbee at the park and the owner chases it", "tags": ["action", "outdoor", "animal"], "difficulty": "easy"}
+{"id": "case_first_date", "prompt": "an awkward first date at a ramen shop that slowly warms up", "tags": ["dialogue", "emotion", "indoor"], "difficulty": "medium"}
+{"id": "case_surfer", "prompt": "a surfer paddles out, catches a big wave, and wipes out, laughing", "tags": ["action", "outdoor", "water"], "difficulty": "medium"}
+{"id": "case_detective", "prompt": "a noir detective finds a hidden clue in a dim office, rain on the window", "tags": ["cinematic", "mood", "indoor"], "difficulty": "medium"}
+{"id": "case_street_food", "prompt": "a street food vendor flips noodles in a wok as a crowd gathers at night", "tags": ["spectacle", "outdoor", "food"], "difficulty": "medium"}
+{"id": "case_robot_pet", "prompt": "a small robot tries to befriend a suspicious cat in a living room", "tags": ["comedy", "scifi", "indoor"], "difficulty": "medium"}
+{"id": "case_band_practice", "prompt": "a garage band's drummer keeps messing up and the singer gets frustrated", "tags": ["dialogue", "music", "indoor"], "difficulty": "medium"}
+{"id": "case_hike_summit", "prompt": "two friends hike to a mountain summit at sunrise and take in the view", "tags": ["cinematic", "outdoor", "emotion"], "difficulty": "hard"}
+{"id": "case_magic_trick", "prompt": "a street magician does a card trick that goes wrong, then saves it", "tags": ["comedy", "performance", "outdoor"], "difficulty": "hard"}

@@ -1,0 +1,84 @@
+# OpenEvolve config: evolve the Dreamverse `rewrite_new_rollout` system prompt
+# (apps/dreamverse rewrite_user surface: one-line user idea -> 6-segment 30s rollout).
+#
+# Two LLMs are involved, DO NOT confuse them:
+#   1) EVOLVER LLM  -> configured in the `llm:` block below. OpenEvolve uses it
+#      to MUTATE the system prompt. Use a strong frontier model.
+#   2) TASK LLM     -> the production prompt-extension model (gpt-oss-120b on
+#      Cerebras/Groq) that the evaluator actually runs the candidate prompt
+#      against. It is configured via FASTVIDEO_PROMPT_* env vars + the dreamverse
+#      PromptEnhancer, NOT here.
+#   3) JUDGE LLM    -> the Stage-1 LLM-as-judge that scores rollouts. Configured
+#      via JUDGE_* env vars in evaluator.py; defaults to reuse the EVOLVER llm.
+
+# --- General -----------------------------------------------------------------
+max_iterations: 50
+checkpoint_interval: 10
+log_level: "INFO"
+diff_based_evolution: false      # full-rewrite mode (best for prompt text)
+language: "text"
+max_code_length: 20000           # this seed prompt is ~7KB; leave headroom
+
+# --- Evolver LLM (mutates the prompt) ----------------------------------------
+# Frontier model via any OpenAI-compatible endpoint. Set the API key in env
+# (OpenEvolve reads OPENAI_API_KEY for the openai client). EDIT api_base + model.
+llm:
+  api_base: "https://api.openai.com/v1"     # <-- CHANGE to your frontier provider's OpenAI-compatible base
+  models:
+    - name: "REPLACE_WITH_FRONTIER_MODEL"   # <-- CHANGE (e.g. a strong gpt/claude/gemini model id)
+      weight: 1.0
+  temperature: 0.6
+  max_tokens: 16000
+  timeout: 180
+  retries: 3
+
+# --- Prompt sampler (how the evolver is asked to improve the prompt) ---------
+prompt:
+  num_top_programs: 3
+  num_diverse_programs: 2
+  include_artifacts: true        # feed structural failures / weak-seam notes back to the evolver
+  system_message: |
+    You are an expert prompt engineer optimizing the SYSTEM PROMPT of a real-time
+    video "rewriter" LLM. Given a one-line user idea, that rewriter must output a
+    JSON rollout of exactly 6 sequential 5-second segment prompts for the ltx2
+    video model (30s total), where each segment is conditioned only on the last
+    frames/audio of the previous segment.
+
+    You may ONLY revise the behavioral policy text inside the evolve region.
+    The role description, the model-mechanics context, the 6-segment task
+    contract, and the JSON output_format are FROZEN and outside your control.
+
+    Optimize for: smooth segment-to-segment (seam) continuity, faithful coverage
+    of the user's intent, vivid but grounded staging, and lively non-static
+    progression. Keep the rewriter's JSON output contract intact. Do not add
+    verbosity that does not change behavior; prefer sharper, more concrete policy.
+
+    Return ONLY the revised policy text for the evolve region. No explanations.
+
+# --- MAP-Elites database -----------------------------------------------------
+database:
+  population_size: 500
+  archive_size: 100
+  num_islands: 3
+  # Feature dimensions are RAW continuous values returned by the evaluator.
+  # prompt_length is the latency/cost proxy (longer system prompt -> slower TTFT
+  # on Cerebras in the real-time demo); static_rate captures "too static" failure.
+  feature_dimensions: ["prompt_length", "static_rate"]
+  feature_bins: 8
+  elite_selection_ratio: 0.1
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.6
+  migration_interval: 10
+  migration_rate: 0.1
+
+# --- Evaluator ---------------------------------------------------------------
+evaluator:
+  timeout: 1800
+  max_retries: 2
+  parallel_evaluations: 2
+  # Stage 1 only for now (cheap proxy: run rewriter on the eval bank + LLM-judge,
+  # no video render). Flip cascade_evaluation to true and add evaluate_stage2
+  # (render + boundary slicing + human/video eval via EvolveService) when the
+  # eval side is ready.
+  cascade_evaluation: false
+  cascade_thresholds: [0.6]

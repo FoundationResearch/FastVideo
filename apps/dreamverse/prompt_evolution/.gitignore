@@ -1,0 +1,11 @@
+# local secrets -- never commit
+env.local.sh
+.env
+.env.*
+*.key
+
+# openevolve run outputs
+openevolve_output/
+results/
+checkpoints/
+*.log
