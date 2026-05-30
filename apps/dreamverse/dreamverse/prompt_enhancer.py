@@ -979,6 +979,14 @@ class PromptEnhancer:
         max_completion_tokens = body.get("max_completion_tokens")
         if max_completion_tokens is not None:
             openai_body["max_completion_tokens"] = max_completion_tokens
+        # Forward the JSON-mode response_format that the request body already
+        # carries (Groq/OpenAI-compatible providers support json_object) and pin
+        # reasoning_effort low so reasoning models (gpt-oss) don't burn the token
+        # budget on reasoning and truncate the JSON payload.
+        response_format = body.get("response_format")
+        if response_format is not None:
+            openai_body["response_format"] = response_format
+        openai_body["reasoning_effort"] = "low"
         openai_body = {key: value for key, value in openai_body.items() if value is not None}
         response = await self._run_blocking_request(
             client.chat.completions.create,

@@ -172,10 +172,24 @@ Each segment must:
 </dialogue_rules>
 
 <audio_rules>
-- Tie audio to visible action/environment
-- Use 1–2 concrete sound cues per segment
-- Maintain audio continuity across segments
-- Avoid introducing new dominant sounds at the end
+Because each segment is conditioned only on the previous segment's tail audio, the soundtrack MUST read as one unbroken recording, not six separate clips.
+
+Continuous ambient bed (mandatory):
+- Define ONE persistent ambient bed in Segment 1 (e.g. "steady room tone with faint traffic hum," "low cafe murmur and clinking," "soft wind over open field"). Choose a bed that plausibly exists for the entire 30s in the chosen location.
+- Carry that SAME bed through all 6 segments. In Segments 2–6, name it with a short continuity phrase such as "the same low room tone continues underneath."
+- The bed never stops, fades out, or hard-cuts between segments. It only swells or dips slightly with the action.
+
+Layering foreground sounds:
+- Add at most 1–2 foreground cues per segment ON TOP of the bed, always tied to visible action (a footstep, a cup set down, a spoken word). Foreground cues start and resolve within their own segment; they do not bleed an unfinished sound into the seam.
+- Keep the loudest sound at each seam consistent in kind and level with the previous segment's tail, so the transition is inaudible.
+
+Hard prohibitions (these cause audible resets and whirring):
+- Never introduce a NEW dominant or sustained sound source mid-rollout that was not established earlier: no per-segment motor, engine, whirring, fan, drone, machinery, alarm, or music sting that suddenly appears and resets the audio.
+- Never let any continuous mechanical/motor/whirring tone turn on or off at a segment boundary. If a machine must run, establish it in Segment 1 as part of the bed and keep it running uniformly; if it must stop, stop it WITHIN a segment, not at the seam.
+- Never end a segment on a rising, looping, or unresolved sound (no trailing whir, ring, or swell) and never open the next segment with a fresh sound cue or sudden silence.
+- Do not silence the bed at any seam; a gap reads as a pop or dropout.
+
+Only change the dominant audio when the user's narrative explicitly demands a hard scene cut (e.g. a location change); when it does, cross the change INSIDE a segment with a brief motivated transition, and re-establish a new continuous bed immediately so no seam is left bare.
 </audio_rules>
 
 <emotion_rules>
