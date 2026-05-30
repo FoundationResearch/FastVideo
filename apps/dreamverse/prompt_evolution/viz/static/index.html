@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dreamverse · Prompt Evolution</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141925; --panel2:#1b2230; --ink:#e7ecf3; --muted:#8a96a8;
+    --accent:#5db0ff; --good:#39d98a; --warn:#ffb454; --line:#273040;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:18px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .meta{color:var(--muted);font-size:12.5px}
+  header .meta b{color:var(--ink);font-weight:600}
+  .mock{margin-left:auto;background:#3a2a12;color:var(--warn);padding:4px 10px;border-radius:6px;font-size:12px;border:1px solid #5a3f17}
+  main{padding:20px 24px;max-width:1500px;margin:0 auto}
+  .section-title{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);margin:26px 0 12px}
+  /* hero strip */
+  .hero{display:flex;gap:14px;overflow-x:auto;padding-bottom:8px}
+  .hero .gcard{flex:0 0 220px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .hero .gcard video{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:cover}
+  .hero .gcap{padding:8px 10px;display:flex;justify-content:space-between;align-items:center}
+  .hero .gen{color:var(--muted);font-size:12px}
+  .arrow{align-self:center;color:var(--muted);flex:0 0 auto}
+  .score{font-variant-numeric:tabular-nums;font-weight:700}
+  .score.big{font-size:15px}
+  /* chart */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  #trendWrap{height:240px}
+  /* controls */
+  .controls{display:flex;gap:8px;align-items:center;margin:8px 0 14px;flex-wrap:wrap}
+  .controls button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:13px}
+  .controls button.active{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
+  /* candidate grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+  .card.best{border-color:var(--good);box-shadow:0 0 0 1px var(--good) inset}
+  .card video{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:cover}
+  .card .body{padding:12px 13px;display:flex;flex-direction:column;gap:9px}
+  .card .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .cid{font-size:12px;color:var(--muted);font-family:ui-monospace,monospace}
+  .badge{background:var(--good);color:#04130b;border-radius:6px;padding:2px 8px;font-weight:700;font-variant-numeric:tabular-nums}
+  .best .badge{background:var(--good)}
+  .bars{display:flex;flex-direction:column;gap:5px}
+  .bar{display:grid;grid-template-columns:120px 1fr 38px;align-items:center;gap:8px;font-size:11.5px;color:var(--muted)}
+  .track{height:7px;background:var(--panel2);border-radius:4px;overflow:hidden}
+  .fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#2c7a55,var(--good))}
+  .bar .v{text-align:right;color:var(--ink);font-variant-numeric:tabular-nums}
+  .mut{font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
+  .lin{font-size:11px;color:var(--muted);font-family:ui-monospace,monospace}
+  .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Dreamverse · System-Prompt Evolution</h1>
+  <div class="meta" id="meta"></div>
+  <div class="mock" id="mockTag" style="display:none">MOCK DATA</div>
+</header>
+<main>
+  <div class="section-title">Best rollout per generation — watch quality climb →</div>
+  <div class="hero" id="hero"></div>
+
+  <div class="section-title">Fitness over generations</div>
+  <div class="panel"><div id="trendWrap"><canvas id="trend"></canvas></div></div>
+
+  <div class="section-title">Candidates</div>
+  <div class="controls" id="genControls"></div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script>
+const DIM_LABELS = {
+  text_alignment:"text align", segment_consistency:"seg consistency",
+  dynamic_degree:"dynamic", motion_smoothness:"motion smooth",
+  temporal_flicker:"anti-flicker", sharpness:"sharpness",
+  colorfulness:"colorfulness", seam_continuity:"seam"
+};
+let DATA=null, RUN=null, curGen="all";
+
+async function boot(){
+  const runs=(await (await fetch("/api/runs")).json()).runs;
+  RUN = runs[0] || "mock";
+  DATA = await (await fetch(`/runs/${RUN}/evolution.json`)).json();
+  renderMeta(); renderHero(); renderTrend(); renderControls(); renderGrid();
+}
+function vurl(v){ return `/runs/${RUN}/${v}`; }
+function bestOf(g){ return g.candidates.reduce((a,b)=>a.combined_score>=b.combined_score?a:b); }
+
+function renderMeta(){
+  document.getElementById("meta").innerHTML =
+    `target <b>${DATA.target}</b> · evolver <b>${DATA.evolver_model}</b> · task <b>${DATA.task_model}</b> · `+
+    `dims <b>${(DATA.feature_dimensions||[]).join(" × ")}</b> · <b>${DATA.generations.length}</b> generations`;
+  if(DATA.note && DATA.note.toLowerCase().includes("mock")) document.getElementById("mockTag").style.display="";
+}
+function renderHero(){
+  const h=document.getElementById("hero"); h.innerHTML="";
+  DATA.generations.forEach((g,i)=>{
+    const b=bestOf(g);
+    const c=document.createElement("div"); c.className="gcard";
+    c.innerHTML=`<video src="${vurl(b.video)}" muted loop autoplay playsinline></video>
+      <div class="gcap"><span class="gen">gen ${g.generation}</span>
+      <span class="score big" style="color:var(--good)">${b.combined_score.toFixed(3)}</span></div>`;
+    h.appendChild(c);
+    if(i<DATA.generations.length-1){const a=document.createElement("div");a.className="arrow";a.textContent="→";h.appendChild(a);}
+  });
+}
+function renderTrend(){
+  const labels=DATA.generations.map(g=>`gen ${g.generation}`);
+  const best=DATA.generations.map(g=>bestOf(g).combined_score);
+  const mean=DATA.generations.map(g=>g.candidates.reduce((s,c)=>s+c.combined_score,0)/g.candidates.length);
+  new Chart(document.getElementById("trend"),{
+    type:"line",
+    data:{labels,datasets:[
+      {label:"best",data:best,borderColor:"#39d98a",backgroundColor:"#39d98a22",tension:.3,fill:true,pointRadius:4},
+      {label:"mean",data:mean,borderColor:"#5db0ff",backgroundColor:"#5db0ff11",tension:.3,fill:true,pointRadius:3,borderDash:[5,4]},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{y:{suggestedMin:0.4,suggestedMax:1,grid:{color:"#27304055"},ticks:{color:"#8a96a8"}},
+              x:{grid:{color:"#27304033"},ticks:{color:"#8a96a8"}}},
+      plugins:{legend:{labels:{color:"#e7ecf3"}}}}
+  });
+}
+function renderControls(){
+  const c=document.getElementById("genControls"); c.innerHTML="";
+  const mk=(label,val)=>{const b=document.createElement("button");b.textContent=label;
+    b.className=val===curGen?"active":"";b.onclick=()=>{curGen=val;renderControls();renderGrid();};return b;};
+  c.appendChild(mk("All","all"));
+  DATA.generations.forEach(g=>c.appendChild(mk(`Gen ${g.generation}`,g.generation)));
+}
+function dimBars(m){
+  return Object.keys(DIM_LABELS).filter(k=>k in m).map(k=>{
+    const v=m[k];const pct=Math.round(v*100);
+    return `<div class="bar"><span>${DIM_LABELS[k]}</span>
+      <span class="track"><span class="fill" style="width:${pct}%"></span></span>
+      <span class="v">${v.toFixed(2)}</span></div>`;
+  }).join("");
+}
+function card(c,best){
+  const el=document.createElement("div"); el.className="card"+(best?" best":"");
+  el.innerHTML=`<video src="${vurl(c.video)}" muted loop autoplay playsinline></video>
+    <div class="body">
+      <div class="row"><span class="cid">${c.id}</span>
+        <span class="badge">${c.combined_score.toFixed(3)}</span></div>
+      <div class="row"><span class="tag">gen ${c.generation}</span>
+        <span class="tag">island ${c.island}</span>
+        <span class="tag">~${c.prompt_length} chars</span>
+        ${best?'<span class="tag" style="color:var(--good);border-color:var(--good)">best</span>':''}</div>
+      <div class="bars">${dimBars(c.metrics)}</div>
+      <div class="mut">${c.mutation_summary}</div>
+      <div class="lin">parent: ${c.parent_id||"— (seed)"}</div>
+    </div>`;
+  return el;
+}
+function renderGrid(){
+  const grid=document.getElementById("grid"); grid.innerHTML="";
+  const gens = curGen==="all" ? DATA.generations : DATA.generations.filter(g=>g.generation===curGen);
+  gens.forEach(g=>{const b=bestOf(g);
+    g.candidates.forEach(c=>grid.appendChild(card(c,c.id===b.id)));});
+}
+boot().catch(e=>{document.body.innerHTML="<pre style='padding:24px'>load error: "+e+"</pre>";});
+</script>
+</body>
+</html>
