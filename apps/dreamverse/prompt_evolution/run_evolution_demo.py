@@ -112,13 +112,17 @@ def evaluate_candidate(head: str, block: str, tail: str, renderer, run_dir: str,
     segments = list(rewrite.prompts)
     out_mp4 = os.path.join(run_dir, "videos", f"{cand_id}.mp4")
     rinfo = renderer.render(segments, out_mp4)
-    scores = score_rollout(out_mp4, segment_prompts=segments, segment_boundaries=rinfo["segment_frame_counts"])
+
+    if os.environ.get("METRIC_MODE", "lean") == "lean":
+        import stage2_lean
+        combined, metrics, _ = stage2_lean.score(out_mp4, rinfo, segments, EVAL_IDEA)
+    else:  # legacy lightweight scorer
+        s = score_rollout(out_mp4, segment_prompts=segments, segment_boundaries=rinfo["segment_frame_counts"])
+        combined = s["video_score"]
+        metrics = {k: v for k, v in s.items() if k not in ("video_score", "clip_used", "num_frames", "num_segments")}
     return {
-        "video_score": scores["video_score"],
-        "metrics": {
-            k: v
-            for k, v in scores.items() if k not in ("video_score", "clip_used", "num_frames", "num_segments")
-        },
+        "video_score": combined,
+        "metrics": metrics,
         "video": f"videos/{cand_id}.mp4",
         "segments": segments,  # the 6 rewritten segment prompts
         "system_prompt": sysprompt,  # full prompt fed to the task model

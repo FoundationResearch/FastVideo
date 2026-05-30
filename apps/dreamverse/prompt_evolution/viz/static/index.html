@@ -93,10 +93,13 @@
 
 <script>
 const DIM_LABELS = {
+  // lean VBench set (higher = better)
+  prompt_consistency:"prompt consistency", subject_consistency:"subject consistency",
+  aesthetic_quality:"aesthetic", dynamic_degree:"dynamic", quality_mean:"quality mean",
+  // legacy lightweight scorer dims
   text_alignment:"text align", segment_consistency:"seg consistency",
-  dynamic_degree:"dynamic", motion_smoothness:"motion smooth",
-  temporal_flicker:"anti-flicker", sharpness:"sharpness",
-  colorfulness:"colorfulness", seam_continuity:"seam"
+  motion_smoothness:"motion smooth", temporal_flicker:"anti-flicker",
+  sharpness:"sharpness", colorfulness:"colorfulness", seam_continuity:"seam"
 };
 let DATA=null, RUN=null, curGen="all", chart=null, lastSig="";
 

@@ -10,3 +10,9 @@
 {"id": "barista_latte", "prompt": "a barista making latte art", "difficulty": "easy"}
 {"id": "snow_walk", "prompt": "a person walking through falling snow", "difficulty": "easy"}
 {"id": "market_stall", "prompt": "a busy fruit stall at a market", "difficulty": "easy"}
+{"id": "chase_alley", "prompt": "a detective chases a thief through a narrow alley, then they burst onto a busy street", "difficulty": "hard"}
+{"id": "magic_reveal", "prompt": "a street magician does a card trick that goes wrong, then dramatically saves it", "difficulty": "hard"}
+{"id": "argue_makeup", "prompt": "two friends argue at a cafe, go quiet, then burst out laughing", "difficulty": "medium"}
+{"id": "cook_to_serve", "prompt": "a chef sears a steak in a loud kitchen, then plates it calmly at a quiet table", "difficulty": "hard"}
+{"id": "storm_clears", "prompt": "a hiker pushes through heavy rain on a ridge, then the clouds break to sunshine", "difficulty": "hard"}
+{"id": "band_solo", "prompt": "a garage band plays, the drummer messes up, the singer glares, they restart", "difficulty": "medium"}

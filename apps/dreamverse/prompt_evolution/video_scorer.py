@@ -153,7 +153,7 @@ def _get_clip() -> Any:
             from transformers import CLIPModel, CLIPProcessor
             name = os.environ.get("CLIP_MODEL", "openai/clip-vit-base-patch32")
             model = CLIPModel.from_pretrained(name).eval()
-            dev = "cuda" if torch.cuda.is_available() else "cpu"
+            dev = os.environ.get("METRIC_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
             model = model.to(dev)
             proc = CLIPProcessor.from_pretrained(name)
             _CLIP = (model, proc, dev, torch)

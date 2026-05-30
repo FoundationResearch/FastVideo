@@ -15,10 +15,12 @@ Usage:
     python render_rollout.py prompts.json out.mp4 # render given 6 prompts
 """
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+from typing import Any
 
 import numpy as np
 
@@ -51,9 +53,12 @@ class RolloutRenderer:
         self.fps = fps
 
     def render(self, prompts: list, out_mp4: str) -> dict:
-        """Render `prompts` (6 segment strings) into `out_mp4`. Returns shape/boundaries."""
+        """Render `prompts` (6 segment strings) into `out_mp4` (with audio). Returns
+        shape/boundaries (incl. seam frame indices for the boundary metrics)."""
         import time
         frames: list = []
+        audio_chunks: list = []
+        sr = None
         seg_counts, seg_timings = [], []
         for idx, prompt in enumerate(prompts, start=1):
             ts = time.perf_counter()
@@ -63,20 +68,36 @@ class RolloutRenderer:
                 image_path=None,
                 reset_conditioning=(idx == 1),
             )
-            segf = step.frames
-            if getattr(step, "head_trim_frames", 0):
-                segf = segf[step.head_trim_frames:]
+            trim = getattr(step, "head_trim_frames", 0) or 0
+            segf = step.frames[trim:] if trim else step.frames
             frames.extend(segf)
             seg_counts.append(len(segf))
+            # collect audio, dropping the conditioning-overlap head on continuations
+            a = _audio_to_mono(getattr(step, "audio", None))
+            if a is not None:
+                sr = getattr(step, "audio_sample_rate", None) or sr
+                a_trim = getattr(step, "head_trim_audio_frames", 0) or 0
+                if a_trim and sr:
+                    drop = int(round(a_trim / self.fps * sr))
+                    a = a[drop:]
+                audio_chunks.append(a)
             seg_timings.append(round(time.perf_counter() - ts, 2))
 
         os.makedirs(os.path.dirname(os.path.abspath(out_mp4)), exist_ok=True)
-        _write_mp4(frames, out_mp4, self.fps)
+        audio = np.concatenate(audio_chunks) if audio_chunks else None
+        _write_mp4(frames, out_mp4, self.fps, audio=audio, sr=sr)
+        # seam_frames = first frame index of each continuation segment (the joins)
+        seams, acc = [], 0
+        for c in seg_counts[:-1]:
+            acc += c
+            seams.append(acc)
         return {
             "out_mp4": out_mp4,
             "num_frames": len(frames),
             "duration_s": round(len(frames) / self.fps, 2),
             "segment_frame_counts": seg_counts,  # boundaries for video_scorer
+            "seam_frames": seams,  # joins for boundary.* metrics
+            "has_audio": audio is not None,
             "segment_s": seg_timings,
         }
 
@@ -97,40 +118,57 @@ def render_rollout(prompts: list, out_mp4: str, *, gpu_id: int = 0, fps: int = 2
         r.close()
 
 
-def _write_mp4(frames: list, out: str, fps: int) -> None:
+def _audio_to_mono(audio) -> Any:
+    """Normalize a StepResult.audio (torch tensor / ndarray / None) to 1D float32."""
+    if audio is None:
+        return None
+    if hasattr(audio, "detach"):
+        audio = audio.detach().to("cpu").float().numpy()
+    a = np.asarray(audio, dtype=np.float32)
+    if a.ndim > 1:
+        a = a.reshape(a.shape[0], -1).mean(axis=1) if a.shape[0] >= a.shape[-1] else a.mean(axis=0)
+    return a.reshape(-1)
+
+
+def _write_wav(path: str, audio: np.ndarray, sr: int) -> None:
+    import wave
+    a = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
+    pcm = (a * 32767.0).astype("<i2").tobytes()
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sr))
+        w.writeframes(pcm)
+
+
+def _write_mp4(frames: list, out: str, fps: int, audio=None, sr=None) -> None:
     if not frames:
         raise RuntimeError("no frames to write")
     h, w = frames[0].shape[:2]
+    have_audio = audio is not None and sr and len(audio) > 0
+    wav_path = out + ".tmp.wav"
+    if have_audio:
+        _write_wav(wav_path, audio, sr)
     cmd = [
-        FFMPEG_BIN,
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "rgb24",
-        "-s",
-        f"{w}x{h}",
+        FFMPEG_BIN, "-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
         "-r",
-        str(fps),
-        "-i",
-        "pipe:0",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-pix_fmt",
-        "yuv420p",
-        out,
+        str(fps), "-i", "pipe:0"
     ]
+    if have_audio:
+        cmd += ["-i", wav_path]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"]
+    if have_audio:
+        cmd += ["-c:a", "aac", "-shortest"]
+    cmd += [out]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     assert proc.stdin is not None
     for fr in frames:
         proc.stdin.write(np.ascontiguousarray(fr, dtype=np.uint8).tobytes())
     proc.stdin.close()
     rc = proc.wait()
+    if have_audio:
+        with contextlib.suppress(OSError):
+            os.remove(wav_path)
     if rc != 0:
         raise RuntimeError(f"ffmpeg exited {rc}")
 
