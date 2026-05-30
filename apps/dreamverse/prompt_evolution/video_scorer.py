@@ -193,6 +193,13 @@ def _clip_text_embed(text: str):
 def score_rollout(mp4_path: str, segment_prompts=None, segment_boundaries=None) -> dict:
     frames = load_frames(mp4_path)
     n = len(frames)
+    # boundaries are in full-resolution frame units; load_frames subsamples, so
+    # rescale them to the decoded frame count before slicing segments.
+    if segment_boundaries:
+        tot = sum(segment_boundaries)
+        if tot and tot != n:
+            scale = n / tot
+            segment_boundaries = [max(1, round(c * scale)) for c in segment_boundaries]
     segs = list(_segments(n, segment_boundaries))
 
     # whole-clip non-CLIP dims
