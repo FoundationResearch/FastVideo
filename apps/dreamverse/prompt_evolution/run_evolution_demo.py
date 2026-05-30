@@ -34,7 +34,7 @@ from video_scorer import score_rollout  # noqa: E402
 SEED_MD = os.path.join(HERE, "rewrite_new_rollout_system_prompt.md")
 EVAL_IDEA = os.environ.get("EVAL_IDEA", "two roommates argue over the last cup of coffee in a tiny kitchen")
 
-EVOLVER_MODEL = os.environ.get("EVOLVER_MODEL", "gpt-5.1")
+EVOLVER_MODEL = os.environ.get("EVOLVER_MODEL", "gpt-5.5")
 _client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 EVOLVER_SYSTEM = """You are an expert prompt engineer optimizing the BEHAVIORAL POLICY
@@ -81,7 +81,8 @@ def mutate(seed_block: str, best_block: str, weakness: str, idx: int) -> str:
             "role": "user",
             "content": user
         }],
-        temperature=0.9,
+        # gpt-5.x only allows the default temperature (1); diversity comes from the
+        # distinct per-revision prompt instead.
     )
     return resp.choices[0].message.content.strip()
 

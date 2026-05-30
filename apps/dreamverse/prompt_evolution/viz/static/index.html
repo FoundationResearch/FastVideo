@@ -224,6 +224,9 @@ function metricRow(m){
     "video_artifact_rate","video_severity_per_seam","audio_noise_score","squim_pesq","n_seams"];
   return `<div class="mrow">${keys.map(fmt).join("")}</div>`;
 }
+function breakdownRow(bd){
+  return `<div class="mrow">${Object.keys(bd).map(k=>`<span class="m">${k} <b>${(+bd[k]).toFixed(2)}</b></span>`).join("")}</div>`;
+}
 function lineDiff(seedTxt,candTxt){
   const a=(seedTxt||"").split("\n"), b=(candTxt||"").split("\n"), m=a.length,n=b.length;
   const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0));
@@ -246,8 +249,9 @@ function showDetail(c){
   const sp=c.system_prompt||c.prompt_excerpt||"(not recorded)";
   document.getElementById("mBody").innerHTML=
     `<video class="detail-video" src="${vurl(c.video)}" controls autoplay playsinline></video>`+
-    `<div class="lbl">User prompt (idea fed to the rewriter)</div><div class="uprompt">${escapeHtml(DATA.eval_idea||DATA.note||"(n/a)")}</div>`+
-    `<div class="lbl">Metrics</div>${metricRow(c.metrics||{})}`+
+    `<div class="lbl">Showcase prompt (the video above)</div><div class="uprompt">${escapeHtml(DATA.showcase_prompt||DATA.eval_idea||"(n/a)")}</div>`+
+    (c.eval_breakdown?`<div class="lbl">Per-prompt score (combined = average)</div>${breakdownRow(c.eval_breakdown)}`:"")+
+    `<div class="lbl">Metrics (averaged)</div>${metricRow(c.metrics||{})}`+
     `<div class="lbl">Rewritten 6 segment prompts → the video above</div>${segs||"<i>n/a</i>"}`+
     `<div class="lbl">System prompt policy</div>`+
     `<div class="toggle">`+

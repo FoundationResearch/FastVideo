@@ -16,3 +16,17 @@
 {"id": "cook_to_serve", "prompt": "a chef sears a steak in a loud kitchen, then plates it calmly at a quiet table", "difficulty": "hard"}
 {"id": "storm_clears", "prompt": "a hiker pushes through heavy rain on a ridge, then the clouds break to sunshine", "difficulty": "hard"}
 {"id": "band_solo", "prompt": "a garage band plays, the drummer messes up, the singer glares, they restart", "difficulty": "medium"}
+{"id": "cyberpunk_alley", "prompt": "a hooded figure walks alone down a narrow neon cyberpunk alley at night, heavy rain, holographic ads glitching on wet walls, steam from grates, cinematic", "difficulty": "hard"}
+{"id": "fpv_waterfall", "prompt": "ultra cinematic FPV drone diving down a massive tropical waterfall canyon into jungle mist at sunrise, golden volumetric light, fast smooth flight", "difficulty": "hard"}
+{"id": "fpv_mtb", "prompt": "FPV drone chasing a downhill mountain-bike rider through steep foggy forest trails at sunrise, fast dynamic first-person motion", "difficulty": "hard"}
+{"id": "underwater_titans", "prompt": "deep dark ocean trench: a battle-damaged giant humanoid robot sinks downward and collides with an enormous bioluminescent sea creature rising from below, shockwaves ripple the water", "difficulty": "hard"}
+{"id": "nebula_ship", "prompt": "cinematic slow tracking shot of a sleek spaceship gliding through a glowing violet and cyan cosmic nebula, reflective hull, soft blue plasma trails, millions of stars", "difficulty": "medium"}
+{"id": "superweapon", "prompt": "engineers in ornate futuristic uniforms at golden control thrones inside a planetary-defense superweapon, concentric rings of cannons and energy shields, god rays through clouds, majestic, no speech", "difficulty": "hard"}
+{"id": "alchemist_lab", "prompt": "painterly Arcane-style alchemist's lab at night, a young alchemist with goggles mixes glowing blue and green liquids, bioluminescent light on her face, low magical hum", "difficulty": "medium"}
+{"id": "creator_night", "prompt": "a content creator finishes editing a video at a desk at night, clicks publish, then leans back and stretches", "difficulty": "easy"}
+{"id": "cat_swim", "prompt": "a cat swimming across a calm pool", "difficulty": "easy"}
+{"id": "horse_mars", "prompt": "a man riding a horse on mars", "difficulty": "easy"}
+{"id": "dude_running", "prompt": "a dude running", "difficulty": "easy"}
+{"id": "teacher_lesson", "prompt": "a teacher explains a lesson on a whiteboard to a classroom of students", "difficulty": "easy"}
+{"id": "bedtime_story", "prompt": "a grandfather tells a bedtime story to his granddaughter in a cozy lamplit room", "difficulty": "medium"}
+{"id": "cooking_class", "prompt": "a chef demonstrates a recipe step by step to a small cooking class", "difficulty": "medium"}
