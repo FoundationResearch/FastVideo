@@ -9,3 +9,8 @@ openevolve_output/
 results/
 checkpoints/
 *.log
+
+# rendered videos / eval artifacts (heavy, regenerable)
+renders/
+*.mp4
+vbench_cache/
