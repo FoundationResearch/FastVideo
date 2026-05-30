@@ -64,6 +64,19 @@
   .modal pre{white-space:pre-wrap;font:12px/1.55 ui-monospace,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;color:#cdd6e4;max-height:42vh;overflow:auto}
   .modal .seg{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:12.5px;color:#cdd6e4}
   .modal .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin:14px 0 6px}
+  .detail-video{width:100%;max-height:48vh;background:#000;border-radius:10px}
+  .uprompt{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:9px 12px;font-size:13px}
+  .mrow{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+  .mrow .m{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:12px;color:#cdd6e4}
+  .mrow .m b{color:var(--good)}
+  .toggle{display:inline-flex;gap:6px;margin:2px 0 8px}
+  .toggle button{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:3px 11px;font-size:12px;cursor:pointer}
+  .toggle button.on{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
+  .diff{white-space:pre-wrap;font:12px/1.55 ui-monospace,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;max-height:46vh;overflow:auto}
+  .diff .add{background:#11331c;color:#86e6ab;display:block}
+  .diff .del{background:#3a1717;color:#ff9b9b;display:block}
+  .diff .ctx{color:#7c879a;display:block}
+  .card{cursor:pointer}
 </style>
 </head>
 <body>
@@ -192,22 +205,65 @@ function card(c,best){
         ${best?'<span class="tag" style="color:var(--good);border-color:var(--good)">best</span>':''}</div>
       <div class="bars">${dimBars(c.metrics)}</div>
       <div class="mut">${c.mutation_summary}</div>
-      <button class="pbtn">▸ system prompt &amp; segments</button>
+      <button class="pbtn">▸ open detail (video + sound + prompt diff)</button>
       <div class="lin">parent: ${c.parent_id||"— (seed)"}</div>
     </div>`;
-  el.querySelector(".pbtn").onclick=()=>showPrompt(c);
+  el.onclick=(e)=>{ if(e.target.tagName!=="VIDEO") showDetail(c); };  // video keeps its own controls
   return el;
 }
-function showPrompt(c){
-  const sp = c.system_prompt || c.prompt_excerpt || "(prompt not recorded for this run)";
-  const segs = (c.segments||[]).map((s,i)=>`<div class="seg"><b>segment ${i+1}</b><br>${escapeHtml(s)}</div>`).join("");
+// find the seed policy block of the current run (the gen-0 seed candidate)
+function seedBlock(){
+  if(DATA.seed_policy_block) return DATA.seed_policy_block;
+  for(const g of DATA.generations) for(const c of g.candidates)
+    if(c.parent_id==null || (c.mutation_summary||"").toLowerCase().includes("seed")) return c.policy_block||"";
+  return "";
+}
+function metricRow(m){
+  const fmt=(k)=> (k in m && m[k]!=null) ? `<span class="m">${k.replace(/_/g," ")} <b>${(+m[k]).toFixed?(+m[k]).toFixed(3):m[k]}</b></span>` : "";
+  const keys=["quality_mean","prompt_consistency","dynamic_degree","subject_consistency","segment_consistency",
+    "video_artifact_rate","video_severity_per_seam","audio_noise_score","squim_pesq","n_seams"];
+  return `<div class="mrow">${keys.map(fmt).join("")}</div>`;
+}
+function lineDiff(seedTxt,candTxt){
+  const a=(seedTxt||"").split("\n"), b=(candTxt||"").split("\n"), m=a.length,n=b.length;
+  const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0));
+  for(let i=m-1;i>=0;i--)for(let j=n-1;j>=0;j--)
+    dp[i][j]= a[i]===b[j]? dp[i+1][j+1]+1 : Math.max(dp[i+1][j],dp[i][j+1]);
+  let i=0,j=0,out=[];
+  const push=(cls,t)=>out.push(`<span class="${cls}">${cls==="add"?"+ ":cls==="del"?"- ":"  "}${escapeHtml(t)||"&nbsp;"}</span>`);
+  while(i<m&&j<n){ if(a[i]===b[j]){push("ctx",a[i]);i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){push("del",a[i]);i++;} else {push("add",b[j]);j++;} }
+  while(i<m)push("del",a[i++]); while(j<n)push("add",b[j++]);
+  return `<div class="diff">${out.join("")}</div>`;
+}
+let _detail=null;
+function showDetail(c){
+  _detail=c;
+  const seed=seedBlock(), cand=c.policy_block||"";
+  const hasDiff = seed && cand;
   document.getElementById("mTitle").textContent = `${c.id} · gen ${c.generation} · score ${c.combined_score.toFixed(3)}`;
-  document.getElementById("mBody").innerHTML =
-    `<div class="lbl">System prompt fed to the task model (${(sp.length)} chars)</div><pre>${escapeHtml(sp)}</pre>`+
-    (segs?`<div class="lbl">Rewritten 6 segments → rendered video above</div>${segs}`:"");
+  const segs=(c.segments||[]).map((s,i)=>`<div class="seg"><b>segment ${i+1}</b><br>${escapeHtml(s)}</div>`).join("");
+  const sp=c.system_prompt||c.prompt_excerpt||"(not recorded)";
+  document.getElementById("mBody").innerHTML=
+    `<video class="detail-video" src="${vurl(c.video)}" controls autoplay playsinline></video>`+
+    `<div class="lbl">User prompt (idea fed to the rewriter)</div><div class="uprompt">${escapeHtml(DATA.eval_idea||DATA.note||"(n/a)")}</div>`+
+    `<div class="lbl">Metrics</div>${metricRow(c.metrics||{})}`+
+    `<div class="lbl">Rewritten 6 segment prompts → the video above</div>${segs||"<i>n/a</i>"}`+
+    `<div class="lbl">System prompt policy</div>`+
+    `<div class="toggle">`+
+      `<button id="tgDiff" class="${hasDiff?'on':''}" ${hasDiff?'':'disabled'}>diff vs seed</button>`+
+      `<button id="tgFull">full prompt</button></div>`+
+    `<div id="spView">${hasDiff?lineDiff(seed,cand):`<pre>${escapeHtml(sp)}</pre>`}</div>`;
+  if(hasDiff){
+    document.getElementById("tgDiff").onclick=()=>{setTog(true);document.getElementById("spView").innerHTML=lineDiff(seed,cand);};
+    document.getElementById("tgFull").onclick=()=>{setTog(false);document.getElementById("spView").innerHTML=`<pre>${escapeHtml(sp)}</pre>`;};
+  } else { document.getElementById("tgFull").onclick=()=>{}; }
   document.getElementById("modal").classList.add("open");
 }
-function closeModal(){ document.getElementById("modal").classList.remove("open"); }
+function setTog(diffOn){ const d=document.getElementById("tgDiff"),f=document.getElementById("tgFull");
+  if(d)d.classList.toggle("on",diffOn); if(f)f.classList.toggle("on",!diffOn); }
+function closeModal(){ document.getElementById("modal").classList.remove("open");
+  const v=document.querySelector("#mBody video"); if(v)v.pause(); }
 function escapeHtml(s){ return (s||"").replace(/[&<>]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m])); }
 document.addEventListener("keydown",e=>{ if(e.key==="Escape")closeModal(); });
 function renderGrid(){
