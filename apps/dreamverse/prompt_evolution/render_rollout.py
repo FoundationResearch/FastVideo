@@ -33,46 +33,68 @@ for _p in (REPO_ROOT, DREAMVERSE_ROOT):
 FFMPEG_BIN = os.environ.get("FASTVIDEO_FFMPEG_BIN", "ffmpeg")
 
 
+class RolloutRenderer:
+    """Persistent renderer: loads the LTX2 model ONCE, renders many rollouts.
+
+    Use this in the evolution loop so the 65GB model isn't reloaded per candidate."""
+
+    def __init__(self, gpu_id: int = 0, fps: int = 24):
+        if DREAMVERSE_ROOT not in sys.path:
+            sys.path.insert(0, DREAMVERSE_ROOT)
+        from dreamverse.video_generation import VideoGenerationWorker  # type: ignore
+
+        import time
+        t0 = time.perf_counter()
+        self.worker = VideoGenerationWorker(gpu_id=gpu_id)
+        self.worker.initialize(None)  # default FastVideo/LTX2-Distilled-Diffusers
+        self.init_s = round(time.perf_counter() - t0, 2)
+        self.fps = fps
+
+    def render(self, prompts: list, out_mp4: str) -> dict:
+        """Render `prompts` (6 segment strings) into `out_mp4`. Returns shape/boundaries."""
+        import time
+        frames: list = []
+        seg_counts, seg_timings = [], []
+        for idx, prompt in enumerate(prompts, start=1):
+            ts = time.perf_counter()
+            step = self.worker.generate_step(
+                prompt=prompt,
+                segment_idx=idx,
+                image_path=None,
+                reset_conditioning=(idx == 1),
+            )
+            segf = step.frames
+            if getattr(step, "head_trim_frames", 0):
+                segf = segf[step.head_trim_frames:]
+            frames.extend(segf)
+            seg_counts.append(len(segf))
+            seg_timings.append(round(time.perf_counter() - ts, 2))
+
+        os.makedirs(os.path.dirname(os.path.abspath(out_mp4)), exist_ok=True)
+        _write_mp4(frames, out_mp4, self.fps)
+        return {
+            "out_mp4": out_mp4,
+            "num_frames": len(frames),
+            "duration_s": round(len(frames) / self.fps, 2),
+            "segment_frame_counts": seg_counts,  # boundaries for video_scorer
+            "segment_s": seg_timings,
+        }
+
+    def close(self) -> None:
+        import contextlib
+        with contextlib.suppress(Exception):
+            self.worker.shutdown()
+
+
 def render_rollout(prompts: list, out_mp4: str, *, gpu_id: int = 0, fps: int = 24) -> dict:
-    """Render `prompts` (6 segment strings) into `out_mp4`. Returns timing/shape info."""
-    if DREAMVERSE_ROOT not in sys.path:
-        sys.path.insert(0, DREAMVERSE_ROOT)
-    from dreamverse.video_generation import VideoGenerationWorker  # type: ignore
-
-    import time
-    t0 = time.perf_counter()
-    worker = VideoGenerationWorker(gpu_id=gpu_id)
-    worker.initialize(None)  # default MODEL_CONFIG (FastVideo/LTX2-Distilled-Diffusers)
-    t_init = time.perf_counter() - t0
-
-    frames: list = []
-    seg_timings = []
-    for idx, prompt in enumerate(prompts, start=1):
-        ts = time.perf_counter()
-        step = worker.generate_step(
-            prompt=prompt,
-            segment_idx=idx,
-            image_path=None,
-            reset_conditioning=(idx == 1),
-        )
-        segf = step.frames
-        if getattr(step, "head_trim_frames", 0):
-            segf = segf[step.head_trim_frames:]
-        frames.extend(segf)
-        seg_timings.append(round(time.perf_counter() - ts, 2))
-
-    worker.shutdown()
-
-    os.makedirs(os.path.dirname(os.path.abspath(out_mp4)), exist_ok=True)
-    _write_mp4(frames, out_mp4, fps)
-
-    return {
-        "out_mp4": out_mp4,
-        "num_frames": len(frames),
-        "duration_s": round(len(frames) / fps, 2),
-        "init_s": round(t_init, 2),
-        "segment_s": seg_timings,
-    }
+    """One-shot render (loads + tears down the model). For the loop, use RolloutRenderer."""
+    r = RolloutRenderer(gpu_id=gpu_id, fps=fps)
+    try:
+        info = r.render(prompts, out_mp4)
+        info["init_s"] = r.init_s
+        return info
+    finally:
+        r.close()
 
 
 def _write_mp4(frames: list, out: str, fps: int) -> None:

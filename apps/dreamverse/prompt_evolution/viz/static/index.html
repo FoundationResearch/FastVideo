@@ -53,14 +53,32 @@
   .mut{font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
   .lin{font-size:11px;color:var(--muted);font-family:ui-monospace,monospace}
   .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:11px;color:var(--muted)}
+  select#runSel{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:13px}
+  .pbtn{background:var(--panel2);border:1px solid var(--line);color:var(--accent);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;align-self:flex-start}
+  .modal{position:fixed;inset:0;background:#000b;display:none;align-items:center;justify-content:center;z-index:50;padding:24px}
+  .modal.open{display:flex}
+  .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;max-width:1000px;width:100%;max-height:88vh;overflow:auto;padding:18px 20px}
+  .modal .x{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
+  .modal h3{margin:0;font-size:15px}
+  .modal .close{cursor:pointer;color:var(--muted);font-size:22px;line-height:1}
+  .modal pre{white-space:pre-wrap;font:12px/1.55 ui-monospace,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;color:#cdd6e4;max-height:42vh;overflow:auto}
+  .modal .seg{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:12.5px;color:#cdd6e4}
+  .modal .lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin:14px 0 6px}
 </style>
 </head>
 <body>
 <header>
   <h1>Dreamverse · System-Prompt Evolution</h1>
+  <select id="runSel" title="project / run"></select>
   <div class="meta" id="meta"></div>
   <div class="mock" id="mockTag" style="display:none">MOCK DATA</div>
 </header>
+<div class="modal" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="box">
+    <div class="x"><h3 id="mTitle"></h3><span class="close" onclick="closeModal()">×</span></div>
+    <div id="mBody"></div>
+  </div>
+</div>
 <main>
   <div class="section-title">Best rollout per generation — watch quality climb →</div>
   <div class="hero" id="hero"></div>
@@ -80,13 +98,31 @@ const DIM_LABELS = {
   temporal_flicker:"anti-flicker", sharpness:"sharpness",
   colorfulness:"colorfulness", seam_continuity:"seam"
 };
-let DATA=null, RUN=null, curGen="all";
+let DATA=null, RUN=null, curGen="all", chart=null, lastSig="";
 
-async function boot(){
+function sig(d){ return (d.generations||[]).reduce((s,g)=>s+"|"+g.candidates.length+":"
+  +g.candidates.map(c=>c.combined_score).join(","),""); }
+
+async function load(){
   const runs=(await (await fetch("/api/runs")).json()).runs;
-  RUN = runs[0] || "mock";
-  DATA = await (await fetch(`/runs/${RUN}/evolution.json`)).json();
+  const want = new URL(location.href).searchParams.get("run");
+  if(!RUN) RUN = (want && runs.includes(want)) ? want : (runs[0] || "mock");
+  populateRuns(runs);
+  const d = await (await fetch(`/runs/${RUN}/evolution.json?t=${Date.now()}`)).json();
+  const s = sig(d)+"@"+RUN;
+  if(s===lastSig) return;            // nothing changed
+  lastSig = s; DATA = d;
   renderMeta(); renderHero(); renderTrend(); renderControls(); renderGrid();
+}
+function populateRuns(runs){
+  const sel=document.getElementById("runSel");
+  sel.innerHTML=runs.map(r=>`<option value="${r}">${r}</option>`).join("");
+  sel.value=RUN;
+  sel.onchange=()=>{ RUN=sel.value; lastSig=""; history.replaceState(null,"",`?run=${RUN}`); load(); };
+}
+async function boot(){
+  await load();
+  setInterval(()=>load().catch(()=>{}), 5000);   // live-refresh while a run is in progress
 }
 function vurl(v){ return `/runs/${RUN}/${v}`; }
 function bestOf(g){ return g.candidates.reduce((a,b)=>a.combined_score>=b.combined_score?a:b); }
@@ -113,7 +149,8 @@ function renderTrend(){
   const labels=DATA.generations.map(g=>`gen ${g.generation}`);
   const best=DATA.generations.map(g=>bestOf(g).combined_score);
   const mean=DATA.generations.map(g=>g.candidates.reduce((s,c)=>s+c.combined_score,0)/g.candidates.length);
-  new Chart(document.getElementById("trend"),{
+  if(chart){ chart.destroy(); chart=null; }
+  chart=new Chart(document.getElementById("trend"),{
     type:"line",
     data:{labels,datasets:[
       {label:"best",data:best,borderColor:"#39d98a",backgroundColor:"#39d98a22",tension:.3,fill:true,pointRadius:4},
@@ -152,10 +189,24 @@ function card(c,best){
         ${best?'<span class="tag" style="color:var(--good);border-color:var(--good)">best</span>':''}</div>
       <div class="bars">${dimBars(c.metrics)}</div>
       <div class="mut">${c.mutation_summary}</div>
+      <button class="pbtn">▸ system prompt &amp; segments</button>
       <div class="lin">parent: ${c.parent_id||"— (seed)"}</div>
     </div>`;
+  el.querySelector(".pbtn").onclick=()=>showPrompt(c);
   return el;
 }
+function showPrompt(c){
+  const sp = c.system_prompt || c.prompt_excerpt || "(prompt not recorded for this run)";
+  const segs = (c.segments||[]).map((s,i)=>`<div class="seg"><b>segment ${i+1}</b><br>${escapeHtml(s)}</div>`).join("");
+  document.getElementById("mTitle").textContent = `${c.id} · gen ${c.generation} · score ${c.combined_score.toFixed(3)}`;
+  document.getElementById("mBody").innerHTML =
+    `<div class="lbl">System prompt fed to the task model (${(sp.length)} chars)</div><pre>${escapeHtml(sp)}</pre>`+
+    (segs?`<div class="lbl">Rewritten 6 segments → rendered video above</div>${segs}`:"");
+  document.getElementById("modal").classList.add("open");
+}
+function closeModal(){ document.getElementById("modal").classList.remove("open"); }
+function escapeHtml(s){ return (s||"").replace(/[&<>]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[m])); }
+document.addEventListener("keydown",e=>{ if(e.key==="Escape")closeModal(); });
 function renderGrid(){
   const grid=document.getElementById("grid"); grid.innerHTML="";
   const gens = curGen==="all" ? DATA.generations : DATA.generations.filter(g=>g.generation===curGen);
