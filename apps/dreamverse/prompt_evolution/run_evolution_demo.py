@@ -42,9 +42,12 @@ of a real-time video "rewriter" LLM. Given a one-line user idea, that rewriter o
 a JSON rollout of exactly 6 sequential 5-second segment prompts for the ltx2 video model
 (30s total), each segment conditioned only on the last frames/audio of the previous one.
 
-You are given the current policy text and (if any) the measured weaknesses of the videos
-it produced. Revise the policy to improve seam continuity, faithful coverage of the user's
-idea, vivid grounded staging, and LIVELY non-static motion (avoid static wallpaper).
+You are given the current policy text and OBJECTIVE EVALUATION FEEDBACK on the videos it
+produced (measured scores, which segment seams reset, and which user prompts it handled
+worst). Use that feedback to make TARGETED edits — directly address the named seam resets
+and worst-prompt failure modes, and lift the weakest measured dimensions — rather than
+generic rewording. Optimize seam continuity, faithful coverage of the user's idea, vivid
+grounded staging, and LIVELY non-static motion (avoid static wallpaper).
 
 Keep it a drop-in replacement for the policy region: same tag structure, no JSON contract,
 no preamble. Return ONLY the revised policy text."""
@@ -70,8 +73,8 @@ def mutate(seed_block: str, best_block: str, weakness: str, idx: int) -> str:
     """Ask the evolver LLM for a revised policy block."""
     user = (f"SEED POLICY (reference):\n{seed_block}\n\n"
             f"CURRENT BEST POLICY:\n{best_block}\n\n"
-            f"MEASURED WEAKNESSES: {weakness or 'none yet'}\n\n"
-            f"Produce revision #{idx}: a distinct improvement. Return only the policy text.")
+            f"EVALUATION FEEDBACK ON CURRENT BEST:\n{weakness or 'none yet'}\n\n"
+            f"Produce revision #{idx}: a distinct, targeted improvement. Return only the policy text.")
     resp = _client.chat.completions.create(
         model=EVOLVER_MODEL,
         messages=[{

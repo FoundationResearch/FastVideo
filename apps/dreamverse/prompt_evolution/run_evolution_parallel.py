@@ -90,6 +90,36 @@ def run_gpu_batch(slot: tuple, items: list, work_path: str) -> list:
         return json.load(f)
 
 
+RICH_FEEDBACK = os.environ.get("RICH_FEEDBACK", "0") == "1"  # opt-in: export RICH_FEEDBACK=1
+_QUAL_KEYS = [
+    "prompt_consistency", "subject_consistency", "segment_consistency", "dynamic_degree", "motion_smoothness",
+    "temporal_flicker", "sharpness", "colorfulness"
+]
+
+
+def build_feedback(best: dict) -> str:
+    """Rich evaluation feedback the evolver LLM acts on: weakest dims, seam failures,
+    worst-scoring user prompts. Falls back to the thin single-dim hint if disabled."""
+    if not RICH_FEEDBACK:
+        return weakest_dim(best.get("metrics", {}))
+    m = best.get("metrics", {})
+    qd = {k: m[k] for k in _QUAL_KEYS if isinstance(m.get(k), int | float)}
+    weak = sorted(qd.items(), key=lambda kv: kv[1])[:3]
+    worst = sorted(best.get("eval_breakdown", {}).items(), key=lambda kv: kv[1])[:4]
+    lines = [f"current best combined (avg over prompts) = {best.get('combined_score')}"]
+    if weak:
+        lines.append("weakest quality dims (0-1, raise these): " + ", ".join(f"{k}={v:.2f}" for k, v in weak))
+    sev = m.get("video_severity_per_seam")
+    if sev is not None:
+        lines.append(f"video seam-reset severity/seam = {sev} (lower=better); "
+                     f"seams that reset: {best.get('seam_artifacts') or 'none'}")
+    if worst:
+        lines.append("worst user prompts (it handles these badly): " + ", ".join(f"{k}({v:+.2f})" for k, v in worst))
+    lines.append("Revise the policy to fix the failure modes behind the worst prompts and seam "
+                 "resets, and to lift the weakest dimensions.")
+    return "\n".join(lines)
+
+
 def _mean_metrics(dicts: list) -> dict:
     keys: set = set()
     for d in dicts:
@@ -233,6 +263,7 @@ def main() -> None:
                     e["id"]: round(scored.get(f"{cid}__{e['id']}", {}).get("combined", 0.0), 3)
                     for e in eval_set
                 },
+                "seam_artifacts": (show.get("artifacts") or {}).get("video_artifacts"),
             })
             cands.append(rec)
         cands.sort(key=lambda c: -c["combined_score"])
@@ -243,7 +274,7 @@ def main() -> None:
         if gen_best["combined_score"] > best_score:
             best_score = gen_best["combined_score"]
             best_block = gen_best.get("policy_block", best_block)
-            weakness = weakest_dim(gen_best.get("metrics", {}))
+            weakness = build_feedback(gen_best)
         print(f"[par] gen {gen} best_avg={best_score:.3f}", flush=True)
 
     print(f"[par] done. best_avg={best_score:.3f} -> viz run '{args.run_id}'", flush=True)

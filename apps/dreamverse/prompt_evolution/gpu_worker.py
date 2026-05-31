@@ -53,9 +53,11 @@ def main() -> None:
             it.setdefault("metrics", {})
             continue
         try:
-            combined, metrics, _ = stage2_lean.score(it["out_mp4"], it["rinfo"], it["segments"], it["eval_idea"])
+            combined, metrics, artifacts = stage2_lean.score(it["out_mp4"], it["rinfo"], it["segments"],
+                                                             it["eval_idea"])
             it["combined"] = combined
             it["metrics"] = metrics
+            it["artifacts"] = artifacts  # e.g. which seams reset (for evolver feedback)
         except Exception as e:
             it["combined"] = 0.0
             it["metrics"] = {}
