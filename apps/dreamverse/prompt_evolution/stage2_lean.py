@@ -30,9 +30,10 @@ FFMPEG = os.environ.get("FASTVIDEO_FFMPEG_BIN", "ffmpeg")
 VID_CAP = float(os.environ.get("VID_SEV_CAP", "8.0"))
 AUD_CAP = float(os.environ.get("AUD_SEV_CAP", "6.0"))
 W_VID = float(os.environ.get("W_VID_SEAM", "0.15"))
-W_AUD = float(os.environ.get("W_AUD_SEAM", "0.10"))
 W_NOISE = float(os.environ.get("W_NOISE", "0.05"))
-METRICS = ["boundary.video", "boundary.audio", "audio.noise"]
+# boundary.audio removed: its robust-z saturates on LTX2's near-silent audio and
+# produced high-variance outliers (e.g. one prompt at -0.85) that drowned the signal.
+METRICS = ["boundary.video", "audio.noise"]
 
 _EV = None
 
@@ -80,15 +81,14 @@ def score(video_path: str, rinfo: dict, segments: list, prompt: str):
         r = res.get(name)
         return (getattr(r, "details", {}) or {}) if r else {}
 
-    bvd, bad = det("boundary.video"), det("boundary.audio")
+    bvd = det("boundary.video")
     vid_sev = min(float(bvd.get("severity_per_seam") or 0.0), VID_CAP)
-    aud_sev = min(float(bad.get("severity_per_seam") or 0.0), AUD_CAP)
     noise = float(sc("audio.noise") or 0.0)
 
     import video_scorer as vs
     q = vs.score_rollout(video_path, segment_prompts=segments, segment_boundaries=rinfo.get("segment_frame_counts"))
     quality = q.get("video_score", 0.0)
-    combined = round(quality - W_VID * vid_sev - W_AUD * aud_sev - W_NOISE * noise, 4)
+    combined = round(quality - W_VID * vid_sev - W_NOISE * noise, 4)
 
     metrics = {k: v for k, v in q.items() if k not in ("video_score", "clip_used", "num_frames", "num_segments")}
     metrics.update({
@@ -96,11 +96,9 @@ def score(video_path: str, rinfo: dict, segments: list, prompt: str):
         "prompt_consistency": q.get("text_alignment"),
         "video_artifact_rate": sc("boundary.video"),
         "video_severity_per_seam": bvd.get("severity_per_seam"),
-        "audio_artifact_rate": sc("boundary.audio"),
-        "audio_severity_per_seam": bad.get("severity_per_seam"),
         "audio_noise_score": sc("audio.noise"),
         "squim_pesq": det("audio.noise").get("squim_pesq"),
-        "n_seams": bvd.get("n_seams") or bad.get("n_seams"),
+        "n_seams": bvd.get("n_seams"),
     })
 
     def _fmt(d: dict) -> str:
@@ -109,7 +107,6 @@ def score(video_path: str, rinfo: dict, segments: list, prompt: str):
 
     artifacts = {
         "video_artifacts": _fmt(bvd),
-        "audio_artifacts": _fmt(bad),
         "noise": f"score={sc('audio.noise')} pesq={det('audio.noise').get('squim_pesq')}"
     }
     return combined, metrics, artifacts
