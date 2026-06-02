@@ -1771,7 +1771,7 @@ export default function Page() {
 			sessionNotice: preserveSessionNotice ? sessionStore.get().sessionNotice : "",
 			sessionExpired: preserveSessionNotice ? sessionStore.get().sessionExpired : false,
 			projectResetPending: false,
-			manualContinuationMode: false,
+			manualContinuationMode: true,
 			waitingForSegmentPrompt: false,
 		});
 		rewriteStore.resetSessionState();
@@ -1798,7 +1798,7 @@ export default function Page() {
 			sessionNotice: "",
 			sessionExpired: false,
 			projectResetPending: false,
-			manualContinuationMode: false,
+			manualContinuationMode: true,
 			waitingForSegmentPrompt: false,
 		});
 		rewriteStore.resetSessionState();
