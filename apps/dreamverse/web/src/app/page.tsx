@@ -2557,6 +2557,8 @@ export default function Page() {
 	if (devtoolsMode) {
 		return (
 			<DevtoolsShell
+				videoRef={videoRefCallback}
+				archivedPlaybackRef={archivedPlaybackRefCallback}
 				connected={connected as boolean}
 				gpuAssigned={gpuAssigned as boolean}
 				sessionStarted={sessionStarted as boolean}

@@ -115,6 +115,8 @@ interface DevtoolsShellProps {
   formatTime?: (seconds: number) => string;
   formatDurationMs?: (durationMs: number) => string;
   onPlaying?: () => void;
+  videoRef?: React.RefCallback<HTMLVideoElement>;
+  archivedPlaybackRef?: React.RefCallback<HTMLVideoElement>;
 }
 
 export default function DevtoolsShell({
@@ -213,6 +215,8 @@ export default function DevtoolsShell({
   formatTime = (seconds) => `${seconds}`,
   formatDurationMs = (durationMs) => `${durationMs}`,
   onPlaying = () => {},
+  videoRef,
+  archivedPlaybackRef,
 }: DevtoolsShellProps) {
   return (
     <WorkspaceShell
@@ -239,6 +243,8 @@ export default function DevtoolsShell({
       workspace={
         <div className="flex flex-col gap-4">
           <VideoPlayer
+            videoRef={videoRef}
+            archivedPlaybackRef={archivedPlaybackRef}
             activeClip={activeClip}
             sessionStarted={sessionStarted}
             avPlaybackStarted={avPlaybackStarted}

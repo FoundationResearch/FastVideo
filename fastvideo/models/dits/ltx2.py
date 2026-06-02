@@ -1192,7 +1192,6 @@ class LTXDistributedAttention(DistributedAttention):
         )
         self.rope_type = rope_type
 
-    @torch.compiler.disable
     def forward(
         self,
         q: torch.Tensor,
@@ -2907,6 +2906,7 @@ class LTX2Transformer3DModel(BaseDiT):
         skip_cross_modal_attn: bool = False,
         skip_video_self_attn_blocks: list[int] | None = None,
         skip_audio_self_attn_blocks: list[int] | None = None,
+        video_position_offset_sec: float = 0.0,
         **kwargs,
     ) -> torch.Tensor:
         if isinstance(encoder_hidden_states, list):
@@ -2959,7 +2959,10 @@ class LTX2Transformer3DModel(BaseDiT):
             DEFAULT_LTX2_SCALE_FACTORS,
             fps=fps,
             causal_fix=True,
-        ).to(hidden_states.dtype)
+        )
+        if video_position_offset_sec:
+            positions[:, 0, ...] = positions[:, 0, ...] + float(video_position_offset_sec)
+        positions = positions.to(hidden_states.dtype)
 
         # PR #1422 / will-nbv: honor video_position_offset_sec — shift the video temporal RoPE
         # positions forward (in seconds) to match the audio continuation pre-roll, else the
