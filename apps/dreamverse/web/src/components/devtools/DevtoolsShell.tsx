@@ -21,6 +21,7 @@ interface DevtoolsShellProps {
   selectedPresetId?: string;
   enhancementEnabled?: boolean;
   autoExtensionEnabled?: boolean;
+  manualContinuationEnabled?: boolean;
   loopGenerationEnabled?: boolean;
   canJoinSession?: boolean;
   canSubmitContinuation?: boolean;
@@ -34,6 +35,7 @@ interface DevtoolsShellProps {
   onEnhancementToggle?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onCuratedPromptLimitChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onAutoExtensionToggle?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onManualContinuationToggle?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onLoopToggle?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onJoin?: () => void;
   onLeave?: () => void;
@@ -126,6 +128,7 @@ export default function DevtoolsShell({
   selectedPresetId = '',
   enhancementEnabled = true,
   autoExtensionEnabled = false,
+  manualContinuationEnabled = false,
   loopGenerationEnabled = false,
   canJoinSession = false,
   canSubmitContinuation = false,
@@ -139,6 +142,7 @@ export default function DevtoolsShell({
   onEnhancementToggle = () => {},
   onCuratedPromptLimitChange = () => {},
   onAutoExtensionToggle = () => {},
+  onManualContinuationToggle = () => {},
   onLoopToggle = () => {},
   onJoin = () => {},
   onLeave = () => {},
@@ -278,6 +282,7 @@ export default function DevtoolsShell({
           demoMode={demoMode}
           enhancementEnabled={enhancementEnabled}
           autoExtensionEnabled={autoExtensionEnabled}
+          manualContinuationEnabled={manualContinuationEnabled}
           loopGenerationEnabled={loopGenerationEnabled}
           curatedPromptLimit={curatedPromptLimit}
           maxCuratedPromptCount={maxCuratedPromptCount}
@@ -293,6 +298,7 @@ export default function DevtoolsShell({
           onEnhancementToggle={onEnhancementToggle}
           onCuratedPromptLimitChange={onCuratedPromptLimitChange}
           onAutoExtensionToggle={onAutoExtensionToggle}
+          onManualContinuationToggle={onManualContinuationToggle}
           onLoopToggle={onLoopToggle}
           onLivePromptModeToggle={onLivePromptModeToggle}
           onSpeechTranscript={onSpeechTranscript}
